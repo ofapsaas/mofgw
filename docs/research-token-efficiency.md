@@ -60,27 +60,34 @@ Fuente: opencode.ai/docs/zen — accedido 06 Ago 2026.
 4. **Única inconsistencia de campo:** DeepSeek directo usa `prompt_cache_hit_tokens` (no estándar) — pero vía Zen ya está normalizado. Si algún día apuntamos a DeepSeek directo, normalizar.
 5. **Riesgo conocido upstream:** bug #14795 de zen — `usage` puede ser `undefined` y causar 500. Relevante para 006-001: el accounting no debe crashear si usage falta.
 
-## 3. Consumo de /v1/models por runtimes
+## 3. Consumo de /v1/models por runtimes (verificado 06 Ago 2026)
 
-### Verificación empírica local (06 Ago 2026, opencode 1.18.4)
+### Hallazgos de fuente (opencode Go source + openclaw TypeScript source)
 
-`opencode models mofgw --verbose` contra el provider mofgw (config opencode.jsonc) devuelve para CADA modelo (`deepseek-v4-flash`, `deepseek-v4-flash-0731`, `deepseek-v4-pro`, ...):
+**OpenCode (Go):** consulta `/v1/models` SOLO para providers locales con env `LOCAL_ENDPOINT`; para providers configurados usa catálogo estático. Lee `max_context_length`/`loaded_context_length` (NO `context_window`), usa `loaded_context_length` como context window con **fallback 4096** si ausente → compactación agresiva. **Hardcodea `CanReason: true` para todos los modelos locales** → siempre manda `reasoning_effort` (low/medium/high) y `max_completion_tokens`. Defaults: contexto 4096, effort medium.
 
-```json
-{
-  "capabilities": { "reasoning": false, "toolcall": true, "interleaved": { "field": "reasoning_content" } },
-  "cost": { "input": 0, "output": 0, "cache": { "read": 0, "write": 0 } },
-  "limit": { "context": 0, "output": 0 }
-}
-```
+**OpenClaw:** consulta `/v1/models` en discovery/setup de providers self-hosted (GET {baseUrl}/models). Lee en orden: `context_length` → `context_window` → `context_size` → `meta.n_ctx_train`, con **fallback 128,000**; max tokens fallback 8,192. **Reasoning por heurística de nombre** (regex `/r1|reasoning|think|reason/i`). Como gateway propio, sirve /v1/models con solo los 4 campos estándar.
 
-**Hallazgos:**
-1. **`capabilities.reasoning: false` para TODOS los modelos de mofgw** — incluyendo deepseek-v4-flash que SÍ soporta thinking (ver §4). Consecuencia: opencode nunca va a mandar `reasoning_effort` → no puede optimizar low/high/max (frente 3 de Pablo confirmado con datos del sistema real).
-2. **`limit.context: 0` y `limit.output: 0`** — opencode no conoce la ventana de contexto → decisiones de compactación con default desconocido.
-3. **`cost: 0`** — opencode no puede estimar costo por modelo.
-4. opencode obtiene metadata de **models.dev** (base pública) + config estática del provider en opencode.jsonc (`--refresh` refresca "the models cache from models.dev"). El comportamiento exacto de consulta a /v1/models lo confirma la delegación en curso (civic-turquoise-turkey).
+**Convenciones de campo del ecosistema:**
 
-*(Sección 3 en curso — delegación re-lanzada tras falla silenciosa de common-lavender-reptile.)*
+| Campo | Quién lo lee | Prioridad |
+|---|---|---|
+| `context_length` | OpenClaw (1º), OpenRouter clients | **P0** |
+| `max_context_length` | OpenCode Go (local) | **P0** |
+| `loaded_context_length` | OpenCode Go (1º para local) | **P0** |
+| `max_completion_tokens` | OpenClaw (max output) | P1 |
+| `capabilities.reasoning` | OpenClaw (LM Studio path) | P1 |
+| `supported_parameters` | OpenClaw (OpenRouter path, busca "tools"/"reasoning") | P2 |
+| `context_window` | OpenClaw (2º fallback) | P2 |
+| `modality`, `top_provider.context_length` | OpenClaw | P3 |
+
+### Implicaciones para mofgw (EPIC-007)
+
+1. **Exponer `context_length` + `max_context_length` + `loaded_context_length` + `max_completion_tokens` + `capabilities.reasoning`** en /v1/models corrige los defaults equivocados de ambos runtimes (4096 en OpenCode Go, 128k/8k en OpenClaw).
+2. **OpenCode Go manda `reasoning_effort` siempre** (CanReason hardcodeado) → mofgw debe pasarlo transparente (hoy lo es: body crudo) y declarar en el catálogo qué niveles soporta cada modelo (ver §4: deepseek-v4-flash low/high/max, kimi-k2.7-code rechaza `disabled`).
+3. Verificación empírica local (opencode 1.18.4): todos los modelos mofgw salen con `reasoning:false`, `context:0`, `cost:0` → confirma que hoy los runtimes no tienen metadata → compactación con default desconocido.
+
+*(§3 completada tras re-lanzamiento de delegación — common-lavender-reptile falló silenciosamente, civic-turquoise-turkey entregó el reporte completo con fuentes de código fuente.)*
 
 ## 4. Capacidades de thinking por modelo (verificado 06 Ago 2026)
 | Modelo | Thinking | Niveles | Activación (OpenAI-compatible) | Default | Contexto / Max output | Fuente |
@@ -101,4 +108,4 @@ Fuente: opencode.ai/docs/zen — accedido 06 Ago 2026.
 5. **Multi-turno:** la mayoría exige preservar `reasoning_content` histórico (especialmente Kimi y GLM Preserved Thinking). Es un riesgo de interop para el catálogo.
 
 ---
-*Actualizado: 2026-08-06T13:10-03:00 — §3 en curso (delegación re-lanzada). §1, §2, §4 verificados con fuentes.*
+*Actualizado: 2026-08-06T13:25-03:00 — §1 (precios), §2 (cache providers), §3 (consumo /v1/models), §4 (thinking) TODOS verificados con fuentes. Discovery del replanteo de eficiencia COMPLETO.*
