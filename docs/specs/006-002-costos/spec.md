@@ -106,3 +106,13 @@ visibilidad de gasto por cliente, no contabilidad exacta.
 - Facturación exacta (reconciliación con el bill del provider).
 - Alertas por umbral de gasto — se evalúa con EPIC-008 (budget).
 - Multi-divisa — solo USD (fuentes del research en USD).
+
+## Cambios de tests justificados
+
+- `metrics_test.go TestNamesSorted`: expectativa 11 → 12 contadores base. El
+  contrato de /metrics cambió con P3 (cost_usd_total se emite siempre, en 0
+  si no hubo datos). Justificado por P3.
+- `e2e_test.go harness`: campo `proxySrv` agregado (exponer el proxy.Server
+  para configurar features post-construcción, 006-002 SetPricing).
+- `e2e_006001_test.go buildMultiClient`: setea `h.proxySrv` (soporte del
+  harness para 006-002).
