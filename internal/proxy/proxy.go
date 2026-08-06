@@ -62,6 +62,11 @@ type Server struct {
 	// Inmutable tras SetModelMetadata; mismo patrón que pricing.
 	modelMeta map[string]config.ModelMetadata
 
+	// contextMargin: fracción de margen sobre context_window para el
+	// rechazo por ventana (008-001 P3). 0 = sin margen (rechazo en el
+	// límite exacto). Default 0.1 (seteado en New).
+	contextMargin float64
+
 	// Concurrencia (004-001/004-002): global + keyed por cliente/agente.
 	globalLimiter       *limiter.Limiter
 	keyedLimiter        *limiter.Keyed
@@ -78,7 +83,7 @@ func New(r *router.Router, providers []provider.Provider, a *auth.Authenticator,
 	if m == nil {
 		m = metrics.New()
 	}
-	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout}
+	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1}
 }
 
 // Handler devuelve el mux con auth aplicada a /v1/* (healthz y metrics
@@ -106,6 +111,32 @@ func (s *Server) SetPricing(pricing map[string]ModelPricing) {
 // antes del tráfico, mapa inmutable después.
 func (s *Server) SetModelMetadata(meta map[string]config.ModelMetadata) {
 	s.modelMeta = meta
+}
+
+// SetContextMargin configura el margen del rechazo por ventana
+// (008-001 P3): fracción 0-1 sobre context_window. 0 = sin margen.
+// Debe llamarse antes del tráfico (lectura concurrente segura después).
+func (s *Server) SetContextMargin(margin float64) {
+	s.contextMargin = margin
+}
+
+// estimatePromptTokens estima los tokens del prompt de un body crudo:
+// len/4 (~4 chars/token promedio). Estimación rough documentada (008-001
+// P2) — el margen de seguridad cubre la imprecisión.
+func estimatePromptTokens(body []byte) int {
+	return len(body) / 4
+}
+
+// exceedsContextWindow decide si un request excede la ventana de contexto
+// del modelo destino (008-001 P1/P3). Sin metadata → false (sin rechazo).
+// El margen se aplica como context_window × (1 + margin).
+func (s *Server) exceedsContextWindow(model string, promptTokens int) bool {
+	md, ok := s.modelMeta[model]
+	if !ok || md.ContextWindow <= 0 {
+		return false
+	}
+	limit := float64(md.ContextWindow) * (1 + s.contextMargin)
+	return float64(promptTokens) > limit
 }
 
 // withRequestID inyecta un id de request por request (observabilidad).
@@ -220,6 +251,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"num_messages", len(req.Messages),
 		"num_tools", len(rawTools.Tools),
 	)
+
+	// 4.5 Rechazo temprano por ventana de contexto (008-001 P1): si el
+	// prompt estimado excede la ventana del modelo (con margen), 400 sin
+	// gastar intentos de la cadena. Sin metadata → sin rechazo (P4).
+	if promptTokens := estimatePromptTokens(body); s.exceedsContextWindow(req.Model, promptTokens) {
+		s.metrics.IncRejected(clientID, "context_window")
+		msg := fmt.Sprintf("estimated prompt tokens %d exceed context window %d for model %q", promptTokens, s.modelMeta[req.Model].ContextWindow, req.Model)
+		openAIError(w, http.StatusBadRequest, msg, "invalid_request_error")
+		logger.Debug("context_window_rejected", "model", req.Model, "estimated", promptTokens)
+		return
+	}
 
 	ctx := r.Context()
 
