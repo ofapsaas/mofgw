@@ -32,6 +32,7 @@
 | 12 | Alertas/notificación al exceder budget | ⏳ FUTURO | BAJA | 008-002 spec | Solo rechazo 429 hoy; sin alerta. |
 | 13 | Persistencia de accounting entre restarts | ⏳ FUTURO | MEDIA | 006-001/006-002/008-003 | Todo en memoria — un restart pierde el histórico de sesiones/costos. Evaluar persistencia si se necesita reporting histórico. |
 | 14 | Tokenizer real vs estimación len/4 | ⏳ ACEPTADA | BAJA | 008-001 spec | Rechazo por ventana usa estimación rough con margen 0.1. Adecuado para el caso de uso (prompts gigantes). |
+| 15 | Auth sin rate limiting/anti-brute-force | ⏳ ACEPTADA | BAJA | SEC-001 P5 | No hay backoff/bloqueo tras intentos fallidos con Bearer inválido. Aceptada: proxy interno, firewalld filtra internet (verificado), tailnet confiado, hash 256-bit hace la fuerza bruta impráctica. Si se expone fuera del tailnet → re-evaluar. |
 
 ## Deuda de proceso del replanteo (no técnica)
 

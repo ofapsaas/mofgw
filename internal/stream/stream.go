@@ -186,12 +186,11 @@ func (s *Writer) Copy(events <-chan provider.StreamEvent, clientModel string) er
 	var stableID string
 	for ev := range events {
 		if ev.Err != nil {
+			// absorb.Sanitize nunca devuelve nil para err != nil
+			// (absorb.go:62-89) — mensaje genérico al cliente, detalle
+			// crudo solo al return (logs). SEC-001 P1.
 			ae := absorb.Sanitize(ev.Err)
-			msg := "upstream stream interrupted"
-			if ae != nil {
-				msg = ae.Message
-			}
-			_ = s.WriteError(msg, "upstream_error")
+			_ = s.WriteError(ae.Message, "upstream_error")
 			return ev.Err
 		}
 		if ev.Data == "[DONE]" {

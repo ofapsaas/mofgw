@@ -42,8 +42,9 @@ func TestSEC001_AgentIDTruncado(t *testing.T) {
 
 // TestSEC001_AgentTTLPurga: las entradas de agentes inactivos se purgan
 // tras un TTL. RED: hoy agentLimits nunca se limpia (memory leak lento).
-// GREEN: PurgeStaleAgents(now) elimina las entradas cuyo lastUsed es
-// anterior a now-TTL. El TTL es configurable (default 10 min).
+// GREEN: purgeStaleAgents(now) elimina las entradas cuyo lastUsed es
+// anterior a now-TTL (la purga productiva es lazy en AcquireAgent). El
+// TTL es configurable (default 10 min).
 func TestSEC001_AgentTTLPurga(t *testing.T) {
 	k := NewKeyed(map[string]ClientBudget{
 		"c1": {MaxConcurrent: 0, MaxPerAgent: 1},
@@ -65,7 +66,7 @@ func TestSEC001_AgentTTLPurga(t *testing.T) {
 
 	// Purga con now muy futuro → la entry inactiva se elimina.
 	now := time.Now().Add(30 * time.Minute)
-	k.PurgeStaleAgents(now)
+	k.purgeStaleAgents(now)
 
 	// Tras la purga, re-adquirir crea una entry NUEVA (lastUsed reseteado)
 	// → debe funcionar. Y el mapa no debe tener la entry vieja (observable
@@ -89,7 +90,7 @@ func TestSEC001_AgentTTLDefault(t *testing.T) {
 	rel()
 	// Purga con now = inicio + 11 min → entry inactiva se purga (default 10m).
 	now := time.Now().Add(11 * time.Minute)
-	k.PurgeStaleAgents(now)
+	k.purgeStaleAgents(now)
 	// Si la entry se purgó correctamente, no hay panic ni estado roto:
 	// re-adquirir funciona.
 	rel2, ok := k.AcquireAgent("c1", "agent")
