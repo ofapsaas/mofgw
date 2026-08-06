@@ -439,18 +439,57 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			for _, m := range c.Models() {
 				if !seen[m] {
 					seen[m] = true
-					models = append(models, map[string]any{
-						"id":       m,
-						"object":   "model",
-						"created":  time.Now().Unix(),
-						"owned_by": "mofgw",
-					})
+					models = append(models, s.modelCatalogEntry(m))
 				}
 			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": models})
+}
+
+// modelCatalogEntry arma el objeto /v1/models de un modelo, enriquecido
+// con la metadata declarativa (007-001) y el pricing (006-002) cuando
+// existen (007-002 P1-P3). Sin metadata/pricing → formato mínimo
+// (backward compatible, P4). Los campos extra siguen las convenciones
+// que leen opencode/openclaw (research §3): context_length,
+// max_context_length, loaded_context_length, max_completion_tokens,
+// capabilities.reasoning, thinking.levels/default.
+func (s *Server) modelCatalogEntry(model string) map[string]any {
+	entry := map[string]any{
+		"id":       model,
+		"object":   "model",
+		"created":  time.Now().Unix(),
+		"owned_by": "mofgw",
+	}
+	md, hasMeta := s.modelMeta[model]
+	if hasMeta {
+		cw := md.ContextWindow
+		entry["context_length"] = cw
+		entry["context_window"] = cw
+		entry["max_context_length"] = cw
+		entry["loaded_context_length"] = cw
+		entry["max_completion_tokens"] = md.MaxOutput
+		caps := map[string]any{"reasoning": len(md.Thinking) > 0}
+		entry["capabilities"] = caps
+		if len(md.Thinking) > 0 {
+			levels := make([]string, len(md.Thinking))
+			copy(levels, md.Thinking)
+			think := map[string]any{"levels": levels}
+			if md.ThinkingDefault != "" {
+				think["default"] = md.ThinkingDefault
+			}
+			entry["thinking"] = think
+		}
+	}
+	if p, ok := s.pricing[model]; ok {
+		entry["pricing"] = map[string]any{
+			"input_usd_per_m":     p.InputUSDPerM,
+			"output_usd_per_m":    p.OutputUSDPerM,
+			"cache_hit_usd_per_m": p.CacheHitUSDPerM,
+		}
+	}
+	return entry
 }
 
 // handleHealth es el healthcheck sin auth (loopback). Con health store

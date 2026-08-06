@@ -16,10 +16,15 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/ofapsaas/mofgw/internal/auth"
 	"github.com/ofapsaas/mofgw/internal/config"
+	"github.com/ofapsaas/mofgw/internal/metrics"
+	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/proxy"
+	"github.com/ofapsaas/mofgw/internal/router"
 )
 
 // modelsBody hace GET /v1/models con auth y parsea el body.
@@ -41,6 +46,34 @@ func modelsBody(t *testing.T, h *harness) map[string]any {
 		t.Fatalf("body no es JSON: %v", err)
 	}
 	return out
+}
+
+// buildWithModels igual que buildMultiClient pero con modelos explícitos
+// por upstream (para /v1/models con varios modelos distintos).
+func buildWithModels(t *testing.T, ups []*upstream, models []string, clientKeys ...string) *harness {
+	t.Helper()
+	h := &harness{ups: ups, key: clientKeys[0]}
+	specs := make([]router.ProviderSpec, len(ups))
+	providers := make([]provider.Provider, len(ups))
+	for i, u := range ups {
+		srv := httptest.NewServer(u.handler())
+		t.Cleanup(srv.Close)
+		cl := provider.NewClient("up"+string(rune('1'+i)), srv.URL, "sk-upstream", []string{models[i]}, 4096, nil)
+		providers[i] = cl
+		specs[i] = router.ProviderSpec{Provider: cl}
+	}
+	r := router.New(specs, 2, 0, 0, 30*1000*1000*1000, nil)
+	clients := make([]auth.Client, 0, len(clientKeys))
+	for _, k := range clientKeys {
+		clients = append(clients, auth.Client{ID: "client-" + k, KeySHA256: auth.HashKey(k)})
+	}
+	authz := auth.New(clients)
+	m := metrics.New()
+	s := proxy.New(r, providers, authz, m, nil, 10<<20, nil, nil, 0)
+	h.proxySrv = s
+	h.srv = httptest.NewServer(s.Handler())
+	t.Cleanup(h.srv.Close)
+	return h
 }
 
 // findModel busca el objeto del modelo en data[].
@@ -69,10 +102,10 @@ func findModel(t *testing.T, out map[string]any, id string) map[string]any {
 // TestRED_ModelsEnriquecido: modelo con metadata → campos de contexto y
 // capabilities presentes (C1).
 func TestRED_ModelsEnriquecido(t *testing.T) {
-	ups := upstreamOK("deepseek-v4-flash", "x")
+	ups := upstreamOK("m", "x")
 	h := buildMultiClient(t, []*upstream{ups}, "k1")
 	h.proxySrv.SetModelMetadata(map[string]config.ModelMetadata{
-		"deepseek-v4-flash": {
+		"m": {
 			ContextWindow:   1000000,
 			MaxOutput:       384000,
 			Thinking:        []string{"low", "high", "max"},
@@ -80,7 +113,7 @@ func TestRED_ModelsEnriquecido(t *testing.T) {
 		},
 	})
 
-	item := findModel(t, modelsBody(t, h), "deepseek-v4-flash")
+	item := findModel(t, modelsBody(t, h), "m")
 	if item["context_length"] != float64(1000000) {
 		t.Fatalf("context_length = %v, want 1000000", item["context_length"])
 	}
@@ -113,10 +146,10 @@ func TestRED_ModelsEnriquecido(t *testing.T) {
 // TestRED_ModelsSinMetadataMinimo: modelo sin metadata → formato mínimo,
 // sin campos extra (C2).
 func TestRED_ModelsSinMetadataMinimo(t *testing.T) {
-	ups := upstreamOK("plain-model", "x")
+	ups := upstreamOK("m", "x")
 	h := buildMultiClient(t, []*upstream{ups}, "k1")
 
-	item := findModel(t, modelsBody(t, h), "plain-model")
+	item := findModel(t, modelsBody(t, h), "m")
 	if _, ok := item["context_length"]; ok {
 		t.Fatalf("sin metadata no debe haber context_length: %v", item)
 	}
@@ -130,9 +163,9 @@ func TestRED_ModelsSinMetadataMinimo(t *testing.T) {
 
 // TestRED_ModelsPricing: modelo con pricing → pricing presente; sin → ausente (C3).
 func TestRED_ModelsPricing(t *testing.T) {
-	ups1 := upstreamOK("priced", "x")
-	ups2 := upstreamOK("unpriced", "x")
-	h := buildMultiClient(t, []*upstream{ups1, ups2}, "k1")
+	upsA := upstreamOK("priced", "x")
+	upsB := upstreamOK("unpriced", "x")
+	h := buildWithModels(t, []*upstream{upsA, upsB}, []string{"priced", "unpriced"}, "k1")
 	h.proxySrv.SetPricing(map[string]proxy.ModelPricing{
 		"priced": {InputUSDPerM: 0.14, OutputUSDPerM: 0.28, CacheHitUSDPerM: 0.028},
 	})
@@ -161,10 +194,10 @@ func TestRED_ModelsPricing(t *testing.T) {
 // TestRED_ModelsThinkingAlways: kimi con thinking ["always"] →
 // capabilities.reasoning true + levels ["always"] (C4).
 func TestRED_ModelsThinkingAlways(t *testing.T) {
-	ups := upstreamOK("kimi-k2.7-code", "x")
+	ups := upstreamOK("m", "x")
 	h := buildMultiClient(t, []*upstream{ups}, "k1")
 	h.proxySrv.SetModelMetadata(map[string]config.ModelMetadata{
-		"kimi-k2.7-code": {
+		"m": {
 			ContextWindow:   262144,
 			MaxOutput:       32768,
 			Thinking:        []string{"always"},
@@ -172,7 +205,7 @@ func TestRED_ModelsThinkingAlways(t *testing.T) {
 		},
 	})
 
-	item := findModel(t, modelsBody(t, h), "kimi-k2.7-code")
+	item := findModel(t, modelsBody(t, h), "m")
 	caps, ok := item["capabilities"].(map[string]any)
 	if !ok || caps["reasoning"] != true {
 		t.Fatalf("kimi capabilities.reasoning = %v, want true", item["capabilities"])
