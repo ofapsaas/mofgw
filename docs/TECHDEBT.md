@@ -18,7 +18,7 @@
 
 | # | Deuda | Estado | Prioridad | Origen | Descripción |
 |---|-------|--------|-----------|--------|-------------|
-| 1 | Validación externa anti-bias de reviews | ⏳ PENDIENTE | **ALTA** | 003-001→008-003 (todos los review.md) | Runtime de delegación caído durante el replanteo → todas las reviews se hicieron inline (mismo modelo que implementer). Re-ejecutar `handoff-reviewer.md` con familia de modelo distinta. BLOQUEANTE para confirmación formal de PROD. |
+| 1 | Validación externa anti-bias de reviews | ✅ CERRADA 06 Ago | — | 003-001→008-003 (todos los review.md) | El runtime de delegación se recuperó y la validación externa se ejecutó (sesión paralela, evidencias en `docs/specs/external-reviews/*.resp.json`): **7 APPROVE + 2 REQUEST CHANGES** (007-001 Major: thinking_default sin thinking; 008-003 Major: max_sessions_retained sin cablear). Ambos Majors corregidos (commit 082d10c). SEC-001 adicionalmente revisado con qwen3.7-plus (familia distinta). |
 | 2 | Budget para cliente zot/OpenClaw | ⏳ PENDIENTE (decisión Pablo) | MEDIA | 008-002 + config prod | zot consume ~16.8M tokens/26min (~USD verificable en /metrics). Budget comentado en config (cost_usd_max/tokens_max) — activar cuando se decida el límite. |
 | 3 | Pricing/metadata reales en config prod | ✅ HECHA 06 Ago | — | 006-002/007-001 + deploy | Se cableó pricing (tasas Zen) + model_metadata + context.margin 0.1 en `~/.config/mofgw/config.yaml`. Verificado: cost_usd_total vivo. |
 | 4 | deepseek-v4-flash-0731 sin pricing | ⏳ PENDIENTE (observar) | BAJA | config prod | Modelo solo en bailian directo; sin precio verificado en research → costo 0. Revisar si aparece en tráfico real. |
