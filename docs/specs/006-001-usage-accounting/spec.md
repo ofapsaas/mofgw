@@ -119,3 +119,9 @@ Estado actual del código (verificado):
   justifican.
 - Exposición de usage a clientes (headers/endpoint) — feature 007-003.
 - Budget/límites por cliente — EPIC-008.
+
+## Cambios de tests justificados
+
+- `metrics_test.go TestNamesSorted`: expectativa 8 → 11 contadores base. El
+  contrato de /metrics cambió con P3 (totales prompt/completion/total se
+  emiten siempre, en 0 si no hubo datos). Justificado por P3.
