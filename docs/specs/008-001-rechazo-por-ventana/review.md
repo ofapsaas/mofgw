@@ -45,7 +45,12 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD.
+- [x] **Validación externa ejecutada (APPROVE (0 bloqueantes, 0 mayores, 5 menores, 2 nits))** — evidencias en `docs/specs/external-reviews/008-001-rechazo-por-ventana.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
 - [ ] 008-002 (budget por cliente) — siguiente feature de EPIC-008.
 - [ ] Documentar el default de margin (0.1) en config.example.yaml y
       USER-GUIDE.
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/008-001-rechazo-por-ventana.resp.json`.

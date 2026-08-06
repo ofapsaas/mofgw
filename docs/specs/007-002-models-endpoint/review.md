@@ -45,9 +45,14 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD — aplicar
+- [x] **Validación externa ejecutada (APPROVE (0 blockers, 0 majors, 2 minors))** — evidencias en `docs/specs/external-reviews/007-002-models-endpoint.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
       handoff-reviewer.md adaptado a 007-002.
 - [ ] Deploy a producción: rebuild + reinicio mofgw.service + verificación
       `curl /v1/models` con la key real (verificación empírica end-to-end
       con el runtime) — CONDICIONADO a la validación externa.
 - [ ] 007-003 (usage para clientes) — siguiente feature del catálogo.
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/007-002-models-endpoint.resp.json`.

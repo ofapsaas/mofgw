@@ -46,8 +46,13 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD — aplicar
+- [x] **Validación externa ejecutada (REQUEST CHANGES (1 Major: thinking_default sin thinking; 3 Minor) → Major CORREGIDO)** — evidencias en `docs/specs/external-reviews/007-001-model-metadata.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
       handoff-reviewer.md adaptado a 007-001.
 - [ ] 007-002 (models-endpoint) consumirá esta metadata + pricing para
       enriquecer /v1/models — listo para spec.
 - [ ] Cablear metadata real (research §4) en config de producción — deploy.
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/007-001-model-metadata.resp.json`.
