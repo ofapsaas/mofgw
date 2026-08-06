@@ -36,7 +36,7 @@ func upstreamUsageOK(model string) *upstream {
 	return &upstream{
 		status: 200,
 		model:  model,
-		body: `{"id":"chatcmpl-cache1","object":"chat.completion","model":"` + model + `","choices":[{"index":0,"message":{"role":"assistant","content":"hola"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":80,"total_tokens":1280,"prompt_tokens_details":{"cached_tokens":1000,"cache_creation_input_tokens":200},"completion_tokens_details":{"reasoning_tokens":30}}}`,
+		body:   `{"id":"chatcmpl-cache1","object":"chat.completion","model":"` + model + `","choices":[{"index":0,"message":{"role":"assistant","content":"hola"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":80,"total_tokens":1280,"prompt_tokens_details":{"cached_tokens":1000,"cache_creation_input_tokens":200},"completion_tokens_details":{"reasoning_tokens":30}}}`,
 	}
 }
 
@@ -57,7 +57,7 @@ func upstreamStreamUsageOK(model string) *upstream {
 		model:  model,
 		body: "data: {\"id\":\"chatcmpl-s1\",\"model\":\"" + model + "\",\"choices\":[{\"delta\":{\"content\":\"ho\"}}]}\n\n" +
 			"data: {\"choices\":[]}\n\n" +
-			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":20,\"total_tokens\":520,\"prompt_tokens_details\":{\"cached_tokens\":400}}}}\n\n" +
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":20,\"total_tokens\":520,\"prompt_tokens_details\":{\"cached_tokens\":400}}}\n\n" +
 			"data: [DONE]\n\n",
 	}
 }
@@ -102,9 +102,9 @@ func TestRED_StreamRespetaIncludeUsageCliente(t *testing.T) {
 	h := build(t, []*upstream{ups}, "sk-test-1")
 
 	resp := h.chat(t, map[string]any{
-		"model":    "m",
-		"stream":   true,
-		"messages":  []map[string]string{{"role": "user", "content": "hi"}},
+		"model":          "m",
+		"stream":         true,
+		"messages":       []map[string]string{{"role": "user", "content": "hi"}},
 		"stream_options": map[string]any{"include_usage": false},
 	})
 	if resp.StatusCode != 200 {
@@ -273,6 +273,41 @@ func TestRED_NoUsageNoCrashea(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "RESPUESTA-NORMAL") {
 		t.Fatalf("respuesta del cliente no es la del upstream: %s", body)
+	}
+}
+
+// ---- P4 stream: usage capturado del chunk final SSE ----
+
+// TestE2E_StreamUsageCapturadoEnMetrics: un stream con chunk final de
+// usage (include_usage) acumula los contadores de cache en /metrics (P3
+// aplicado a streaming) — verifica CaptureUsage + recordCacheTokens.
+func TestE2E_StreamUsageCapturadoEnMetrics(t *testing.T) {
+	ups := upstreamStreamUsageOK("m")
+	h := build(t, []*upstream{ups}, "sk-test-1")
+
+	resp := h.chat(t, map[string]any{
+		"model":    "m",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+
+	gresp, err := http.Get(h.srv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("metrics: %v", err)
+	}
+	defer gresp.Body.Close()
+	body, _ := io.ReadAll(gresp.Body)
+	s := string(body)
+	// chunk final: prompt 500, cached 400 → hit 400, miss 100
+	if !strings.Contains(s, "mofgw_cache_hit_tokens_total 400") {
+		t.Fatalf("stream: cache_hit_tokens_total mal:\n%s", s)
+	}
+	if !strings.Contains(s, "mofgw_cache_miss_tokens_total 100") {
+		t.Fatalf("stream: cache_miss_tokens_total mal:\n%s", s)
 	}
 }
 
