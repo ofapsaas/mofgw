@@ -234,6 +234,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// límites por cliente/agente son fast-fail (aislamiento: un cliente
 	// que excede su budget no hace esperar a los demás).
 	clientID := auth.ClientIDFrom(r.Context())
+	// X-Session-Id: solo lectura, NUNCA upstream (008-003 I1) — se usa
+	// para correlacionar requests de una sesión lógica del runtime.
+	sessionID := r.Header.Get("X-Session-Id")
 	if s.globalLimiter != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), s.backpressureTimeout)
 		if !s.globalLimiter.Acquire(ctx) {
@@ -311,7 +314,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		providerID, streamUsage := s.handleStream(ctx, w, r, req, body, logger)
 		lastUsage = streamUsage
 		if providerID != "" {
-			s.recordCacheTokens(clientID, providerID, req.Model, streamUsage)
+			s.recordCacheTokens(clientID, sessionID, providerID, req.Model, streamUsage)
 		}
 		return
 	}
@@ -324,7 +327,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID = res.ProviderID
 	s.metrics.SetLastProvider(res.ProviderID)
-	s.recordCacheTokens(clientID, res.ProviderID, req.Model, &res.Response.Usage)
+	s.recordCacheTokens(clientID, sessionID, res.ProviderID, req.Model, &res.Response.Usage)
 	lastUsage = &res.Response.Usage
 	// headers de usage (007-003 P1): el cliente ve su consumo por request
 	s.setUsageHeaders(w.Header(), res.ProviderID, req.Model, &res.Response.Usage)
@@ -361,11 +364,12 @@ func (s *Server) setUsageHeaders(h http.Header, providerID, model string, u *pro
 
 // recordCacheTokens acumula los tokens de cache/reasoning de un request
 // en /metrics (003-001 P3), los tokens totales por cliente (006-001
-// P1-P3) y el costo estimado (006-002 P2-P3). miss = prompt - cached
-// (los proveedores OpenAI-compatibles no reportan miss explícito; el
-// estándar es prompt_tokens_details.cached_tokens). Nunca crashea con
-// usage ausente ni con modelo sin pricing.
-func (s *Server) recordCacheTokens(clientID, providerID, model string, u *provider.Usage) {
+// P1-P3), el costo estimado (006-002 P2-P3) y el registro por sesión
+// (008-003 P2). miss = prompt - cached (los proveedores
+// OpenAI-compatibles no reportan miss explícito; el estándar es
+// prompt_tokens_details.cached_tokens). Nunca crashea con usage ausente
+// ni con modelo sin pricing.
+func (s *Server) recordCacheTokens(clientID, sessionID, providerID, model string, u *provider.Usage) {
 	hit, miss, reasoning := int64(0), int64(0), int64(0)
 	prompt, completion, total := int64(0), int64(0), int64(0)
 	if u != nil {
@@ -378,9 +382,11 @@ func (s *Server) recordCacheTokens(clientID, providerID, model string, u *provid
 		completion = int64(u.CompletionTokens)
 		total = int64(u.TotalTokens)
 	}
+	cost := s.estimateCost(model, miss, completion, hit)
 	s.metrics.IncCacheTokens(providerID, model, hit, miss, reasoning)
 	s.metrics.IncUsage(clientID, providerID, model, prompt, completion, total)
-	s.metrics.IncCost(clientID, providerID, model, s.estimateCost(model, miss, completion, hit))
+	s.metrics.IncCost(clientID, providerID, model, cost)
+	s.metrics.RecordSession(clientID, sessionID, prompt, completion, total, cost, time.Now().Unix())
 }
 
 // estimateCost calcula el costo estimado en USD de un request usando la
@@ -609,9 +615,35 @@ func (s *Server) modelCatalogEntry(model string) map[string]any {
 
 // handleUsage expone los agregados de consumo del cliente autenticado
 // (007-003 P3): GET /v1/usage con auth Bearer → {client, totals,
-// by_model}. Cada cliente ve SOLO lo suyo (aislamiento por clientID).
+// by_model, sessions}. Con ?session=<id> devuelve las stats de esa sesión
+// (008-003 P3) o 404 si no existe para el cliente. Cada cliente ve SOLO
+// lo suyo (aislamiento por clientID).
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	clientID := auth.ClientIDFrom(r.Context())
+
+	// ?session=<id>: stats de una sesión (008-003 P3).
+	if session := r.URL.Query().Get("session"); session != "" {
+		snap, ok := s.metrics.SessionSnapshot(clientID, session)
+		if !ok {
+			openAIError(w, http.StatusNotFound, "session not found", "not_found_error")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session":           snap.SessionID,
+			"client":            clientID,
+			"requests":          snap.Requests,
+			"prompt_tokens":     snap.PromptTokens,
+			"completion_tokens": snap.CompletionTok,
+			"total_tokens":      snap.TotalTokens,
+			"cost_usd":          snap.CostUSD,
+			"first_request_at":  snap.FirstRequestAt,
+			"last_request_at":   snap.LastRequestAt,
+		})
+		return
+	}
+
+	// Sin query: totals del cliente + sesiones (007-003 + 008-003).
 	snap := s.metrics.SnapshotClient(clientID)
 	byModel := make([]map[string]any, 0, len(snap.ByModel))
 	for _, ms := range snap.ByModel {
@@ -621,6 +653,16 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 			"completion_tokens": ms.CompletionTokens,
 			"total_tokens":      ms.TotalTokens,
 			"cost_usd":          ms.CostUSD,
+		})
+	}
+	sessions := make([]map[string]any, 0, 8)
+	for _, ss := range s.metrics.SessionsList(clientID) {
+		sessions = append(sessions, map[string]any{
+			"id":              ss.SessionID,
+			"requests":        ss.Requests,
+			"total_tokens":    ss.TotalTokens,
+			"cost_usd":        ss.CostUSD,
+			"last_request_at": ss.LastRequestAt,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -634,6 +676,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 			"cost_usd":          snap.CostUSD,
 		},
 		"by_model": byModel,
+		"sessions": sessions,
 	})
 }
 

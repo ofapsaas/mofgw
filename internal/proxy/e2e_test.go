@@ -27,12 +27,13 @@ import (
 
 // upstream es un provider OpenAI-compatible fake (httptest).
 type upstream struct {
-	status       int    // status para /chat/completions
-	body         string // body de respuesta
-	stream       bool   // responder como SSE
-	model        string // model que el upstream "sirve"
-	gotBody      string // último body recibido
-	modelsStatus int    // status para GET /v1/models (health check); 0 = 200
+	status       int         // status para /chat/completions
+	body         string      // body de respuesta
+	stream       bool        // responder como SSE
+	model        string      // model que el upstream "sirve"
+	gotBody      string      // último body recibido
+	gotHeaders   http.Header // últimos headers recibidos (008-003 C5)
+	modelsStatus int         // status para GET /v1/models (health check); 0 = 200
 }
 
 func (u *upstream) handler() http.HandlerFunc {
@@ -43,6 +44,7 @@ func (u *upstream) handler() http.HandlerFunc {
 		}
 		raw, _ := io.ReadAll(r.Body)
 		u.gotBody = string(raw)
+		u.gotHeaders = r.Header.Clone()
 		if r.URL.Path == "/v1/models" || r.URL.Path == "/models" {
 			if u.modelsStatus >= 400 {
 				http.Error(w, "health down", u.modelsStatus)
