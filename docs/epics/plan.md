@@ -41,6 +41,8 @@ Proxy self-hosted en Go que expone **un endpoint OpenAI-compatible único** y ha
 
 **🔄 EPIC-003 (eficiencia): REPLANTEADO 06 Ago 2026.** El scope original ("cache LLM + buenas prácticas, pendiente de investigación") se expande en 4 epics con frentes independientes: EPIC-003 (cache de providers), EPIC-006 (medición tokens/costos), EPIC-007 (catálogo de capabilities), EPIC-008 (optimización de contexto). Decisión de Pablo 06 Ago: delegación total a Ofap (auto-aprobación GVR). Discovery en curso (4 investigaciones externas delegadas).
 
+**Status: Approved by Ofap (auto-aprobación GVR, delegación Pablo 06 Ago 2026 — async no-blocking) on 2026-08-06.** Discovery del replanteo: 4 investigaciones externas completadas con fuentes (precios, cache providers, thinking capabilities) + verificación empírica opencode 1.18.4 (`reasoning:false`, `context:0` para todos los modelos mofgw) → `docs/research-token-efficiency.md`.
+
 ## Epics del programa
 
 ### EPIC-001: mofgw-core — MVP del proxy transparente
