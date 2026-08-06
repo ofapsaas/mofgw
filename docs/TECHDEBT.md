@@ -30,7 +30,7 @@
 | 10 | Cache explícito Alibaba (cache_control) | ⏳ FUTURO | BAJA | 003-001 spec | Implícito ya cubre (hit rate 94-99% medido). Evaluar explícito si el hit rate baja. |
 | 11 | Budget global (suma de clientes) | ⏳ FUTURO | BAJA | 008-002 spec | Budget por cliente hoy; global no implementado. |
 | 12 | Alertas/notificación al exceder budget | ⏳ FUTURO | BAJA | 008-002 spec | Solo rechazo 429 hoy; sin alerta. |
-| 13 | Persistencia de accounting entre restarts | ⏳ FUTURO | MEDIA | 006-001/006-002/008-003 | Todo en memoria — un restart pierde el histórico de sesiones/costos. Evaluar persistencia si se necesita reporting histórico. |
+| 13 | Persistencia de accounting entre restarts | ✅ CERRADA 06 Ago | MEDIA | 006-001/006-002/008-003 | SaveState/LoadState a JSON atómico (temp+rename): contadores, rejected, cache, usage, cost, sesiones. Config `server.state_file` + `state_save_interval` (default deshabilitado). Restore rechaza versión >1; corrupto no bloquea arranque. 7 tests, -race OK, deploy con interval 10m (state.json 0600). Commit f90c0b7. |
 | 14 | Tokenizer real vs estimación len/4 | ⏳ ACEPTADA | BAJA | 008-001 spec | Rechazo por ventana usa estimación rough con margen 0.1. Adecuado para el caso de uso (prompts gigantes). |
 | 15 | Auth sin rate limiting/anti-brute-force | ⏳ ACEPTADA | BAJA | SEC-001 P5 | No hay backoff/bloqueo tras intentos fallidos con Bearer inválido. Aceptada: proxy interno, firewalld filtra internet (verificado), tailnet confiado, hash 256-bit hace la fuerza bruta impráctica. Si se expone fuera del tailnet → re-evaluar. |
 
@@ -47,6 +47,7 @@
 
 ## Cambios
 
+- 2026-08-06 16:35: #13 cerrada — persistencia implementada y deployada (commit f90c0b7).
 - 2026-08-06 16:2x: #5 verificada — 401 era stale; keys todas válidas (200). GO_2/GO_3 en 429 por cuota mensual (resets 5/14 días), cubierto por fallback. Sin acción de rotación requerida.
 - 2026-08-06 15:50: #1 completada de facto — el resp.json de 006-002 estaba truncado (finish=None, sin veredicto); hallazgo NaN/Inf de precios verificado REAL (yaml `.inf`/`.nan` pasaban `< 0`) y corregido: rechazo de precios no-finitos en config.go + test (commit de este ciclo). Review.md de las 9 features actualizados con estado de validación externa.
 - 2026-08-06: creado con la consolidación del replanteo + deuda operativa.
