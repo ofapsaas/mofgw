@@ -37,15 +37,26 @@ type Metrics struct {
 	cacheHit  map[string]int64 // "provider|model" -> cached tokens
 	cacheMiss map[string]int64 // "provider|model" -> prompt - cached
 	reasoning map[string]int64 // "provider|model" -> reasoning tokens
+
+	// usage: contadores de tokens por (client, provider, model) —
+	// 006-001-usage-accounting (P1-P3). Cardinalidad acotada por
+	// clientes configurados x providers x modelos.
+	usageMu       sync.Mutex
+	promptTokens  map[string]int64 // "client|provider|model" -> prompt tokens
+	completionTok map[string]int64 // "client|provider|model" -> completion tokens
+	totalTokens   map[string]int64 // "client|provider|model" -> total tokens
 }
 
 // New construye un registro vacío.
 func New() *Metrics {
 	m := &Metrics{
-		rejected:  make(map[string]int64),
-		cacheHit:  make(map[string]int64),
-		cacheMiss: make(map[string]int64),
-		reasoning: make(map[string]int64),
+		rejected:      make(map[string]int64),
+		cacheHit:      make(map[string]int64),
+		cacheMiss:     make(map[string]int64),
+		reasoning:     make(map[string]int64),
+		promptTokens:  make(map[string]int64),
+		completionTok: make(map[string]int64),
+		totalTokens:   make(map[string]int64),
 	}
 	m.lastProvider.Store("")
 	return m
@@ -77,6 +88,23 @@ func (m *Metrics) IncCacheTokens(provider, model string, hit, miss, reasoning in
 	m.cacheMiss[key] += miss
 	m.reasoning[key] += reasoning
 	m.tokensMu.Unlock()
+}
+
+// IncUsage acumula los tokens totales de un request por
+// (client, provider, model) — 006-001-usage-accounting (P1-P3).
+// prompt/completion/total se acumulan en sus propios contadores; el
+// llamado con 0 es válido y asegura la presencia del contador.
+// client vacío (request sin auth — no debería pasar) cae en "unknown".
+func (m *Metrics) IncUsage(client, provider, model string, prompt, completion, total int64) {
+	if client == "" {
+		client = "unknown"
+	}
+	key := client + "|" + provider + "|" + model
+	m.usageMu.Lock()
+	m.promptTokens[key] += prompt
+	m.completionTok[key] += completion
+	m.totalTokens[key] += total
+	m.usageMu.Unlock()
 }
 
 // SetLastProvider registra el provider que respondió (observabilidad).
@@ -166,6 +194,53 @@ func (m *Metrics) Render() string {
 		b.WriteString(fmt.Sprint(rows[k].miss))
 		b.WriteString(" reasoning=")
 		b.WriteString(fmt.Sprint(rows[k].reasoning))
+		b.WriteString("\n")
+	}
+	// usage por (client, provider, model): totales sin labels + línea
+	// por clave con labels (006-001 P2/P3).
+	m.usageMu.Lock()
+	type usageRow struct{ prompt, completion, total int64 }
+	usageRows := make(map[string]usageRow, len(m.promptTokens))
+	var promptTotal, completionTotal, totalTotal int64
+	for k, v := range m.promptTokens {
+		r := usageRows[k]
+		r.prompt = v
+		usageRows[k] = r
+		promptTotal += v
+	}
+	for k, v := range m.completionTok {
+		r := usageRows[k]
+		r.completion = v
+		usageRows[k] = r
+		completionTotal += v
+	}
+	for k, v := range m.totalTokens {
+		r := usageRows[k]
+		r.total = v
+		usageRows[k] = r
+		totalTotal += v
+	}
+	m.usageMu.Unlock()
+
+	write("prompt_tokens_total", fmt.Sprint(promptTotal))
+	write("completion_tokens_total", fmt.Sprint(completionTotal))
+	write("total_tokens_total", fmt.Sprint(totalTotal))
+
+	uKeys := make([]string, 0, len(usageRows))
+	for k := range usageRows {
+		uKeys = append(uKeys, k)
+	}
+	sort.Strings(uKeys)
+	for _, k := range uKeys {
+		parts := strings.SplitN(k, "|", 3)
+		label := "mofgw_usage_tokens{client=\"" + parts[0] + "\",provider=\"" + parts[1] + "\",model=\"" + parts[2] + "\"}"
+		b.WriteString(label)
+		b.WriteString(" prompt=")
+		b.WriteString(fmt.Sprint(usageRows[k].prompt))
+		b.WriteString(" completion=")
+		b.WriteString(fmt.Sprint(usageRows[k].completion))
+		b.WriteString(" total=")
+		b.WriteString(fmt.Sprint(usageRows[k].total))
 		b.WriteString("\n")
 	}
 	return b.String()
