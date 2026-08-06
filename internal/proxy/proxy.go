@@ -67,6 +67,11 @@ type Server struct {
 	// límite exacto). Default 0.1 (seteado en New).
 	contextMargin float64
 
+	// budgets: límite de consumo por clientID (008-002-budget). keyed
+	// por clientID (como están en config.clients[].ID). Inmutable tras
+	// SetBudget.
+	budgets map[string]config.BudgetConfig
+
 	// Concurrencia (004-001/004-002): global + keyed por cliente/agente.
 	globalLimiter       *limiter.Limiter
 	keyedLimiter        *limiter.Keyed
@@ -118,6 +123,32 @@ func (s *Server) SetModelMetadata(meta map[string]config.ModelMetadata) {
 // Debe llamarse antes del tráfico (lectura concurrente segura después).
 func (s *Server) SetContextMargin(margin float64) {
 	s.contextMargin = margin
+}
+
+// SetBudget configura los límites de consumo por cliente (008-002 P1).
+// Mismo contrato que SetPricing: antes del tráfico, mapa inmutable
+// después.
+func (s *Server) SetBudget(budgets map[string]config.BudgetConfig) {
+	s.budgets = budgets
+}
+
+// budgetExceeded evalúa si el consumo acumulado del cliente excede su
+// budget (008-002 P2-P4). Devuelve la razón del exceso ("" = no excede).
+// Sin budget → "". Costo y tokens del snapshot (misma fuente que
+// /v1/usage, 006-001/006-002).
+func (s *Server) budgetExceeded(clientID string) string {
+	b, ok := s.budgets[clientID]
+	if !ok {
+		return ""
+	}
+	snap := s.metrics.SnapshotClient(clientID)
+	if b.CostUSDMax > 0 && snap.CostUSD >= b.CostUSDMax {
+		return "budget_cost"
+	}
+	if b.TokensMax > 0 && snap.TotalTokens >= b.TokensMax {
+		return "budget_tokens"
+	}
+	return ""
 }
 
 // estimatePromptTokens estima los tokens del prompt de un body crudo:
@@ -260,6 +291,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		msg := fmt.Sprintf("estimated prompt tokens %d exceed context window %d for model %q", promptTokens, s.modelMeta[req.Model].ContextWindow, req.Model)
 		openAIError(w, http.StatusBadRequest, msg, "invalid_request_error")
 		logger.Debug("context_window_rejected", "model", req.Model, "estimated", promptTokens)
+		return
+	}
+
+	// 4.6 Budget por cliente (008-002 P2): si el consumo acumulado del
+	// cliente excede su límite, 429 sin tocar router ni upstream.
+	if reason := s.budgetExceeded(clientID); reason != "" {
+		s.metrics.IncRejected(clientID, reason)
+		openAIError(w, http.StatusTooManyRequests, "budget exceeded: "+reason, "rate_limit_exceeded")
+		logger.Debug("budget_rejected", "client", clientID, "reason", reason)
 		return
 	}
 

@@ -24,8 +24,9 @@ import (
 // upstreamUsageOK da prompt 1200/completion 80/cached 1000 por request →
 // con pricing 1.0, costo 0.00128 por request.
 
-// TestRED_BudgetCosto: cliente con cost_usd_max 0.01 → tras ~8 requests
-// (8 × 0.00128 = 0.01024 ≥ 0.01) → 429; antes → 200 (C1).
+// TestRED_BudgetCosto: cliente con cost_usd_max 0.01 → tras 8 requests
+// (8 × 0.00128 = 0.01024 ≥ 0.01) → el request 9 da 429 (el chequeo ve el
+// acumulado de los 8 previos); antes → 200 (C1).
 func TestRED_BudgetCosto(t *testing.T) {
 	ups := upstreamUsageOK("m")
 	h := buildMultiClient(t, []*upstream{ups}, "k1")
@@ -36,8 +37,9 @@ func TestRED_BudgetCosto(t *testing.T) {
 		"client-k1": {CostUSDMax: 0.01},
 	})
 
-	// requests 1-7: costo acumulado 0.00128..0.00896 < 0.01 → 200
-	for i := 0; i < 7; i++ {
+	// requests 1-8: costo acumulado 0.00128..0.01024 — el chequeo del
+	// request N ve los N-1 previos. El request 8 ve 0.00896 < 0.01 → 200.
+	for i := 0; i < 8; i++ {
 		resp := h.chatAs(t, "k1", map[string]any{
 			"model":    "m",
 			"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -47,13 +49,13 @@ func TestRED_BudgetCosto(t *testing.T) {
 		}
 		io.Copy(io.Discard, resp.Body)
 	}
-	// request 8: costo 0.01024 ≥ 0.01 → 429
+	// request 9: ve el acumulado 0.01024 ≥ 0.01 → 429
 	resp := h.chatAs(t, "k1", map[string]any{
 		"model":    "m",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	})
 	if resp.StatusCode != 429 {
-		t.Fatalf("request 8: status = %d, want 429 (budget de costo excedido)", resp.StatusCode)
+		t.Fatalf("request 9: status = %d, want 429 (budget de costo excedido)", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	var errBody map[string]any
@@ -65,7 +67,7 @@ func TestRED_BudgetCosto(t *testing.T) {
 }
 
 // TestRED_BudgetTokens: cliente con tokens_max 3000 → tras 3 requests
-// (3 × 1280 = 3840 ≥ 3000) → 429; antes → 200 (C2).
+// (3 × 1280 = 3840 ≥ 3000) → el request 4 da 429; antes → 200 (C2).
 func TestRED_BudgetTokens(t *testing.T) {
 	ups := upstreamUsageOK("m")
 	h := buildMultiClient(t, []*upstream{ups}, "k1")
@@ -73,7 +75,7 @@ func TestRED_BudgetTokens(t *testing.T) {
 		"client-k1": {TokensMax: 3000},
 	})
 
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ {
 		resp := h.chatAs(t, "k1", map[string]any{
 			"model":    "m",
 			"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -83,13 +85,13 @@ func TestRED_BudgetTokens(t *testing.T) {
 		}
 		io.Copy(io.Discard, resp.Body)
 	}
-	// request 3: total 3840 ≥ 3000 → 429
+	// request 4: ve el acumulado 3840 ≥ 3000 → 429
 	resp := h.chatAs(t, "k1", map[string]any{
 		"model":    "m",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	})
 	if resp.StatusCode != 429 {
-		t.Fatalf("request 3: status = %d, want 429 (budget de tokens excedido)", resp.StatusCode)
+		t.Fatalf("request 4: status = %d, want 429 (budget de tokens excedido)", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
 }
