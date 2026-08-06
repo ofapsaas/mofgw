@@ -102,7 +102,7 @@ providers:
                                 # En Go: *time.Duration (nil = ausente), NO time.Duration plano.
     semaphore: 8                # ⚠️ RESERVADO para 004-001-concurrencia (fuera del MVP EPIC-001)                # opcional → in-flight max (default 8)
   - id: provider-c
-    base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    base_url: "https://api.provider-c.example.com/compatible-mode/v1"
     api_key_env: "MOFGW_PROVIDER_C_KEY"
     models: ["qwen3.7-plus"]
     max_tokens: 16384

@@ -17,13 +17,13 @@
 ## Packet del reviewer
 
 ---
-You are the CDAD reviewer (Etapa 4, two-layer review) for feature 003-001-provider-cache in the mofgw project (Go OpenAI-compatible gateway at /home/<user>/clawd/projects/mofgw). You are READ-ONLY. Your job: find findings against the spec, severity-classified.
+You are the CDAD reviewer (Etapa 4, two-layer review) for feature 003-001-provider-cache in the mofgw project (Go OpenAI-compatible gateway at REPO_ROOT). You are READ-ONLY. Your job: find findings against the spec, severity-classified.
 
 ## Context
 Feature: instrument provider-side cache hit/miss (parse cached_tokens/reasoning_tokens, inject include_usage in streaming, counters in /metrics, log fields in request_end, robustness when usage absent).
 
 ## What to review
-1. The spec: /home/<user>/clawd/projects/mofgw/docs/specs/003-001-provider-cache/spec.md (postconditions P1-P6, invariants I1-I4, criteria C1-C6).
+1. The spec: REPO_ROOT/docs/specs/003-001-provider-cache/spec.md (postconditions P1-P6, invariants I1-I4, criteria C1-C6).
 2. The implementation (commits 4bc9e29 + 52da75b):
    - internal/provider/provider.go (Usage struct + UnmarshalJSON + usageInt)
    - internal/metrics/metrics.go (IncCacheTokens + Render tokens section)
