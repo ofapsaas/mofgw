@@ -270,10 +270,21 @@ mofgw_reasoning_tokens_total      # tokens de razonamiento (thinking), facturado
 mofgw_cache_tokens{provider="...",model="..."} hit=.. miss=.. reasoning=..   # desagregado
 ```
 
+Desde 006-001 (accounting por cliente):
+
+```
+mofgw_prompt_tokens_total         # tokens de entrada acumulados (todos los clientes)
+mofgw_completion_tokens_total     # tokens de salida acumulados
+mofgw_total_tokens_total          # prompt + completion acumulados
+mofgw_usage_tokens{client="...",provider="...",model="..."} prompt=.. completion=.. total=..   # por cliente
+```
+
 > El cache de prompt es **automático** del lado del provider (DeepSeek,
 > Alibaba, MiniMax, GLM, Kimi y el gateway zen lo activan sin opt-in). En
 > streaming, mofgw garantiza `stream_options.include_usage=true` para que
-> el chunk final traiga el usage con los campos de cache.
+> el chunk final traiga el usage con los campos de cache. El accounting por
+> cliente usa el clientID autenticado (001-007) — la base para costos
+> (006-002) y budgets (EPIC-008).
 
 ### Autenticación
 
