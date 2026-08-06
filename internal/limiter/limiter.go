@@ -95,6 +95,11 @@ type Keyed struct {
 	// agentTTL: inactividad máxima de una entry de agente antes de
 	// purgarse (SEC-001 P2). Default 10 min.
 	agentTTL time.Duration
+
+	// lastPurge: cuándo se hizo la última purga (SEC-001 P2). La purga
+	// es lazy: se ejecuta en AcquireAgent con frecuencia acotada
+	// (intervalo = agentTTL/2) para no barrer el mapa en cada request.
+	lastPurge time.Time
 }
 
 // agentEntry es una entry del mapa de agentes: el limiter + cuándo se
@@ -202,6 +207,18 @@ func (k *Keyed) AcquireAgent(clientID, agentID string) (release func(), ok bool)
 	}
 	if len(agentID) > maxAgentIDLen {
 		agentID = agentID[:maxAgentIDLen]
+	}
+	// Purga lazy (SEC-001 P2): con frecuencia acotada (agentTTL/2) para
+	// acotar la cardinalidad de agentLimits sin barrer el mapa en cada
+	// request. Elimina las entries inactivas por más del TTL.
+	if time.Since(k.lastPurge) > k.agentTTL/2 {
+		now := time.Now()
+		for key, entry := range k.agentLimits {
+			if now.Sub(entry.lastUsed) > k.agentTTL {
+				delete(k.agentLimits, key)
+			}
+		}
+		k.lastPurge = time.Now()
 	}
 	key := agentKey(clientID, agentID)
 	entry, lExists := k.agentLimits[key]
