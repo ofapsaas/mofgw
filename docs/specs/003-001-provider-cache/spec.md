@@ -115,3 +115,16 @@ Estado actual del código (verificado):
 - Exposición de capabilities en /v1/models — feature 007-001/007-002 (EPIC-007).
 - Normalización de campos DeepSeek directos (`prompt_cache_hit_tokens`) —
   irrelevante hoy (vamos vía Zen); se cubre si algún día apuntamos directo.
+
+## Cambios de tests justificados
+
+- `metrics_test.go TestNamesSorted`: expectativa 5 → 8 contadores base. El
+  contrato de /metrics cambió con P3 (los totales de cache se emiten siempre,
+  en 0 si no hubo datos). Justificado por P3.
+- `e2e_003001_test.go upstreamStreamUsageOK` (RED): fixture de chunk final
+  con JSON malformado (`}}}}` extra) — corregido durante GREEN. El bug era del
+  fixture (test-writer), no de la implementación: CaptureUsage parsea
+  correctamente un chunk bien formado (verificado en aislamiento y E2E).
+- `e2e_003001_test.go TestE2E_StreamUsageCapturadoEnMetrics`: test agregado
+  post-GREEN para cubrir P3 aplicado a streaming (el RED original cubría solo
+  no-stream; el spec P4/P3 exigen ambos).
