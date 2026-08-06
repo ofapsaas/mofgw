@@ -112,7 +112,7 @@ func Build(level slog.Level, logFile string, stdoutWriter io.Writer) (*slog.Logg
 		return slog.New(stdoutHandler), nopCloser{}, nil
 	}
 
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
 	if err != nil {
 		return nil, nopCloser{}, err
 	}

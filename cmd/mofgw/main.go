@@ -181,13 +181,13 @@ func run() error {
 	if cfg.Context.Margin >= 0 {
 		srv.SetContextMargin(cfg.Context.Margin)
 	}
-
-	httpServer := &http.Server{
-		Addr:         cfg.Server.Addr,
-		Handler:      srv.Handler(),
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
+	if cfg.Server.MaxSessionsRetained > 0 {
+		// 008-003 P4: tope de retención de sesiones desde config
+		// (external review 008-003: setter era dead code sin wiring).
+		m.SetMaxSessionsRetained(cfg.Server.MaxSessionsRetained)
 	}
+
+	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 
 	// Shutdown limpio en SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -212,6 +212,21 @@ func run() error {
 		}
 	}
 	return nil
+}
+
+// newHTTPServer construye el http.Server con los timeouts del config y
+// los hardening de SEC-001 P3: ReadHeaderTimeout (5s, mitiga Slowloris)
+// y MaxHeaderBytes (1MB, explícito). Extraído para testear la
+// configuración de seguridad.
+func newHTTPServer(sc config.ServerConfig, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              sc.Addr,
+		Handler:           handler,
+		ReadTimeout:       sc.ReadTimeout,
+		WriteTimeout:      sc.WriteTimeout,
+		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 // anyClientLimit reporta si algún cliente del config tiene límites de
