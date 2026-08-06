@@ -125,6 +125,41 @@ func TestRED_StreamRespetaIncludeUsageCliente(t *testing.T) {
 	}
 }
 
+// TestRED_StreamCompletaIncludeUsageEnSOExistente: si el cliente manda
+// stream_options SIN include_usage (ej. solo max_tokens), se agrega
+// include_usage=true preservando los demás campos (P2, H2 review).
+func TestRED_StreamCompletaIncludeUsageEnSOExistente(t *testing.T) {
+	ups := upstreamStreamUsageOK("m")
+	h := build(t, []*upstream{ups}, "sk-test-1")
+
+	resp := h.chat(t, map[string]any{
+		"model":          "m",
+		"stream":         true,
+		"messages":       []map[string]string{{"role": "user", "content": "hi"}},
+		"stream_options": map[string]any{"max_tokens": 123},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(ups.gotBody), &got); err != nil {
+		t.Fatalf("body upstream no es JSON: %v", err)
+	}
+	so, ok := got["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("sin stream_options en body upstream: %s", ups.gotBody)
+	}
+	if so["include_usage"] != true {
+		t.Fatalf("include_usage = %v, want true (agregado al SO existente)", so["include_usage"])
+	}
+	// el resto del stream_options del cliente se preserva (transparencia)
+	if so["max_tokens"] != float64(123) {
+		t.Fatalf("max_tokens = %v, want 123 (preservado)", so["max_tokens"])
+	}
+}
+
 // TestRED_NoStreamNoInyectaIncludeUsage: un request NO-stream no se
 // modifica (la inyección es solo para streaming, P2/P5).
 func TestRED_NoStreamNoInyectaIncludeUsage(t *testing.T) {

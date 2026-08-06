@@ -372,9 +372,14 @@ func clampBody(body []byte, providerMax int64) ([]byte, error) {
 // ensureIncludeUsage garantiza stream_options.include_usage=true en un
 // body de STREAMING cuando el cliente no lo especificó (003-001 P2).
 // Esto hace que el chunk final del SSE traiga el objeto usage (incluidos
-// los campos de cache) aunque el cliente no lo pidió. Si el cliente ya
-// mandó stream_options (con include_usage true o false), se respeta tal
-// cual — el proxy no pisa decisiones explícitas del cliente. Para
+// los campos de cache) aunque el cliente no lo pidió.
+//
+// Semántica: si el cliente mandó stream_options CON include_usage (true o
+// false), se respeta tal cual (el proxy no pisa decisiones explícitas).
+// Si el cliente mandó stream_options SIN include_usage (ej. solo otros
+// campos), se agrega include_usage=true preservando el resto (H2 review:
+// P2 exige include_usage salvo que el cliente lo haya especificado).
+// Si no mandó stream_options, se crea con include_usage=true. Para
 // requests no-stream no aplica (nunca se llama). Preserva el resto del
 // body byte a byte (patrón clamp: re-encode con SetEscapeHTML(false)).
 func ensureIncludeUsage(body []byte) ([]byte, error) {
@@ -382,10 +387,25 @@ func ensureIncludeUsage(body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, fmt.Errorf("include_usage: body inválido: %w", err)
 	}
-	if _, ok := m["stream_options"]; ok {
-		return body, nil // el cliente ya lo especificó: respetar
+	rawSO, hasSO := m["stream_options"]
+	if hasSO && len(rawSO) > 0 && string(rawSO) != "null" {
+		var so map[string]json.RawMessage
+		if err := json.Unmarshal(rawSO, &so); err != nil {
+			return nil, fmt.Errorf("include_usage: stream_options inválido: %w", err)
+		}
+		if _, ok := so["include_usage"]; ok {
+			return body, nil // el cliente lo especificó: respetar (true o false)
+		}
+		// stream_options sin include_usage: agregarlo preservando el resto
+		so["include_usage"] = json.RawMessage(`true`)
+		merged, err := json.Marshal(so)
+		if err != nil {
+			return nil, fmt.Errorf("include_usage: re-encode stream_options: %w", err)
+		}
+		m["stream_options"] = merged
+	} else {
+		m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
 	}
-	m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)

@@ -316,10 +316,17 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *htt
 		return "", nil
 	}
 	events := stream.CaptureUsage(res.Events)
+	var usage *provider.Usage
 	if err := sw.Copy(events.Events, req.Model); err != nil {
 		logger.Warn("stream interrumpido", "provider", res.Provider.ID(), "err", err)
+	} else {
+		// Solo leer usage en path limpio: el stream se drenó completo
+		// (close del canal sincroniza las escrituras de la goroutine).
+		// Si Copy retornó por error, la goroutine puede seguir
+		// escribiendo cs.usage → no leer (evita race, H1 review).
+		usage = events.Usage()
 	}
-	return res.Provider.ID(), events.Usage()
+	return res.Provider.ID(), usage
 }
 
 // handleChainError traduce errores del router a respuesta
