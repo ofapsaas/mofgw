@@ -261,7 +261,19 @@ mofgw_cooldown_hits_total
 mofgw_last_provider   # solo si hubo al menos una respuesta
 ```
 
-> Son contadores mínimos del MVP; el formato Prometheus completo (005-001) es roadmap.
+Desde 003-001 (instrumentación de cache de providers) también:
+
+```
+mofgw_cache_hit_tokens_total      # tokens servidos del cache de prompt del provider
+mofgw_cache_miss_tokens_total     # tokens procesados frescos (prompt - cached)
+mofgw_reasoning_tokens_total      # tokens de razonamiento (thinking), facturados como output
+mofgw_cache_tokens{provider="...",model="..."} hit=.. miss=.. reasoning=..   # desagregado
+```
+
+> El cache de prompt es **automático** del lado del provider (DeepSeek,
+> Alibaba, MiniMax, GLM, Kimi y el gateway zen lo activan sin opt-in). En
+> streaming, mofgw garantiza `stream_options.include_usage=true` para que
+> el chunk final traiga el usage con los campos de cache.
 
 ### Autenticación
 
