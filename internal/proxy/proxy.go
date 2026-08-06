@@ -193,7 +193,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		providerID, streamUsage := s.handleStream(ctx, w, r, req, body, logger)
 		lastUsage = streamUsage
 		if providerID != "" {
-			s.recordCacheTokens(providerID, req.Model, streamUsage)
+			s.recordCacheTokens(clientID, providerID, req.Model, streamUsage)
 		}
 		return
 	}
@@ -206,7 +206,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID = res.ProviderID
 	s.metrics.SetLastProvider(res.ProviderID)
-	s.recordCacheTokens(res.ProviderID, req.Model, &res.Response.Usage)
+	s.recordCacheTokens(clientID, res.ProviderID, req.Model, &res.Response.Usage)
 	lastUsage = &res.Response.Usage
 	// reescribir model → el que pidió el cliente (no el alias interno)
 	out := rewriteResponseModel(res.Raw, req.Model)
@@ -216,34 +216,59 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordCacheTokens acumula los tokens de cache/reasoning de un request
-// en /metrics (003-001 P3). miss = prompt - cached (los proveedores
-// OpenAI-compatibles no reportan miss explícito; el estándar es
+// en /metrics (003-001 P3) y los tokens totales por cliente (006-001
+// P1-P3). miss = prompt - cached (los proveedores OpenAI-compatibles no
+// reportan miss explícito; el estándar es
 // prompt_tokens_details.cached_tokens). Nunca crashea con usage ausente.
-func (s *Server) recordCacheTokens(providerID, model string, u *provider.Usage) {
+func (s *Server) recordCacheTokens(clientID, providerID, model string, u *provider.Usage) {
 	hit, miss, reasoning := int64(0), int64(0), int64(0)
+	prompt, completion, total := int64(0), int64(0), int64(0)
 	if u != nil {
 		hit = int64(u.CachedTokens)
 		if d := int64(u.PromptTokens - u.CachedTokens); d > 0 {
 			miss = d
 		}
 		reasoning = int64(u.ReasoningTokens)
+		prompt = int64(u.PromptTokens)
+		completion = int64(u.CompletionTokens)
+		total = int64(u.TotalTokens)
 	}
 	s.metrics.IncCacheTokens(providerID, model, hit, miss, reasoning)
+	s.metrics.IncUsage(clientID, providerID, model, prompt, completion, total)
 }
 
 // emitRequestEnd loguea el evento request_end al finalizar un handler.
-// Incluye los campos de cache/reasoning (003-001 P4) cuando el usage
-// upstream está disponible.
+// Incluye los campos de cache/reasoning (003-001 P4) y los totales
+// prompt/completion/total (006-001 P4) cuando el usage upstream está
+// disponible.
 func (s *Server) emitRequestEnd(logger *slog.Logger, start time.Time, statusCode int, providerID, model string, u *provider.Usage) {
 	logger.Debug("request_end",
 		"status_code", statusCode,
 		"duration_ms", time.Since(start).Milliseconds(),
 		"provider", providerID,
 		"model", model,
+		"prompt_tokens", tokensOrZero(u, "prompt"),
+		"completion_tokens", tokensOrZero(u, "completion"),
+		"total_tokens", tokensOrZero(u, "total"),
 		"cache_hit_tokens", cacheTokensOrZero(u, true),
 		"cache_miss_tokens", cacheTokensOrZero(u, false),
 		"reasoning_tokens", reasoningTokensOrZero(u),
 	)
+}
+
+// tokensOrZero devuelve prompt/completion/total del usage (0 si nil).
+func tokensOrZero(u *provider.Usage, kind string) int {
+	if u == nil {
+		return 0
+	}
+	switch kind {
+	case "prompt":
+		return u.PromptTokens
+	case "completion":
+		return u.CompletionTokens
+	default:
+		return u.TotalTokens
+	}
 }
 
 func cacheTokensOrZero(u *provider.Usage, hit bool) int {
