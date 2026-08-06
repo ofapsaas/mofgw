@@ -37,7 +37,9 @@ Proxy self-hosted en Go que expone **un endpoint OpenAI-compatible único** y ha
 
 **✅ APROBADO por Pablo el 2026-08-04** (sesión Telegram) — con auth in-scope del MVP (feature 001-007-auth).
 
-**Próximo paso (heartbeat):** escribir spec 001-007-auth + implementar EPIC-001 (mofgw-core).
+**✅ EPIC-001 (core), EPIC-002 (resiliencia), EPIC-004 (escala), EPIC-005 (ops): DONE** — verificado 06 Ago 2026 (README + suite 83+ tests `-race` verde + servicios systemd desplegados).
+
+**🔄 EPIC-003 (eficiencia): REPLANTEADO 06 Ago 2026.** El scope original ("cache LLM + buenas prácticas, pendiente de investigación") se expande en 4 epics con frentes independientes: EPIC-003 (cache de providers), EPIC-006 (medición tokens/costos), EPIC-007 (catálogo de capabilities), EPIC-008 (optimización de contexto). Decisión de Pablo 06 Ago: delegación total a Ofap (auto-aprobación GVR). Discovery en curso (4 investigaciones externas delegadas).
 
 ## Epics del programa
 
@@ -109,12 +111,56 @@ Usado por: 001-003, 001-004, 001-005, 001-006.
 
 ---
 
-### EPIC-003: mofgw-eficiencia — Cache LLM + buenas prácticas
-**Resumen:** Optimizaciones de eficiencia: cache de prompts/respuestas LLM y buenas prácticas básicas (keep-alive, compresión, etc.). **Requiere investigación previa** (subagente en curso) — solo features con valor real demostrado.
+### EPIC-003: mofgw-eficiencia — Cache de providers
+**Resumen:** Habilitar y aprovechar el cache de prompt/contexto de los providers (cache KV automático por prefijo). El objetivo NO es construir cache propio sino: (a) garantizar que mofgw no rompe la cacheabilidad (ya verificado: clamp preserva el body byte a byte, no inyecta contenido dinámico), (b) verificar qué providers de la cadena reportan cache hits y en qué campo, (c) instrumentar hit/miss para saber cuánto ahorramos.
 
-**In scope:** cache de prompts (prefix/prompt caching), keep-alive, reuso de conexiones, config de timeouts óptimos. **Out of scope:** cache de respuestas si no aporta, compresión agresiva, features especulativas.
+**In scope:** verificación de soporte de cache por provider (automático vs explícito tipo cache_control), forward correcto del request (no romper prefijo estable), reporte de cache hit/miss en usage/logs/metrics. **Out of scope:** semantic cache propio en mofgw, cache de respuestas.
 
-**Nota:** la decomposición de este epic se completa DESPUÉS de la investigación de arquitectura (pendiente research-architecture.md).
+**Decomposición en features:**
+| # | Feature ID | Descripción | Dependencias | Paralelizable |
+|---|-----------|------------------------|--------------|---------------|
+| 1 | 003-001-provider-cache | Verificar soporte + instrumentar cache hit/miss por provider/modelo | investigación | Sí |
+
+---
+
+### EPIC-006: mofgw-observabilidad — Medición de tokens y costos
+**Resumen:** Contabilizar no solo cantidad sino también costo de tokens por proveedor y modelo. Sin medición no hay optimización: esta es la base de los demás epics.
+
+**In scope:** usage accounting (tokens por request desde el usage del provider, agregados por cliente/modelo/provider), tablas de precios por modelo (config YAML), cálculo de costo estimado por request y por período, exposición en /metrics. **Out of scope:** alerting, dashboard.
+
+**Decomposición en features:**
+| # | Feature ID | Descripción | Dependencias | Paralelizable |
+|---|-----------|------------------------|--------------|---------------|
+| 1 | 006-001-usage-accounting | Acumular tokens (prompt/completion/cache) por request, agregados por cliente/modelo/provider | investigación | No |
+| 2 | 006-002-costos | Tabla de precios configurable + costo estimado por request/día | 006-001 | Sí |
+
+---
+
+### EPIC-007: mofgw-catalogo — Capabilities de modelos para clientes
+**Resumen:** Enriquecer la info que los runtimes (opencode, openclaw) obtienen de mofgw: capacidades de thinking (low/high/max), tamaño de contexto por modelo, tokens/cache consumidos. Hoy /v1/models devuelve solo `{id, object, created, owned_by}` — los clientes no pueden elegir modelo ni optimizar reasoning effort.
+
+**In scope:** metadata de modelo en config (context_window, max_output, thinking levels, pricing), /v1/models enriquecido, exposición de usage a clientes (headers/endpoint). **Out of scope:** policy de enrutamiento por modelo (futuro).
+
+**Decomposición en features:**
+| # | Feature ID | Descripción | Dependencias | Paralelizable |
+|---|-----------|------------------------|--------------|---------------|
+| 1 | 007-001-model-metadata | Modelo de datos de modelo (context_window, max_output, thinking, pricing) en config | 006-001 | No |
+| 2 | 007-002-models-endpoint | /v1/models enriquecido compatible con lo que opencode/openclaw leen | 007-001 | No |
+| 3 | 007-003-usage-para-clientes | Exponer tokens/costo/cache consumido por cliente (headers o endpoint) | 006-001 | Sí |
+
+---
+
+### EPIC-008: mofgw-contexto — Optimización de contexto
+**Resumen:** Nivel más complejo de medición y optimización: budget de contexto por cliente, rechazo temprano de requests que excedan la ventana (hoy se van upstream y queman intentos de la cadena), stats por sesión. Depende de 006 (medición) y 007 (ventanas conocidas).
+
+**In scope:** budget por cliente, rechazo temprano por ventana, stats por sesión. **Out of scope:** reescritura/compresión de prompts (vive en los runtimes).
+
+**Decomposición en features:**
+| # | Feature ID | Descripción | Dependencias | Paralelizable |
+|---|-----------|------------------------|--------------|---------------|
+| 1 | 008-001-rechazo-por-ventana | Rechazo temprano (400) de requests que excedan la ventana del modelo destino | 007-001 | No |
+| 2 | 008-002-budget-por-cliente | Límite de tokens/costo por cliente por período | 006-002 | No |
+| 3 | 008-003-stats-por-sesion | Correlación de requests por sesión + stats de contexto | 006-001 | Sí |
 
 ---
 
@@ -152,15 +198,24 @@ Usado por: 001-003, 001-004, 001-005, 001-006.
 EPIC-001 (core/MVP) → EPIC-002 (resiliencia) → EPIC-005 (ops/metrics) → EPIC-004 (escala) → EPIC-003 (eficiencia)
 ```
 
-Racional: el MVP da el reemplazo funcional de omniroute. Resiliencia es el principio rector (transparencia total). Metrics antes que escala porque "lo que no se mide no se mejora". Escala antes que eficiencia porque la carga multi-agente es requisito explícito de Pablo. Eficiencia al final porque depende de la investigación y aporta optimización, no funcionalidad.
+**Actualizado 06 Ago 2026:** 001/002/004/005 done. El replanteo de eficiencia arranca en este orden:
+
+```
+EPIC-003 (cache providers — rápido, primero por decisión Pablo) → EPIC-006 (medición — la base real) → EPIC-007 (catálogo) → EPIC-008 (contexto — el más complejo, depende de todos)
+```
+
+Racional: cache primero porque es rápido y la decisión de Pablo es avanzar en ese orden. Medición segundo porque sin datos no hay optimización real. Catálogo tercero porque da valor a los runtimes (pueden elegir modelo). Contexto al final porque depende de medición (006), ventanas conocidas (007) y budget (006-002).
 
 ## Criterios de aceptación del programa completo
 
-- [ ] Los 5 epics están done.
+- [ ] Los 8 epics están done (001-008).
 - [ ] E2E integral: OpenClaw (sesiones, crons, sesiones aisladas) corriendo contra mofgw en 3369, sin omniroute, sin fallbacks nativos de OpenClaw, durante 48h sin un solo error visible al cliente.
 - [ ] omniroute.service deshabilitado, ~1GB RAM liberada.
 - [ ] Métricas en Prometheus muestran fallbacks y cooldowns en acción.
 - [ ] 10+ agentes clientes concurrentes sin degradación.
+- [ ] (Nuevo 06 Ago) /metrics contabiliza tokens y costo por cliente/modelo/provider.
+- [ ] (Nuevo 06 Ago) /v1/models expone capabilities (context window, max_output, thinking) y opencode/openclaw las consumen.
+- [ ] (Nuevo 06 Ago) Requests que exceden la ventana de contexto se rechazan temprano sin quemar intentos de la cadena.
 
 ## Stakeholders
 
@@ -171,3 +226,4 @@ Racional: el MVP da el reemplazo funcional de omniroute. Resiliencia es el princ
 ## Cambios al plan
 
 - 2026-08-03: Plan inicial creado. Investigación de arquitectura en curso (subagente). La decomposición de EPIC-003 queda pendiente de research-architecture.md.
+- 2026-08-06: EPIC-001/002/004/005 marcados DONE (verificado en README + suite). EPIC-003 replanteado: cache de providers (003-001) + nuevos EPIC-006 (medición), EPIC-007 (catálogo), EPIC-008 (contexto). Decisión Pablo: delegación total a Ofap (auto-aprobación GVR). Discovery en curso.
