@@ -43,6 +43,8 @@ Proxy self-hosted en Go que expone **un endpoint OpenAI-compatible único** y ha
 
 **Status: Approved by Ofap (auto-aprobación GVR, delegación Pablo 06 Ago 2026 — async no-blocking) on 2026-08-06.** Discovery del replanteo: 4 investigaciones externas completadas con fuentes (precios, cache providers, thinking capabilities) + verificación empírica opencode 1.18.4 (`reasoning:false`, `context:0` para todos los modelos mofgw) → `docs/research-token-efficiency.md`.
 
+**✅ REPLANTEO COMPLETO + DEPLOYADO (06 Ago):** EPIC-003 (cache), EPIC-006 (medición), EPIC-007 (catálogo), EPIC-008 (contexto) — 9/9 features done (spec→audit→RED→GREEN→review cada una), suite 13 paquetes `-race` verde, deploy a producción verificado E2E (medición viva: cache_hit 96.7%). Pendientes: validación externa anti-bias (runtime de delegación estuvo caído toda la sesión) + cablear pricing/metadata reales en config de producción.
+
 ## Epics del programa
 
 ### EPIC-001: mofgw-core — MVP del proxy transparente
