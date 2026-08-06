@@ -28,7 +28,9 @@
 package router
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -367,6 +369,32 @@ func clampBody(body []byte, providerMax int64) ([]byte, error) {
 	return clamp.Request(body, providerMax)
 }
 
+// ensureIncludeUsage garantiza stream_options.include_usage=true en un
+// body de STREAMING cuando el cliente no lo especificó (003-001 P2).
+// Esto hace que el chunk final del SSE traiga el objeto usage (incluidos
+// los campos de cache) aunque el cliente no lo pidió. Si el cliente ya
+// mandó stream_options (con include_usage true o false), se respeta tal
+// cual — el proxy no pisa decisiones explícitas del cliente. Para
+// requests no-stream no aplica (nunca se llama). Preserva el resto del
+// body byte a byte (patrón clamp: re-encode con SetEscapeHTML(false)).
+func ensureIncludeUsage(body []byte) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("include_usage: body inválido: %w", err)
+	}
+	if _, ok := m["stream_options"]; ok {
+		return body, nil // el cliente ya lo especificó: respetar
+	}
+	m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, fmt.Errorf("include_usage: re-encode: %w", err)
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
+}
+
 // classify decide si un error de intento es retryable (se reintenta el
 // mismo provider o se prueba el siguiente) o no-retryable (se responde
 // al cliente ya).
@@ -556,6 +584,12 @@ type StreamResult struct {
 // provider (con reintentos 002-001 sobre el mismo). El cliente solo ve
 // el primer intento que produce un primer byte.
 func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []byte) (*StreamResult, error) {
+	// 003-001 P2: garantizar include_usage en streaming para que el chunk
+	// final traiga usage (incluidos campos de cache). No aplica a no-stream.
+	body, err := ensureIncludeUsage(body)
+	if err != nil {
+		return nil, &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error()}
+	}
 	ready, err := r.resolveReady(ctx, req.Model)
 	if err != nil {
 		return nil, err

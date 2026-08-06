@@ -87,11 +87,66 @@ type ChatResponse struct {
 	Created int64    `json:"created"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
-	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage   Usage    `json:"usage"`
+}
+
+// Usage agrupa los contadores de tokens de un response. Además de los
+// campos estándar (prompt/completion/total), expone los campos de cache
+// de providers (003-001): CachedTokens y CacheCreationTokens provienen
+// de usage.prompt_tokens_details, ReasoningTokens de
+// usage.completion_tokens_details. El parseo es tolerante: campos
+// ausentes, null o no numéricos → 0, sin error.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	// 003-001: campos de cache/reasoning (anidados en el JSON upstream,
+	// aplanados acá para observabilidad).
+	CachedTokens        int `json:"-"`
+	CacheCreationTokens int `json:"-"`
+	ReasoningTokens     int `json:"-"`
+}
+
+// UnmarshalJSON parsea usage con los campos anidados de cache (formato
+// OpenAI estándar que devuelven zen y bailian) de forma tolerante.
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type plain Usage
+	var p struct {
+		plain
+		PromptTokensDetails *struct {
+			CachedTokens        json.RawMessage `json:"cached_tokens"`
+			CacheCreationTokens json.RawMessage `json:"cache_creation_input_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionTokensDetails *struct {
+			ReasoningTokens json.RawMessage `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*u = Usage(p.plain)
+	if p.PromptTokensDetails != nil {
+		u.CachedTokens = usageInt(p.PromptTokensDetails.CachedTokens)
+		u.CacheCreationTokens = usageInt(p.PromptTokensDetails.CacheCreationTokens)
+	}
+	if p.CompletionTokensDetails != nil {
+		u.ReasoningTokens = usageInt(p.CompletionTokensDetails.ReasoningTokens)
+	}
+	return nil
+}
+
+// usageInt convierte un RawMessage a int tolerante: ausente/null/no
+// numérico → 0.
+func usageInt(raw json.RawMessage) int {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0
+	}
+	return n
 }
 
 // CompleteResult ata la respuesta parseada al body crudo upstream.
@@ -114,8 +169,8 @@ type StreamEvent struct {
 // sin exponer keys ni URLs internas al cliente.
 type ErrUpstream struct {
 	StatusCode int
-	Type       string // "upstream_error" | "invalid_request_error" | "timeout" | "network"
-	Message    string // saneado: sin keys ni URLs internas
+	Type       string        // "upstream_error" | "invalid_request_error" | "timeout" | "network"
+	Message    string        // saneado: sin keys ni URLs internas
 	RetryAfter time.Duration // del header Retry-After de un 429 (0 = ausente)
 }
 
