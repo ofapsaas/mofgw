@@ -26,7 +26,12 @@ import (
 func assertUsageHeaders(t *testing.T, resp *http.Response, prompt, completion, total, cacheHit int, cost string) {
 	t.Helper()
 	check := func(name, want string) {
-		if got := resp.Header.Get(name); got != want {
+		got := resp.Header.Get(name)
+		if name == "X-Usage-Cost-USD" {
+			// el header usa %.6f (0.001280); el test puede pedir 0.00128
+			got = strings.TrimRight(strings.TrimRight(got, "0"), ".")
+		}
+		if got != want {
 			t.Fatalf("%s = %q, want %q", name, got, want)
 		}
 	}

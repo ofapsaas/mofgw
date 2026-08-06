@@ -126,6 +126,125 @@ func (m *Metrics) IncCost(client, provider, model string, costUsd float64) {
 	m.costMu.Unlock()
 }
 
+// ModelUsageSnapshot es el agregado de consumo de un modelo para un
+// cliente (007-003 /v1/usage).
+type ModelUsageSnapshot struct {
+	Model            string
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CostUSD          float64
+}
+
+// UsageSnapshot es el snapshot de consumo de un cliente (007-003 P3).
+// client "" o desconocido → todos 0 (nunca nil).
+type UsageSnapshot struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CacheHitTokens   int64
+	CostUSD          float64
+	ByModel          []ModelUsageSnapshot
+}
+
+// SnapshotClient devuelve el snapshot de consumo del cliente dado
+// (007-003). Solo suma las keys cuyo primer segmento == client.
+func (m *Metrics) SnapshotClient(client string) UsageSnapshot {
+	var snap UsageSnapshot
+	prefix := client + "|"
+	m.usageMu.Lock()
+	for k, v := range m.promptTokens {
+		if strings.HasPrefix(k, prefix) {
+			snap.PromptTokens += v
+		}
+	}
+	for k, v := range m.completionTok {
+		if strings.HasPrefix(k, prefix) {
+			snap.CompletionTokens += v
+		}
+	}
+	for k, v := range m.totalTokens {
+		if strings.HasPrefix(k, prefix) {
+			snap.TotalTokens += v
+		}
+	}
+	m.usageMu.Unlock()
+	m.tokensMu.Lock()
+	for k, v := range m.cacheHit {
+		if strings.HasPrefix(k, prefix) {
+			snap.CacheHitTokens += v
+		}
+	}
+	m.tokensMu.Unlock()
+	m.costMu.Lock()
+	byModel := map[string]*ModelUsageSnapshot{}
+	for k, v := range m.cost {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		parts := strings.SplitN(k, "|", 3)
+		model := parts[2]
+		ms, ok := byModel[model]
+		if !ok {
+			ms = &ModelUsageSnapshot{Model: model}
+			byModel[model] = ms
+		}
+		ms.CostUSD += v
+	}
+	m.costMu.Unlock()
+	// completar byModel con tokens (misma key estructura)
+	m.usageMu.Lock()
+	for k, v := range m.promptTokens {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		parts := strings.SplitN(k, "|", 3)
+		model := parts[2]
+		ms, ok := byModel[model]
+		if !ok {
+			ms = &ModelUsageSnapshot{Model: model}
+			byModel[model] = ms
+		}
+		ms.PromptTokens = v
+	}
+	for k, v := range m.completionTok {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		parts := strings.SplitN(k, "|", 3)
+		model := parts[2]
+		ms, ok := byModel[model]
+		if !ok {
+			ms = &ModelUsageSnapshot{Model: model}
+			byModel[model] = ms
+		}
+		ms.CompletionTokens = v
+	}
+	for k, v := range m.totalTokens {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		parts := strings.SplitN(k, "|", 3)
+		model := parts[2]
+		ms, ok := byModel[model]
+		if !ok {
+			ms = &ModelUsageSnapshot{Model: model}
+			byModel[model] = ms
+		}
+		ms.TotalTokens = v
+	}
+	m.usageMu.Unlock()
+	models := make([]string, 0, len(byModel))
+	for model := range byModel {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		snap.ByModel = append(snap.ByModel, *byModel[model])
+	}
+	return snap
+}
+
 // SetLastProvider registra el provider que respondió (observabilidad).
 func (m *Metrics) SetLastProvider(id string) { m.lastProvider.Store(id) }
 

@@ -16,9 +16,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ofapsaas/mofgw/internal/absorb"
@@ -85,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
 	mux.HandleFunc("GET /v1/models", s.handleModels)
+	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	// rutas no declaradas en el mux → 404 OpenAI-compatible
@@ -241,11 +244,37 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.metrics.SetLastProvider(res.ProviderID)
 	s.recordCacheTokens(clientID, res.ProviderID, req.Model, &res.Response.Usage)
 	lastUsage = &res.Response.Usage
+	// headers de usage (007-003 P1): el cliente ve su consumo por request
+	s.setUsageHeaders(w.Header(), res.ProviderID, req.Model, &res.Response.Usage)
 	// reescribir model → el que pidió el cliente (no el alias interno)
 	out := rewriteResponseModel(res.Raw, req.Model)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+// setUsageHeaders expone el consumo del request en headers X-Usage-*
+// (007-003 P1/P2). No-stream: valores exactos. Stream: se llama antes
+// del primer byte con el usage en curso (0 si aún no llegó).
+func (s *Server) setUsageHeaders(h http.Header, providerID, model string, u *provider.Usage) {
+	prompt, completion, total, cacheHit := 0, 0, 0, 0
+	cost := 0.0
+	if u != nil {
+		prompt = u.PromptTokens
+		completion = u.CompletionTokens
+		total = u.TotalTokens
+		cacheHit = u.CachedTokens
+		miss := u.PromptTokens - u.CachedTokens
+		if miss < 0 {
+			miss = 0
+		}
+		cost = s.estimateCost(model, int64(miss), int64(u.CompletionTokens), int64(u.CachedTokens))
+	}
+	h.Set("X-Usage-Prompt-Tokens", strconv.Itoa(prompt))
+	h.Set("X-Usage-Completion-Tokens", strconv.Itoa(completion))
+	h.Set("X-Usage-Total-Tokens", strconv.Itoa(total))
+	h.Set("X-Usage-Cache-Hit-Tokens", strconv.Itoa(cacheHit))
+	h.Set("X-Usage-Cost-USD", fmt.Sprintf("%.6f", cost))
 }
 
 // recordCacheTokens acumula los tokens de cache/reasoning de un request
@@ -392,6 +421,10 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *htt
 		openAIError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
 		return "", nil
 	}
+	// headers de usage ANTES del primer byte (007-003 P4): el usage del
+	// chunk final no puede ir en headers (ya flusheados) — va en el body
+	// SSE (003-001 lo pasa). Acá van 0/valores del request en curso.
+	s.setUsageHeaders(w.Header(), res.Provider.ID(), req.Model, nil)
 	events := stream.CaptureUsage(res.Events)
 	var usage *provider.Usage
 	if err := sw.Copy(events.Events, req.Model); err != nil {
@@ -490,6 +523,36 @@ func (s *Server) modelCatalogEntry(model string) map[string]any {
 		}
 	}
 	return entry
+}
+
+// handleUsage expone los agregados de consumo del cliente autenticado
+// (007-003 P3): GET /v1/usage con auth Bearer → {client, totals,
+// by_model}. Cada cliente ve SOLO lo suyo (aislamiento por clientID).
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	clientID := auth.ClientIDFrom(r.Context())
+	snap := s.metrics.SnapshotClient(clientID)
+	byModel := make([]map[string]any, 0, len(snap.ByModel))
+	for _, ms := range snap.ByModel {
+		byModel = append(byModel, map[string]any{
+			"model":             ms.Model,
+			"prompt_tokens":     ms.PromptTokens,
+			"completion_tokens": ms.CompletionTokens,
+			"total_tokens":      ms.TotalTokens,
+			"cost_usd":          ms.CostUSD,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"client": clientID,
+		"totals": map[string]any{
+			"prompt_tokens":     snap.PromptTokens,
+			"completion_tokens": snap.CompletionTokens,
+			"total_tokens":      snap.TotalTokens,
+			"cache_hit_tokens":  snap.CacheHitTokens,
+			"cost_usd":          snap.CostUSD,
+		},
+		"by_model": byModel,
+	})
 }
 
 // handleHealth es el healthcheck sin auth (loopback). Con health store
