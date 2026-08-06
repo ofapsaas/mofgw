@@ -33,10 +33,10 @@ import (
 	"sync"
 	"time"
 
-	"ofap.sh/mofgw/internal/clamp"
-	"ofap.sh/mofgw/internal/health"
-	"ofap.sh/mofgw/internal/provider"
-	"ofap.sh/mofgw/internal/timeouts"
+	"github.com/ofapsaas/mofgw/internal/clamp"
+	"github.com/ofapsaas/mofgw/internal/health"
+	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/timeouts"
 )
 
 // ChainError es el error final que el cliente puede ver (único caso:

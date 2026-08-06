@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"ofap.sh/mofgw/internal/auth"
-	"ofap.sh/mofgw/internal/limiter"
-	"ofap.sh/mofgw/internal/metrics"
-	"ofap.sh/mofgw/internal/provider"
-	"ofap.sh/mofgw/internal/proxy"
-	"ofap.sh/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/limiter"
+	"github.com/ofapsaas/mofgw/internal/metrics"
+	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/proxy"
+	"github.com/ofapsaas/mofgw/internal/router"
 )
 
 // slowUpstream responde 200 tras un delay configurable (para mantener

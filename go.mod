@@ -1,4 +1,4 @@
-module ofap.sh/mofgw
+module github.com/ofapsaas/mofgw
 
 go 1.24.4
 

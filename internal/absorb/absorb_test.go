@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"ofap.sh/mofgw/internal/provider"
-	"ofap.sh/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/router"
 )
 
 // secrets que NUNCA deben aparecer en mensajes al cliente.

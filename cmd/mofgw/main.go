@@ -27,15 +27,15 @@ import (
 	"syscall"
 	"time"
 
-	"ofap.sh/mofgw/internal/auth"
-	"ofap.sh/mofgw/internal/config"
-	"ofap.sh/mofgw/internal/health"
-	"ofap.sh/mofgw/internal/limiter"
-	"ofap.sh/mofgw/internal/logging"
-	"ofap.sh/mofgw/internal/metrics"
-	"ofap.sh/mofgw/internal/provider"
-	"ofap.sh/mofgw/internal/proxy"
-	"ofap.sh/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/config"
+	"github.com/ofapsaas/mofgw/internal/health"
+	"github.com/ofapsaas/mofgw/internal/limiter"
+	"github.com/ofapsaas/mofgw/internal/logging"
+	"github.com/ofapsaas/mofgw/internal/metrics"
+	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/proxy"
+	"github.com/ofapsaas/mofgw/internal/router"
 )
 
 func main() {

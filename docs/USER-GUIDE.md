@@ -38,7 +38,7 @@ El cliente solo ve el endpoint de mofgw. Si el provider 1 falla, mofgw prueba el
 ### Build
 
 ```bash
-cd <checkout-del-repo>   # o tu checkout del módulo ofap.sh/mofgw
+cd <checkout-del-repo>   # o tu checkout del módulo github.com/ofapsaas/mofgw
 go build -o mofgw ./cmd/mofgw
 ```
 

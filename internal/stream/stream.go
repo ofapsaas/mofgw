@@ -16,7 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"ofap.sh/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/provider"
 )
 
 // Writer escribe eventos SSE al cliente con flush inmediato.

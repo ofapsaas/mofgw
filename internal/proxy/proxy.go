@@ -17,14 +17,14 @@ import (
 	"net/http"
 	"time"
 
-	"ofap.sh/mofgw/internal/absorb"
-	"ofap.sh/mofgw/internal/auth"
-	"ofap.sh/mofgw/internal/limiter"
-	"ofap.sh/mofgw/internal/logging"
-	"ofap.sh/mofgw/internal/metrics"
-	"ofap.sh/mofgw/internal/provider"
-	"ofap.sh/mofgw/internal/router"
-	"ofap.sh/mofgw/internal/stream"
+	"github.com/ofapsaas/mofgw/internal/absorb"
+	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/limiter"
+	"github.com/ofapsaas/mofgw/internal/logging"
+	"github.com/ofapsaas/mofgw/internal/metrics"
+	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/stream"
 )
 
 // Server es el proxy HTTP. Los campos son inmutables post-New (seguro
