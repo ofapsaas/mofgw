@@ -152,6 +152,36 @@ func run() error {
 	}
 	srv := proxy.New(r, providers, authz, m, logger, cfg.Server.MaxBodyBytes, globalLimiter, keyedLimiter, cfg.Server.BackpressureTimeout)
 
+	// Cableado del catálogo y eficiencia (006-002/007-001/008-002/008-003):
+	// pricing, metadata de modelos, budgets por cliente y margen de
+	// contexto desde el config. Sin estas secciones en config → sin
+	// cambios de comportamiento (backward compatible).
+	pricing := make(map[string]proxy.ModelPricing, len(cfg.Pricing))
+	for model := range cfg.Pricing {
+		p := cfg.Pricing[model]
+		pricing[model] = proxy.ModelPricing{
+			InputUSDPerM:    p.InputUSDPerM,
+			OutputUSDPerM:   p.OutputUSDPerM,
+			CacheHitUSDPerM: p.CacheHitUSDPerM,
+		}
+	}
+	srv.SetPricing(pricing)
+	meta := make(map[string]config.ModelMetadata, len(cfg.ModelMetadata))
+	for model, md := range cfg.ModelMetadata {
+		meta[model] = md
+	}
+	srv.SetModelMetadata(meta)
+	budgets := make(map[string]config.BudgetConfig, len(cfg.Clients))
+	for _, cc := range cfg.Clients {
+		if cc.Budget != nil {
+			budgets[cc.ID] = *cc.Budget
+		}
+	}
+	srv.SetBudget(budgets)
+	if cfg.Context.Margin >= 0 {
+		srv.SetContextMargin(cfg.Context.Margin)
+	}
+
 	httpServer := &http.Server{
 		Addr:         cfg.Server.Addr,
 		Handler:      srv.Handler(),

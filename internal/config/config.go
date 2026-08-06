@@ -116,6 +116,21 @@ type ClientConfig struct {
 	Budget *BudgetConfig `yaml:"budget"`
 }
 
+// PricingConfig son los precios por millón de tokens de un modelo
+// (006-002-costos). Cero = sin precio para esa componente.
+type PricingConfig struct {
+	InputUSDPerM    float64 `yaml:"input_usd_per_m"`
+	OutputUSDPerM   float64 `yaml:"output_usd_per_m"`
+	CacheHitUSDPerM float64 `yaml:"cache_hit_usd_per_m"`
+}
+
+// ContextConfig es la configuración del rechazo por contexto
+// (008-001). Margin: fracción 0-1 sobre context_window (default 0.1;
+// -1 = usar default).
+type ContextConfig struct {
+	Margin float64 `yaml:"margin"`
+}
+
 // ModelMetadata es la metadata declarativa de un modelo para el catálogo
 // (007-001-model-metadata). Alimenta /v1/models (007-002) y, en el futuro,
 // decisiones de ruteo. Datos verificados en research-token-efficiency.md §4.
@@ -135,6 +150,12 @@ type Config struct {
 
 	// ModelMetadata: capabilities por modelo (007-001). Keyed por modelo.
 	ModelMetadata map[string]ModelMetadata `yaml:"model_metadata"`
+
+	// Pricing: precios por modelo (006-002). Keyed por modelo.
+	Pricing map[string]PricingConfig `yaml:"pricing"`
+
+	// Context: rechazo por ventana (008-001).
+	Context ContextConfig `yaml:"context"`
 }
 
 // Defaults aplicados sobre YAML parcial.
@@ -166,6 +187,9 @@ func defaults() Config {
 				MaxRequests:   0,
 				CooldownGrace: 5 * time.Second,
 			},
+		},
+		Context: ContextConfig{
+			Margin: -1, // -1 = usar default del proxy (0.1)
 		},
 	}
 }
@@ -307,6 +331,12 @@ func (c *Config) validate() error {
 			if !found {
 				return fmt.Errorf("config: model_metadata %q: thinking_default %q no está en thinking %v", model, md.ThinkingDefault, md.Thinking)
 			}
+		}
+	}
+	// pricing (006-002): precios negativos se rechazan.
+	for model, p := range c.Pricing {
+		if p.InputUSDPerM < 0 || p.OutputUSDPerM < 0 || p.CacheHitUSDPerM < 0 {
+			return fmt.Errorf("config: pricing %q: precios no pueden ser negativos", model)
 		}
 	}
 	return nil

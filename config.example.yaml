@@ -41,5 +41,44 @@ providers:
 clients:
   - id: agent-main
     key_sha256: "<sha256 hex de la key del agente principal>"
+    # budget: límite de consumo por cliente (008-002). 0 = sin límite.
+    # window es documentación (ventana simple desde el arranque).
+    # budget:
+    #   cost_usd_max: 5.0
+    #   tokens_max: 10000000
+    #   window: 24h
   - id: cron-daily
     key_sha256: "<sha256 hex de la key del cron>"
+
+# Precios por millón de tokens por modelo (006-002). Valores USD.
+# Sin entrada → costo 0 para ese modelo. Verificar precios vigentes
+# (research-token-efficiency.md §1 — las tasas dependen del provider
+# real: Zen vs Alibaba directo).
+pricing:
+  deepseek-v4-flash:
+    input_usd_per_m: 0.14
+    output_usd_per_m: 0.28
+    cache_hit_usd_per_m: 0.028
+  qwen3.7-plus:
+    input_usd_per_m: 0.40
+    output_usd_per_m: 1.60
+    cache_hit_usd_per_m: 0.04
+
+# Metadata de capabilities por modelo (007-001). Alimenta /v1/models.
+# Datos verificados en research-token-efficiency.md §4.
+model_metadata:
+  deepseek-v4-flash:
+    context_window: 1000000
+    max_output: 384000
+    thinking: ["low", "high", "max"]
+    thinking_default: "high"
+  kimi-k2.7-code:
+    context_window: 262144
+    max_output: 32768
+    thinking: ["always"]
+    thinking_default: "always"
+
+# Rechazo temprano por ventana de contexto (008-001).
+# margin: fracción 0-1 sobre context_window (default 0.1).
+context:
+  margin: 0.1
