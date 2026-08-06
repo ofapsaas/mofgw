@@ -31,6 +31,15 @@ import (
 	"github.com/ofapsaas/mofgw/internal/stream"
 )
 
+// ModelPricing es la tabla de precios por millón de tokens de un modelo
+// (006-002-costos). Valores en USD por 1M tokens. Cero = sin precio para
+// esa componente (contribuye 0 al costo).
+type ModelPricing struct {
+	InputUSDPerM    float64
+	OutputUSDPerM   float64
+	CacheHitUSDPerM float64
+}
+
 // Server es el proxy HTTP. Los campos son inmutables post-New (seguro
 // para uso concurrente).
 type Server struct {
@@ -40,6 +49,11 @@ type Server struct {
 	metrics   *metrics.Metrics
 	logger    *slog.Logger
 	maxBody   int64
+
+	// pricing: tabla de precios por modelo (006-002-costos). Inmutable
+	// tras SetPricing (antes del tráfico); lectura concurrente segura
+	// (se asigna una sola vez, nunca se muta el mapa después).
+	pricing map[string]ModelPricing
 
 	// Concurrencia (004-001/004-002): global + keyed por cliente/agente.
 	globalLimiter       *limiter.Limiter
@@ -70,6 +84,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	// rutas no declaradas en el mux → 404 OpenAI-compatible
 	return s.auth.Wrap(withRequestID(mux), "/healthz", "/metrics")
+}
+
+// SetPricing configura la tabla de precios por modelo (006-002-costos).
+// Debe llamarse una sola vez antes del tráfico; el mapa no se muta
+// después (lecturas concurrentes seguras).
+func (s *Server) SetPricing(pricing map[string]ModelPricing) {
+	s.pricing = pricing
 }
 
 // withRequestID inyecta un id de request por request (observabilidad).
@@ -216,10 +237,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordCacheTokens acumula los tokens de cache/reasoning de un request
-// en /metrics (003-001 P3) y los tokens totales por cliente (006-001
-// P1-P3). miss = prompt - cached (los proveedores OpenAI-compatibles no
-// reportan miss explícito; el estándar es
-// prompt_tokens_details.cached_tokens). Nunca crashea con usage ausente.
+// en /metrics (003-001 P3), los tokens totales por cliente (006-001
+// P1-P3) y el costo estimado (006-002 P2-P3). miss = prompt - cached
+// (los proveedores OpenAI-compatibles no reportan miss explícito; el
+// estándar es prompt_tokens_details.cached_tokens). Nunca crashea con
+// usage ausente ni con modelo sin pricing.
 func (s *Server) recordCacheTokens(clientID, providerID, model string, u *provider.Usage) {
 	hit, miss, reasoning := int64(0), int64(0), int64(0)
 	prompt, completion, total := int64(0), int64(0), int64(0)
@@ -235,6 +257,24 @@ func (s *Server) recordCacheTokens(clientID, providerID, model string, u *provid
 	}
 	s.metrics.IncCacheTokens(providerID, model, hit, miss, reasoning)
 	s.metrics.IncUsage(clientID, providerID, model, prompt, completion, total)
+	s.metrics.IncCost(clientID, providerID, model, s.estimateCost(model, miss, completion, hit))
+}
+
+// estimateCost calcula el costo estimado en USD de un request usando la
+// tabla de precios (006-002 P2). miss/completion/hit en tokens → /1e6 ×
+// precio. Modelo sin entrada en pricing → 0. Nunca devuelve negativo.
+func (s *Server) estimateCost(model string, miss, completion, hit int64) float64 {
+	p, ok := s.pricing[model]
+	if !ok {
+		return 0
+	}
+	cost := float64(miss)/1e6*p.InputUSDPerM +
+		float64(completion)/1e6*p.OutputUSDPerM +
+		float64(hit)/1e6*p.CacheHitUSDPerM
+	if cost < 0 {
+		return 0
+	}
+	return cost
 }
 
 // emitRequestEnd loguea el evento request_end al finalizar un handler.

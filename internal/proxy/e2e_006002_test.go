@@ -25,7 +25,7 @@ func upstreamCostOK(model string) *upstream {
 	return &upstream{
 		status: 200,
 		model:  model,
-		body: `{"id":"chatcmpl-cost","object":"chat.completion","model":"` + model + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2000000,"completion_tokens":500000,"total_tokens":2500000,"prompt_tokens_details":{"cached_tokens":1000000}}}`,
+		body:   `{"id":"chatcmpl-cost","object":"chat.completion","model":"` + model + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2000000,"completion_tokens":500000,"total_tokens":2500000,"prompt_tokens_details":{"cached_tokens":1000000}}}`,
 	}
 }
 
