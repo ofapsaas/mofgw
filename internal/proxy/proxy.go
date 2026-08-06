@@ -23,6 +23,7 @@ import (
 
 	"github.com/ofapsaas/mofgw/internal/absorb"
 	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/limiter"
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/metrics"
@@ -54,6 +55,10 @@ type Server struct {
 	// tras SetPricing (antes del tráfico); lectura concurrente segura
 	// (se asigna una sola vez, nunca se muta el mapa después).
 	pricing map[string]ModelPricing
+
+	// modelMeta: capabilities por modelo (007-001-model-metadata).
+	// Inmutable tras SetModelMetadata; mismo patrón que pricing.
+	modelMeta map[string]config.ModelMetadata
 
 	// Concurrencia (004-001/004-002): global + keyed por cliente/agente.
 	globalLimiter       *limiter.Limiter
@@ -91,6 +96,13 @@ func (s *Server) Handler() http.Handler {
 // después (lecturas concurrentes seguras).
 func (s *Server) SetPricing(pricing map[string]ModelPricing) {
 	s.pricing = pricing
+}
+
+// SetModelMetadata configura las capabilities por modelo
+// (007-001-model-metadata). Mismo contrato que SetPricing: una sola vez
+// antes del tráfico, mapa inmutable después.
+func (s *Server) SetModelMetadata(meta map[string]config.ModelMetadata) {
+	s.modelMeta = meta
 }
 
 // withRequestID inyecta un id de request por request (observabilidad).

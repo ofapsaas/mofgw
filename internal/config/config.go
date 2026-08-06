@@ -104,12 +104,25 @@ type ClientConfig struct {
 	MaxConcurrentPerAgent int `yaml:"max_concurrent_per_agent"`
 }
 
+// ModelMetadata es la metadata declarativa de un modelo para el catálogo
+// (007-001-model-metadata). Alimenta /v1/models (007-002) y, en el futuro,
+// decisiones de ruteo. Datos verificados en research-token-efficiency.md §4.
+type ModelMetadata struct {
+	ContextWindow   int      `yaml:"context_window"`
+	MaxOutput       int      `yaml:"max_output"`
+	Thinking        []string `yaml:"thinking"`
+	ThinkingDefault string   `yaml:"thinking_default"`
+}
+
 // Config tipado resultante.
 type Config struct {
 	Server    ServerConfig     `yaml:"server"`
 	Fallback  FallbackConfig   `yaml:"fallback"`
 	Providers []ProviderConfig `yaml:"providers"`
 	Clients   []ClientConfig   `yaml:"clients"`
+
+	// ModelMetadata: capabilities por modelo (007-001). Keyed por modelo.
+	ModelMetadata map[string]ModelMetadata `yaml:"model_metadata"`
 }
 
 // Defaults aplicados sobre YAML parcial.
@@ -260,6 +273,28 @@ func (c *Config) validate() error {
 		}
 		if cl.MaxConcurrentRequests < 0 || cl.MaxConcurrentPerAgent < 0 {
 			return fmt.Errorf("config: client %q: max_concurrent_requests/max_concurrent_per_agent no pueden ser negativos", cl.ID)
+		}
+	}
+	// model_metadata (007-001): valores negativos y thinking_default fuera
+	// de la lista se rechazan temprano (P4).
+	for model, md := range c.ModelMetadata {
+		if md.ContextWindow < 0 {
+			return fmt.Errorf("config: model_metadata %q: context_window no puede ser negativo", model)
+		}
+		if md.MaxOutput < 0 {
+			return fmt.Errorf("config: model_metadata %q: max_output no puede ser negativo", model)
+		}
+		if md.ThinkingDefault != "" && len(md.Thinking) > 0 {
+			found := false
+			for _, l := range md.Thinking {
+				if l == md.ThinkingDefault {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("config: model_metadata %q: thinking_default %q no está en thinking %v", model, md.ThinkingDefault, md.Thinking)
+			}
 		}
 	}
 	return nil

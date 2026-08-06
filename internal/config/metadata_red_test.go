@@ -61,7 +61,8 @@ func TestRED_LoadMetadataValida(t *testing.T) {
 // TestRED_LoadSinMetadataVacia: config sin model_metadata → metadata
 // vacía, sin error (C2).
 func TestRED_LoadSinMetadataVacia(t *testing.T) {
-	t.Setenv("MOFGW_TEST_A", "k1")
+	t.Setenv("MOFGW_PROVIDER_A_KEY", "k1")
+	t.Setenv("MOFGW_PROVIDER_B_KEY", "k2")
 	cfg, err := LoadFile(writeTemp(t, validYAML))
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
