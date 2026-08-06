@@ -48,10 +48,15 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD — aplicar
+- [x] **Validación externa ejecutada (COMPLETADA MANUALMENTE — resp.json truncado (finish=None); hallazgo NaN/Inf verificado real y corregido (rechazo de precios no-finitos))** — evidencias en `docs/specs/external-reviews/006-002-costos.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
       handoff-reviewer.md adaptado a 006-002.
 - [ ] Cablear el pricing real (research §1: tasas Zen para provider-a/b/c/d,
       Alibaba para qwen) en la config de producción — feature de deploy,
       fuera de esta feature (el mecanismo está listo).
 - [ ] 007-001 (model-metadata) puede reutilizar ModelPricing para el
       catálogo.
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/006-002-costos.resp.json`.

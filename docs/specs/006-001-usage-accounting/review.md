@@ -50,7 +50,12 @@ La feature cumple P1-P6 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD — adaptar
+- [x] **Validación externa ejecutada (APPROVE (0 blockers, 0 majors))** — evidencias en `docs/specs/external-reviews/006-001-usage-accounting.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
       handoff-reviewer.md a 006-001.
 - [ ] 006-002 (costos) depende de estos contadores por cliente — listo para
       spec cuando se decida.
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/006-001-usage-accounting.resp.json`.

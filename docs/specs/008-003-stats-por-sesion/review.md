@@ -45,8 +45,13 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD.
+- [x] **Validación externa ejecutada (REQUEST CHANGES (1 Major: max_sessions_retained sin cablear) → Major CORREGIDO)** — evidencias en `docs/specs/external-reviews/008-003-stats-por-sesion.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
 - [ ] **EPIC-008 COMPLETO con esto — el replanteo de eficiencia tiene sus
       9 features done.** Siguiente: integración del programa (deploy a
       PROD con metadata/pricing reales, verificación end-to-end,
       closure de epics).
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/008-003-stats-por-sesion.resp.json`.

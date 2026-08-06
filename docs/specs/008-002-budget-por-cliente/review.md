@@ -43,7 +43,12 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD.
+- [x] **Validación externa ejecutada (APPROVE (0 bloqueantes, 0 mayores))** — evidencias en `docs/specs/external-reviews/008-002-budget-por-cliente.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
 - [ ] 008-003 (stats por sesión) — última feature del replanteo.
 - [ ] El fix H1 también corrige /v1/usage (totals.cost_usd) — verificar en
       el deploy a PROD.
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/008-002-budget-por-cliente.resp.json`.

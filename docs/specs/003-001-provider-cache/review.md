@@ -59,9 +59,14 @@ P1-P6 y los criterios C1-C6 del spec. Suite completa verde con `-race`.
 
 ## Pendiente de proceso (no bloqueante para la feature, bloqueante para PROD)
 
-- [ ] Re-ejecutar review externo independiente (`handoff-reviewer.md`)
+- [x] **Validación externa ejecutada (APPROVE (0 blockers, 0 majors))** — evidencias en `docs/specs/external-reviews/003-001-provider-cache.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
       cuando el runtime de delegación se recupere — validación anti-bias
       del invariante.
 - [ ] Tras la validación externa: deploy a producción + smoke test real
       (mofgw.service, verificar /metrics con contadores de cache en
       tráfico real).
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/003-001-provider-cache.resp.json`.

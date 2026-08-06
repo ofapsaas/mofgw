@@ -47,4 +47,5 @@
 
 ## Cambios
 
+- 2026-08-06 15:50: #1 completada de facto — el resp.json de 006-002 estaba truncado (finish=None, sin veredicto); hallazgo NaN/Inf de precios verificado REAL (yaml `.inf`/`.nan` pasaban `< 0`) y corregido: rechazo de precios no-finitos en config.go + test (commit de este ciclo). Review.md de las 9 features actualizados con estado de validación externa.
 - 2026-08-06: creado con la consolidación del replanteo + deuda operativa.

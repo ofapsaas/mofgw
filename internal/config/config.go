@@ -14,6 +14,7 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -347,10 +348,18 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	// pricing (006-002): precios negativos se rechazan.
+	// pricing (006-002): precios negativos, NaN o Inf se rechazan.
+	// (Hallazgo de review externo 006-002: `.inf`/`.nan` en YAML pasaban
+	// la validación `< 0` → costos NaN/Inf en metrics. math.IsNaN/IsInf
+	// cierran el gap.)
 	for model, p := range c.Pricing {
 		if p.InputUSDPerM < 0 || p.OutputUSDPerM < 0 || p.CacheHitUSDPerM < 0 {
 			return fmt.Errorf("config: pricing %q: precios no pueden ser negativos", model)
+		}
+		if math.IsNaN(p.InputUSDPerM) || math.IsInf(p.InputUSDPerM, 0) ||
+			math.IsNaN(p.OutputUSDPerM) || math.IsInf(p.OutputUSDPerM, 0) ||
+			math.IsNaN(p.CacheHitUSDPerM) || math.IsInf(p.CacheHitUSDPerM, 0) {
+			return fmt.Errorf("config: pricing %q: precios deben ser finitos (no NaN/Inf)", model)
 		}
 	}
 	return nil

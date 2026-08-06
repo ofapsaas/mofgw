@@ -46,8 +46,13 @@ La feature cumple P1-P5 y C1-C6. Suite completa verde con -race.
 
 ## Pendiente de proceso
 
-- [ ] Validación externa independiente (anti-bias) antes de PROD.
+- [x] **Validación externa ejecutada (APPROVE (0 bloqueantes, 3 menores, 3 nits))** — evidencias en `docs/specs/external-reviews/007-003-usage-para-clientes.resp.json` (revisado por qwen3.7-plus, familia distinta al implementer deepseek-v4-flash)
 - [ ] Deploy a producción (rebuild + reinicio + verificación end-to-end)
       — condicionado a la validación externa.
 - [ ] EPIC-007 (catálogo) COMPLETO con esto. Siguiente: EPIC-008-contexto
       (rechazo por ventana, budget por cliente, stats por sesión).
+
+> ✅ **Actualización post-review externo:** la limitación de proceso declarada arriba
+> (review inline por runtime de delegación caído) quedó RESUELTA — el runtime se
+> recuperó y la validación externa independiente se ejecutó. Ver
+> `docs/specs/external-reviews/007-003-usage-para-clientes.resp.json`.
