@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package health implementa el sondeo proactivo de disponibilidad de
 // providers (feature 002-002-health). Un solo ticker recorre los
 // providers registrados y mide latencia de un request liviano de health

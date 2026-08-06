@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # mofgw — config de ejemplo (copiar a ~/.config/mofgw/config.yaml)
 # Las API keys NUNCA van en este archivo: solo referencias a variables
 # de entorno (api_key_env), resueltas al arrancar.

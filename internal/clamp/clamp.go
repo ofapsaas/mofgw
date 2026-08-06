@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package clamp reescribe max_tokens/max_completion_tokens de un request
 // OpenAI-compatible al límite del provider destino (feature 001-004).
 //

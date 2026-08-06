@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package router implementa la cadena de fallback con cooldown por
 // provider (feature 001-003-fallback). Es el cerebro del proxy: recorre
 // los providers en orden de config, saltea los que están en cooldown,

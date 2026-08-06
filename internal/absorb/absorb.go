@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package absorb centraliza TODO el mapeo de errores salientes del proxy
 // (feature 002-003-absorcion). Es la ÚLTIMA capa de absorción: garantiza
 // que CUALQUIER situación de fallo total produzca una respuesta de error

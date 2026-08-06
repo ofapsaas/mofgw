@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package provider define la interfaz Provider (contrato cross-feature
 // del plan de epics) y un cliente OpenAI-compatible por upstream.
 //

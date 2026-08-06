@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+
 # mofgw — Guía de usuario
 
 Proxy de IA self-hosted, minimalista y en Go. **Un solo endpoint OpenAI-compatible** y **fallback transparente entre providers**: el cliente apunta a un único lugar y mofgw rota internamente si un provider falla (429, 5xx, timeout, 400 max_tokens) sin que el cliente se entere.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package stream implementa el passthrough SSE del proxy (feature
 // 001-005-streaming). La frontera del primer byte ya fue resuelta por el
 // router (001-003): acá el stream está COMPROMETIDO — passthrough directo

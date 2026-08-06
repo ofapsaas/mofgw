@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+
 # mofgw — Investigación y Arquitectura
 
 **Fecha:** 2026-08-03 · **Estado:** Propuesta MVP · **Ámbito:** proxy IA en Go, liviano y minimalista.

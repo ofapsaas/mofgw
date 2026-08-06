@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package auth implementa la autenticación de clientes por API key
 // (feature 001-007-auth). Cada cliente tiene su propia key (Bearer token);
 // las keys NUNCA se guardan en claro en disco: el config referencia un

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package proxy_test
 
 // Tests EPIC-004 (004-001-concurrencia + 004-002-aislamiento):

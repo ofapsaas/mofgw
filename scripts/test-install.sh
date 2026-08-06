@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
 # test-install.sh — Harness de contrato para 005-003-systemd (scripts/install.sh).
 #
 # Corre install.sh en un SANDBOX: MOFGW_HOME=$(mktemp -d), MOFGW_SKIP_SYSTEMCTL=1.
