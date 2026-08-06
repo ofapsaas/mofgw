@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package config carga y valida config.yaml para mofgw (feature 001-002).
 //
 // Precedencia de ubicación: el path explícito (flag -config) gana; si no,

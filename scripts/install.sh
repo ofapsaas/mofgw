@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
 # install.sh — instala mofgw como servicio systemd de usuario (005-003-systemd).
 #
 # Contrato mínimo:

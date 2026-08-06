@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package logging configura el logger estructurado del proxy (spec
 // 005-002-logging, versión MVP): slog JSON a stdout con request_id
 // propagado. Sin keys ni tokens en los logs (el saneamiento lo hace

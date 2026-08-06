@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package metrics expone counters/histograms mínimos para el MVP.
 // EPIC-005 (001-001) definirá el formato Prometheus real; acá solo
 // contadores atómicos que el endpoint /metrics serializa en texto plano,

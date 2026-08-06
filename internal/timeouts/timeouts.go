@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package timeouts centraliza la semántica de timeout por intento
 // (feature 001-006). Tres estados para el valor configurado:
 //

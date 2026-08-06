@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package limiter implementa la feature 004-001-concurrencia + 004-002-aislamiento
 // (EPIC-004 escala): límites de concurrencia para alta carga multi-agente.
 //

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Command mofgw es el proxy de IA con fallback transparente (ver
 // README.md). Uso:
 //

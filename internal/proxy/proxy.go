@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package proxy arma el servidor HTTP OpenAI-compatible único (feature
 // 001-001-endpoint): POST /v1/chat/completions (no-stream y stream),
 // GET /v1/models, GET /healthz y GET /metrics. Conecta los paquetes:

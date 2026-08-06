@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+
 # mofgw — MOF Gateway
 
 **Status:** ✅ MVP implementado (EPIC-001) + EPIC-002 (resiliencia) + EPIC-004 (escala) + EPIC-005 (ops) — desplegable como systemd user service con varios providers OpenAI-compatible. Suite de 83+ tests verde con `-race`.
@@ -51,3 +54,7 @@ Ver [`docs/epics/plan.md`](docs/epics/plan.md) — 5 epics definidos con cdad-ep
 
 - Motivación: reemplazar un gateway previo en Node (pesado, ~1GB RAM) por un binario Go ligero
 - Integración: los agentes cliente apuntan a un solo endpoint (`mofgw`), que rutea a los providers upstream en orden de config
+
+## Licencia
+
+GPL-3.0-or-later. Ver [`LICENSE`](LICENSE). Copyright © 2026 Pablo Manuel Rizzo.
