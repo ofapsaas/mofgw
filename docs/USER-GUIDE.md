@@ -279,6 +279,17 @@ mofgw_total_tokens_total          # prompt + completion acumulados
 mofgw_usage_tokens{client="...",provider="...",model="..."} prompt=.. completion=.. total=..   # por cliente
 ```
 
+Desde 006-002 (costo estimado):
+
+```
+mofgw_cost_usd_total              # costo estimado acumulado en USD
+mofgw_cost_usd{client="...",provider="...",model="..."} <usd>   # por cliente
+```
+
+> El costo se calcula en el gateway con la tabla de precios configurable
+> (por millón de tokens: input, output, cache-hit) — es una **estimación**
+> para visibilidad de gasto; la factura real la emite cada provider.
+
 > El cache de prompt es **automático** del lado del provider (DeepSeek,
 > Alibaba, MiniMax, GLM, Kimi y el gateway zen lo activan sin opt-in). En
 > streaming, mofgw garantiza `stream_options.include_usage=true` para que
