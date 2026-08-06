@@ -50,19 +50,52 @@ type Metrics struct {
 	// 006-002-costos (P3). Misma cardinalidad que usage.
 	costMu sync.Mutex
 	cost   map[string]float64 // "client|provider|model" -> USD acumulado
+
+	// sessions: registro de consumo por (client, session) — 008-003.
+	// Cardinalidad acotada por maxSessionsRetained (FIFO por
+	// lastRequestAt).
+	sessionsMu          sync.Mutex
+	sessions            map[string]*SessionRecord // "client|session" -> record
+	maxSessionsRetained int
+}
+
+// SessionRecord es el acumulado de consumo de una sesión (008-003 P2/P3).
+type SessionRecord struct {
+	SessionID      string
+	Requests       int64
+	PromptTokens   int64
+	CompletionTok  int64
+	TotalTokens    int64
+	CostUSD        float64
+	FirstRequestAt int64 // unix seconds
+	LastRequestAt  int64 // unix seconds
+}
+
+// SessionSnapshot es la vista expuesta de una sesión (008-003 P3).
+type SessionSnapshot struct {
+	SessionID      string
+	Requests       int64
+	PromptTokens   int64
+	CompletionTok  int64
+	TotalTokens    int64
+	CostUSD        float64
+	FirstRequestAt int64
+	LastRequestAt  int64
 }
 
 // New construye un registro vacío.
 func New() *Metrics {
 	m := &Metrics{
-		rejected:      make(map[string]int64),
-		cacheHit:      make(map[string]int64),
-		cacheMiss:     make(map[string]int64),
-		reasoning:     make(map[string]int64),
-		promptTokens:  make(map[string]int64),
-		completionTok: make(map[string]int64),
-		totalTokens:   make(map[string]int64),
-		cost:          make(map[string]float64),
+		rejected:            make(map[string]int64),
+		cacheHit:            make(map[string]int64),
+		cacheMiss:           make(map[string]int64),
+		reasoning:           make(map[string]int64),
+		promptTokens:        make(map[string]int64),
+		completionTok:       make(map[string]int64),
+		totalTokens:         make(map[string]int64),
+		cost:                make(map[string]float64),
+		sessions:            make(map[string]*SessionRecord),
+		maxSessionsRetained: 100,
 	}
 	m.lastProvider.Store("")
 	return m
@@ -244,6 +277,106 @@ func (m *Metrics) SnapshotClient(client string) UsageSnapshot {
 		snap.ByModel = append(snap.ByModel, *byModel[model])
 	}
 	return snap
+}
+
+// RecordSession registra el consumo de un request en su sesión
+// (008-003 P2). session "" → se ignora (sesión implícita, sin registro).
+// Aplica FIFO de retención (maxSessionsRetained): al superar el tope se
+// descarta la sesión con last_request_at más viejo.
+func (m *Metrics) RecordSession(client, session string, prompt, completion, total int64, costUSD float64, nowUnix int64) {
+	if session == "" {
+		return
+	}
+	key := client + "|" + session
+	m.sessionsMu.Lock()
+	rec, ok := m.sessions[key]
+	if !ok {
+		rec = &SessionRecord{SessionID: session, FirstRequestAt: nowUnix}
+		m.sessions[key] = rec
+		if len(m.sessions) > m.maxSessionsRetained {
+			m.evictOldestLocked()
+		}
+	}
+	rec.Requests++
+	rec.PromptTokens += prompt
+	rec.CompletionTok += completion
+	rec.TotalTokens += total
+	rec.CostUSD += costUSD
+	rec.LastRequestAt = nowUnix
+	m.sessionsMu.Unlock()
+}
+
+// evictOldestLocked descarta la sesión con last_request_at más viejo
+// (FIFO de retención, 008-003 P4). Requiere sessionsMu held.
+func (m *Metrics) evictOldestLocked() {
+	var oldestKey string
+	var oldestAt int64 = 1<<63 - 1
+	for k, r := range m.sessions {
+		if r.LastRequestAt < oldestAt {
+			oldestAt = r.LastRequestAt
+			oldestKey = k
+		}
+	}
+	if oldestKey != "" {
+		delete(m.sessions, oldestKey)
+	}
+}
+
+// SessionSnapshot devuelve las stats de una sesión del cliente
+// (008-003 P3). ok=false si la sesión no existe para este cliente.
+func (m *Metrics) SessionSnapshot(client, session string) (SessionSnapshot, bool) {
+	key := client + "|" + session
+	m.sessionsMu.Lock()
+	rec, ok := m.sessions[key]
+	var snap SessionSnapshot
+	if ok {
+		snap = SessionSnapshot{
+			SessionID:      rec.SessionID,
+			Requests:       rec.Requests,
+			PromptTokens:   rec.PromptTokens,
+			CompletionTok:  rec.CompletionTok,
+			TotalTokens:    rec.TotalTokens,
+			CostUSD:        rec.CostUSD,
+			FirstRequestAt: rec.FirstRequestAt,
+			LastRequestAt:  rec.LastRequestAt,
+		}
+	}
+	m.sessionsMu.Unlock()
+	return snap, ok
+}
+
+// SessionsList lista las sesiones del cliente (008-003 P3), ordenadas por
+// last_request_at desc (más recientes primero). Vacío si no hay.
+func (m *Metrics) SessionsList(client string) []SessionSnapshot {
+	prefix := client + "|"
+	m.sessionsMu.Lock()
+	out := make([]SessionSnapshot, 0, 8)
+	for k, r := range m.sessions {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		out = append(out, SessionSnapshot{
+			SessionID:      r.SessionID,
+			Requests:       r.Requests,
+			PromptTokens:   r.PromptTokens,
+			CompletionTok:  r.CompletionTok,
+			TotalTokens:    r.TotalTokens,
+			CostUSD:        r.CostUSD,
+			FirstRequestAt: r.FirstRequestAt,
+			LastRequestAt:  r.LastRequestAt,
+		})
+	}
+	m.sessionsMu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].LastRequestAt > out[j].LastRequestAt })
+	return out
+}
+
+// SetMaxSessionsRetained ajusta el tope de retención (008-003 P4).
+// Default 100 en New.
+func (m *Metrics) SetMaxSessionsRetained(n int) {
+	m.sessionsMu.Lock()
+	m.maxSessionsRetained = n
+	m.sessionsMu.Unlock()
 }
 
 // SetLastProvider registra el provider que respondió (observabilidad).

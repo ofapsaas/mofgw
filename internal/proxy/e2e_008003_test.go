@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -179,10 +178,8 @@ func TestRED_SessionHeaderNoUpstream(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
-	// el upstream fake captura gotBody (cuerpo HTTP) — el header no va en
-	// el body; verificar que el body no lo contiene (y el header no se
-	// forwardeó: el fake no lo lee, pero el body no debe tenerlo)
-	if strings.Contains(ups.gotBody, "X-Session-Id") {
-		t.Fatalf("X-Session-Id filtró al upstream: %s", ups.gotBody)
+	// el header X-Session-Id NO debe llegar al upstream (solo lectura)
+	if ups.gotHeaders.Get("X-Session-Id") != "" {
+		t.Fatalf("X-Session-Id filtró al upstream: %v", ups.gotHeaders.Get("X-Session-Id"))
 	}
 }
