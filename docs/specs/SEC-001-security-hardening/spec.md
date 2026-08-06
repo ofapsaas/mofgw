@@ -92,3 +92,12 @@ se acepta con documentación. Ver `docs/TECHDEBT.md` para el registro.
 
 - Rate limiting por IP en auth (P5 aceptada — ver Contexto).
 - Cambios al diseño de auth (hash, constant-time — ya correctos).
+
+## Nota de deploy (P4)
+
+El fix P4 (0640) aplica a archivos de log NUEVOS. El log existente en
+producción (`~/.config/mofgw/../logs/mofgw.log` o el path del config)
+conserva los permisos viejos hasta un chmod manual — durante el deploy del
+06 Ago se ejecutó `chmod 640` sobre el archivo existente. Si el path del
+log cambia, repetir el chmod (o el fix futuro: OpenFile con 0640 ya lo
+protege en creación).
