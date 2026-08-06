@@ -5,7 +5,7 @@
 
 Proxy de IA self-hosted, minimalista y en Go. **Un solo endpoint OpenAI-compatible** y **fallback transparente entre providers**: el cliente apunta a un único lugar y mofgw rota internamente si un provider falla (429, 5xx, timeout, 400 max_tokens) sin que el cliente se entere.
 
-**Estado actual:** ✅ MVP (EPIC-001) + EPIC-002 (resiliencia) + EPIC-004 (escala) + EPIC-005 (ops) implementados y verificados con smoke tests E2E. Suite de 83+ tests verde con `-race`.
+**Estado actual:** ✅ Programa completo implementado y desplegado — EPIC-001/002/004/005 + replanteo de eficiencia (003/006/007/008: cache providers, medición de tokens/costos, catálogo de capabilities, contexto) + hardening de seguridad (SEC-001). Suite **14 paquetes, 210+ tests** verde con `-race`.
 
 ---
 
@@ -224,6 +224,67 @@ clients:
     key_sha256: "<sha256 hex de la key del cron>"
 ```
 
+### `pricing` — costos por modelo (006-002)
+
+Tabla de precios por **millón de tokens** (USD), keyed por modelo. Alimenta `mofgw_cost_usd_total` en `/metrics` y el campo `pricing` del catálogo `/v1/models`.
+
+```yaml
+pricing:
+  deepseek-v4-flash:
+    input_usd_per_m: 0.14
+    output_usd_per_m: 0.28
+    cache_hit_usd_per_m: 0.028
+```
+
+- Sin entrada para un modelo → costo 0 (no error, backward compatible).
+- Precios negativos → error al cargar.
+- **Nota:** la tabla es keyed por modelo y aplica a todos los providers que lo sirven. Si distintos providers cobran distinto por el mismo modelo, usa la tasa del provider por el que pasa la mayor parte del tráfico (ver `research-token-efficiency.md` §1 para las tasas verificadas).
+
+### `model_metadata` — capabilities por modelo (007-001)
+
+Metadata declarativa que alimenta `/v1/models` (context window, max output, niveles de thinking). Sin esto, los runtimes asumen defaults equivocados (opencode ve `reasoning:false, context:0`).
+
+```yaml
+model_metadata:
+  deepseek-v4-flash:
+    context_window: 1000000
+    max_output: 384000
+    thinking: ["low", "high", "max"]
+    thinking_default: "high"
+  kimi-k2.7-code:
+    context_window: 262144
+    max_output: 32768
+    thinking: ["always"]        # SIEMPRE ON, incontrolable
+    thinking_default: "always"
+```
+
+- `thinking_default` debe estar en `thinking` (si no → error al cargar).
+- Valores negativos → error al cargar.
+- Niveles de thinking reales por modelo: ver `research-token-efficiency.md` §4.
+
+### `context` — rechazo por ventana (008-001)
+
+```yaml
+context:
+  margin: 0.1   # fracción 0-1 sobre context_window (default 0.1)
+```
+
+Un request cuyo prompt estimado (`len(body)/4`, estimación rough) excede `context_window × (1 + margin)` se rechaza con `400 invalid_request_error` **sin gastar intentos de la cadena**. Solo aplica si el modelo tiene `model_metadata.context_window`.
+
+### `clients[].budget` — límite de consumo por cliente (008-002)
+
+```yaml
+clients:
+  - id: agent-main
+    key_sha256: "<sha256>"
+    budget:
+      cost_usd_max: 5.0        # 0 = sin límite
+      tokens_max: 10000000     # 0 = sin límite
+      window: 24h              # documentación (ventana simple desde el arranque)
+```
+
+Al exceder el budget, el cliente recibe `429 rate_limit_exceeded` sin tocar el upstream. El costo usa el mismo cálculo estimado de `pricing`.
+
 ## Endpoints
 
 Todos los de `/v1/*` exigen auth Bearer. `/healthz` y `/metrics` son públicos (monitoreo local, bind default loopback). Las rutas no declaradas devuelven 404 OpenAI-compatible.
@@ -243,6 +304,66 @@ Endpoint principal. Acepta **no-stream** y **stream** (SSE), y cualquier campo d
 ### `GET /v1/models` (auth)
 
 Lista los modelos de **todos** los providers configurados, deduplicados, en formato OpenAI (`object: "list"`, cada ítem `object: "model"`, `owned_by: "mofgw"`).
+
+Desde 007-002, cada modelo con `model_metadata`/`pricing` en config incluye campos extra que los runtimes leen para decidir modelo y optimizar reasoning:
+
+```json
+{
+  "id": "deepseek-v4-flash",
+  "object": "model",
+  "context_length": 1000000,
+  "context_window": 1000000,
+  "max_context_length": 1000000,
+  "loaded_context_length": 1000000,
+  "max_completion_tokens": 384000,
+  "capabilities": { "reasoning": true },
+  "thinking": { "levels": ["low", "high", "max"], "default": "high" },
+  "pricing": { "input_usd_per_m": 0.14, "output_usd_per_m": 0.28, "cache_hit_usd_per_m": 0.028 }
+}
+```
+
+Campos que consumen opencode/openclaw (research §3): `context_length` (openclaw 1º), `max_context_length`/`loaded_context_length` (opencode Go), `max_completion_tokens`, `capabilities.reasoning`, `thinking.levels`. Modelos sin metadata conservan el formato mínimo.
+
+### `GET /v1/usage` (auth)
+
+Consumo acumulado del cliente autenticado (007-003 + 008-003). Cada cliente ve **solo lo suyo**:
+
+```json
+{
+  "client": "agent-main",
+  "totals": { "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "cache_hit_tokens": 100, "cost_usd": 0.0012 },
+  "by_model": [ { "model": "deepseek-v4-flash", "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "cost_usd": 0.0012 } ],
+  "sessions": [ { "id": "s1", "requests": 3, "total_tokens": 3840, "cost_usd": 0.003, "last_request_at": 1786 } ]
+}
+```
+
+Con `?session=<id>` devuelve las stats de **una sesión** del cliente (correlacionada por el header `X-Session-Id` que el runtime manda en los requests):
+
+```bash
+curl -sS "http://127.0.0.1:3369/v1/usage?session=abc123" -H "Authorization: Bearer <client-key>"
+# → { "session": "abc123", "requests": 3, "prompt_tokens": ..., "total_tokens": ..., ... }
+```
+
+- Sesión inexistente → `404`.
+- Sin auth → `401`.
+
+### Headers de uso por request (007-003)
+
+Toda respuesta de `/v1/chat/completions` (no-stream y stream) incluye headers con el consumo del request:
+
+```
+X-Usage-Prompt-Tokens: 1200
+X-Usage-Completion-Tokens: 80
+X-Usage-Total-Tokens: 1280
+X-Usage-Cache-Hit-Tokens: 1000
+X-Usage-Cost-USD: 0.001280
+```
+
+En streaming, los headers se setean antes del primer byte (el usage del chunk final va en el body SSE como siempre).
+
+### `X-Session-Id` — correlación de sesiones (008-003)
+
+Header **opcional de solo lectura**: el runtime lo manda para que mofgw agrupe los requests de una sesión lógica y los exponga en `/v1/usage?session=<id>`. **Nunca se reenvía al upstream** (como `X-Agent-Id`).
 
 ### `GET /healthz` (sin auth)
 
@@ -399,17 +520,22 @@ Por cada intento, mofgw clampea el `max_tokens` del body contra el límite del p
 
 - **Modelos sin soporte de tools:** algunos modelos (ej. `smollm:135m` y similares) devuelven `502` si el cliente manda `tools[]` en el request (algunos clientes siempre lo hacen). Es **comportamiento correcto** del proxy transparente — no se strippean tools (decisión de diseño). Usa un modelo con soporte de tools para esos clientes.
 - **`401/403` de cliente no disparan fallback** (ver tabla arriba).
-- **Cooldown efímero en memoria:** al reiniciar mofgw, todos los providers arrancan "fríos".
-- **Métricas mínimas:** el `/metrics` actual son contadores simples; el formato Prometheus completo es roadmap.
-- **Sin health checks periódicos:** el estado de los providers se descubre por intentos reales, no por sondeos.
-- **Privacidad de logs:** aun con `--verbose`, **nunca** se loguea contenido de prompts, respuestas LLM, definiciones de tools ni API keys — es por diseño (privacidad). Los logs de debug son solo metadatos (modelo, counts, status, duraciones, causas).
+- **Cooldown y accounting en memoria:** al reiniciar mofgw, los providers arrancan "fríos" y el histórico de tokens/costos/sesiones se pierde (no hay persistencia).
+- **Estimación de tokens rough:** el rechazo por ventana usa `len(body)/4` (no tokenizer real) — adecuado para prompts gigantes, no exacto.
+- **Budget best-effort:** el chequeo de budget es informativo (puede excederse por el costo de un request en vuelo); no es un límite duro.
+- **Ventana de budget simple:** acumulado desde el arranque (no deslizante por ventana de tiempo).
+- **Sin rate limiting por IP en auth:** aceptado (proxy interno, hash 256-bit; ver TECHDEBT).
+- **Métricas en texto plano estilo Prometheus:** el formato Prometheus completo es roadmap.
+- **Privacidad de logs:** aun con `--verbose`, **nunca** se loguea contenido de prompts, respuestas LLM, definiciones de tools ni API keys — es por diseño (privacidad). Los logs de debug son solo metadatos (modelo, counts, status, duraciones, causas). Desde SEC-001, los errores de streaming también se sanear antes de llegar al cliente.
 
 ## Roadmap (lo que NO está implementado todavía)
 
-- **Retry con backoff exponencial** (EPIC-002 / 002-001).
-- **Health checks periódicos** (EPIC-002 / 002-002).
-- **Métricas Prometheus completas** (005-001, parcial: ya existen contadores mínimos).
-- **Cache LLM + eficiencia** (EPIC-003) y **escala multi-agente / multi-tenancy** (EPIC-004).
+- **Métricas Prometheus completas** (005-001, parcial: ya existen contadores en texto plano).
+- **Persistencia del accounting** (tokens/costos/sesiones entre restarts).
+- **Ventana deslizante exacta** para budget (habilitada por el registro por sesión de 008-003, no aplicada).
+- **Alertas** al exceder budget (hoy solo rechazo 429).
+- **Budget global** (suma de clientes) — hoy es por cliente.
+- **Cache explícito de providers** (cache_control) — el implícito ya da hit rates altos.
 
 ---
 
