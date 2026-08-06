@@ -81,6 +81,9 @@ type harness struct {
 	ups     []*upstream
 	clients []auth.Client
 	key     string
+	// proxySrv expone el Server del proxy para configurar features que
+	// se inyectan post-construcción (006-002 SetPricing).
+	proxySrv *proxy.Server
 }
 
 func build(t *testing.T, ups []*upstream, clientKey string) *harness {
