@@ -135,12 +135,12 @@ func (k *Keyed) SetAgentTTL(ttl time.Duration) {
 	k.mu.Unlock()
 }
 
-// PurgeStaleAgents elimina las entries de agentes cuyo lastUsed es
+// purgeStaleAgents elimina las entries de agentes cuyo lastUsed es
 // anterior a now - agentTTL (SEC-001 P2). Acota la cardinalidad de
-// agentLimits ante X-Agent-Id arbitrarios (memory leak lento). El
-// caller decide cuándo llamarlo (el proxy puede llamarlo periódicamente
-// o en Acquire).
-func (k *Keyed) PurgeStaleAgents(now time.Time) {
+// agentLimits ante X-Agent-Id arbitrarios. La purga productiva es lazy
+// e inline en AcquireAgent; esta función se usa en tests y como API
+// manual. No exportada a propósito (evita API engañosa, review M3).
+func (k *Keyed) purgeStaleAgents(now time.Time) {
 	k.mu.Lock()
 	for key, entry := range k.agentLimits {
 		if now.Sub(entry.lastUsed) > k.agentTTL {
@@ -189,6 +189,11 @@ func (k *Keyed) AcquireClient(clientID string) (release func(), ok bool) {
 // maxAgentIDLen acota la longitud del X-Agent-Id usado como key del
 // limiter (SEC-001 P2). IDs más largos se truncan — los agentes con el
 // mismo prefijo de 64 chars comparten limiter (cardinalidad acotada).
+// Nota (review M1): el truncado es a nivel byte (agentID[:64]) — los
+// agent IDs deben ser ASCII; UTF-8 multi-byte podría cortarse en mitad
+// de rune (funcionalmente seguro: colisión de prefijo es el
+// comportamiento deseado, pero la key podría tener bytes UTF-8
+// inválidos si algún día se debuggea).
 const maxAgentIDLen = 64
 
 // AcquireAgent toma un slot del budget por (cliente, agente)
@@ -210,15 +215,16 @@ func (k *Keyed) AcquireAgent(clientID, agentID string) (release func(), ok bool)
 	}
 	// Purga lazy (SEC-001 P2): con frecuencia acotada (agentTTL/2) para
 	// acotar la cardinalidad de agentLimits sin barrer el mapa en cada
-	// request. Elimina las entries inactivas por más del TTL.
-	if time.Since(k.lastPurge) > k.agentTTL/2 {
-		now := time.Now()
+	// request. Elimina las entries inactivas por más del TTL. Un solo
+	// time.Now() para el bloque (review N2).
+	now := time.Now()
+	if now.Sub(k.lastPurge) > k.agentTTL/2 {
 		for key, entry := range k.agentLimits {
 			if now.Sub(entry.lastUsed) > k.agentTTL {
 				delete(k.agentLimits, key)
 			}
 		}
-		k.lastPurge = time.Now()
+		k.lastPurge = now
 	}
 	key := agentKey(clientID, agentID)
 	entry, lExists := k.agentLimits[key]
@@ -226,7 +232,7 @@ func (k *Keyed) AcquireAgent(clientID, agentID string) (release func(), ok bool)
 		entry = &agentEntry{limiter: New(budget.MaxPerAgent)}
 		k.agentLimits[key] = entry
 	}
-	entry.lastUsed = time.Now()
+	entry.lastUsed = now
 	l := entry.limiter
 	k.mu.Unlock()
 	if !l.TryAcquire() {
