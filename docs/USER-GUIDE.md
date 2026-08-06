@@ -122,6 +122,8 @@ clients:   # clientes autorizados (agentes)
 | `max_body_bytes` | `10485760` (10MB) | Límite del body; excederlo devuelve 413. |
 | `read_timeout` | `120s` | Timeout de lectura HTTP. |
 | `write_timeout` | `300s` | Timeout de escritura HTTP. |
+| `state_file` | *(vacío)* | Ruta del snapshot JSON de accounting (usage/cost/sesiones). Vacío = persistencia deshabilitada (todo en memoria). Si existe al arrancar se restaura; corrupto → warn + estado limpio (nunca bloquea). |
+| `state_save_interval` | `0` | Cada cuánto se persiste en caliente. `0` = solo al shutdown limpio. Se ignora si `state_file` está vacío. |
 
 ### `fallback`
 
