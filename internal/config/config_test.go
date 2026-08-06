@@ -30,7 +30,7 @@ providers:
     models: ["deepseek-v4-flash", "glm-5.2"]
     max_tokens: 8192
   - id: provider-b
-    base_url: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    base_url: "https://api.provider-b.example.com/compatible-mode/v1"
     api_key_env: "MOFGW_PROVIDER_B_KEY"
     models: ["qwen3.7-plus"]
     max_tokens: 16384
