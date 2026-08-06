@@ -91,6 +91,15 @@ type ProviderConfig struct {
 	APIKey string `yaml:"-"`
 }
 
+// BudgetConfig es el límite de consumo de un cliente (008-002-budget):
+// cost_usd_max y/o tokens_max opcionales (0 = sin límite para esa
+// dimensión). Sin budget configurado → cliente sin límite.
+type BudgetConfig struct {
+	CostUSDMax float64       `yaml:"cost_usd_max"`
+	TokensMax  int64         `yaml:"tokens_max"`
+	Window     time.Duration `yaml:"window"` // documentado como aproximación (ventana simple desde start)
+}
+
 // ClientConfig: un cliente autorizado (001-007-auth).
 type ClientConfig struct {
 	ID        string `yaml:"id"`
@@ -102,6 +111,9 @@ type ClientConfig struct {
 	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
 	// MaxConcurrentPerAgent 0 = ilimitado. Límite por (cliente, X-Agent-Id).
 	MaxConcurrentPerAgent int `yaml:"max_concurrent_per_agent"`
+
+	// Budget: límite de consumo (008-002). nil = sin límite.
+	Budget *BudgetConfig `yaml:"budget"`
 }
 
 // ModelMetadata es la metadata declarativa de un modelo para el catálogo

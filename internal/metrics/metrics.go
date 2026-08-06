@@ -182,6 +182,7 @@ func (m *Metrics) SnapshotClient(client string) UsageSnapshot {
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
+		snap.CostUSD += v
 		parts := strings.SplitN(k, "|", 3)
 		model := parts[2]
 		ms, ok := byModel[model]
