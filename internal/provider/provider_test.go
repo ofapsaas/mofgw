@@ -246,3 +246,60 @@ func TestSanitizeRedactsURLsAndKeys(t *testing.T) {
 		t.Fatalf("sanitize no redactó: %q", got)
 	}
 }
+
+// ---- 003-001-provider-cache: P1 parseo de campos de cache (RED) ----
+
+// TestCompleteParseCacheFields: el Usage de Complete expone cached_tokens,
+// cache_creation_tokens y reasoning_tokens parseados del upstream (P1).
+// RED por compilación: Usage.CachedTokens aún no existe — el implementer
+// agrega el campo + parseo en GREEN.
+func TestCompleteParseCacheFields(t *testing.T) {
+	srv := fakeUpstream(t, 200, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"hola"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1200,"completion_tokens":80,"total_tokens":1280,"prompt_tokens_details":{"cached_tokens":1000,"cache_creation_input_tokens":200},"completion_tokens_details":{"reasoning_tokens":30}}}`, false)
+	defer srv.Close()
+	c := testClient(t, srv.URL)
+
+	res, err := c.Complete(context.Background(), chatBody("gpt-4o-mini"))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	u := res.Response.Usage
+	if u.CachedTokens != 1000 {
+		t.Fatalf("CachedTokens = %d, want 1000", u.CachedTokens)
+	}
+	if u.CacheCreationTokens != 200 {
+		t.Fatalf("CacheCreationTokens = %d, want 200", u.CacheCreationTokens)
+	}
+	if u.ReasoningTokens != 30 {
+		t.Fatalf("ReasoningTokens = %d, want 30", u.ReasoningTokens)
+	}
+}
+
+// TestCompleteParseCacheFieldsAusentes: campos de cache ausentes o no
+// numéricos → 0, sin error (P1 tolerante).
+func TestCompleteParseCacheFieldsAusentes(t *testing.T) {
+	// sin prompt_tokens_details ni completion_tokens_details
+	srv := fakeUpstream(t, 200, `{"id":"x","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`, false)
+	defer srv.Close()
+	c := testClient(t, srv.URL)
+
+	res, err := c.Complete(context.Background(), chatBody("gpt-4o-mini"))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	u := res.Response.Usage
+	if u.CachedTokens != 0 || u.CacheCreationTokens != 0 || u.ReasoningTokens != 0 {
+		t.Fatalf("campos ausentes deben ser 0, got %+v", u)
+	}
+
+	// cached_tokens no numérico → 0 sin error
+	srv2 := fakeUpstream(t, 200, `{"id":"x","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7,"prompt_tokens_details":{"cached_tokens":"abc"}}}`, false)
+	defer srv2.Close()
+	c2 := testClient(t, srv2.URL)
+	res2, err := c2.Complete(context.Background(), chatBody("gpt-4o-mini"))
+	if err != nil {
+		t.Fatalf("Complete (no numérico): %v", err)
+	}
+	if res2.Response.Usage.CachedTokens != 0 {
+		t.Fatalf("cached_tokens no numérico debe ser 0, got %d", res2.Response.Usage.CachedTokens)
+	}
+}
