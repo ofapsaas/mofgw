@@ -22,7 +22,7 @@
 | 2 | Budget para cliente zot/OpenClaw | ⏳ PENDIENTE (decisión Pablo) | MEDIA | 008-002 + config prod | zot consume ~16.8M tokens/26min (~USD verificable en /metrics). Budget comentado en config (cost_usd_max/tokens_max) — activar cuando se decida el límite. |
 | 3 | Pricing/metadata reales en config prod | ✅ HECHA 06 Ago | — | 006-002/007-001 + deploy | Se cableó pricing (tasas Zen) + model_metadata + context.margin 0.1 en `~/.config/mofgw/config.yaml`. Verificado: cost_usd_total vivo. |
 | 4 | deepseek-v4-flash-0731 sin pricing | ⏳ PENDIENTE (observar) | BAJA | config prod | Modelo solo en bailian directo; sin precio verificado en research → costo 0. Revisar si aparece en tráfico real. |
-| 5 | Clave de un provider con 401 upstream | ⏳ PENDIENTE (validar/rotar) | MEDIA | state file previo + deploy | Hallazgo pre-existente (no del replanteo): una de las keys de la cadena devuelve 401. No bloquea (el fallback cubre) pero hay que validarla/rotarla. |
+| 5 | Clave de un provider con 401 upstream | ✅ VERIFICADA 06 Ago — keys todas válidas; 401 era stale | MEDIA | state file previo + deploy | **Verificación completa (06 Ago 16:2x):** las 5 keys devuelven 200 en `/models` y chat completions — NO hay ninguna key con 401. El hallazgo original era de un state file previo al replanteo. **Estado real:** GO_2 (acct2) y GO_3 (go-corp) devuelven **429 GoUsageLimitError** (monthly usage limit reached, resets en ~5 y ~14 días) — problema de cuota/balance, no de key. 429 es retryable en la cadena → el fallback circular lo absorbe (sin impacto operativo). Acción residual: monitorear cuota de GO_2/GO_3; no requiere rotación de keys. |
 | 6 | X-Session-Id: ventana deslizante para budget | ⏳ FUTURO | BAJA | 008-002 spec I4 + 008-003 | El registro por sesión con timestamps habilita ventana deslizante exacta; el budget usa ventana simple (desde arranque). Aplicar si el operador lo pide. |
 | 7 | Auth en /metrics y /healthz (bind ampliado) | ⏳ ACEPTADA (decisión Pablo) | BAJA | deploy VPN | El bind se amplió para acceso por red confiada (VPN). healthz/metrics (sin auth por diseño) quedan visibles para los nodos de esa red — hoy solo dispositivos propios, aceptado. Si entran nodos ajenos → volver a bind por IP o agregar auth. |
 | 8 | Naming `recordCacheTokens` | ⏳ COSMÉTICA | BAJA | 006-001 review H1 | El nombre ya no refleja el alcance (acumula cache + usage + costo + sesión). Renombrar a `recordUsage` en un refactor. |
@@ -47,5 +47,6 @@
 
 ## Cambios
 
+- 2026-08-06 16:2x: #5 verificada — 401 era stale; keys todas válidas (200). GO_2/GO_3 en 429 por cuota mensual (resets 5/14 días), cubierto por fallback. Sin acción de rotación requerida.
 - 2026-08-06 15:50: #1 completada de facto — el resp.json de 006-002 estaba truncado (finish=None, sin veredicto); hallazgo NaN/Inf de precios verificado REAL (yaml `.inf`/`.nan` pasaban `< 0`) y corregido: rechazo de precios no-finitos en config.go + test (commit de este ciclo). Review.md de las 9 features actualizados con estado de validación externa.
 - 2026-08-06: creado con la consolidación del replanteo + deuda operativa.
