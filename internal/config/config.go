@@ -40,6 +40,16 @@ type ServerConfig struct {
 	// Tope de retención de sesiones en /v1/usage (008-003 P4).
 	// 0 = default (100). Setter cableado en main.go desde config.
 	MaxSessionsRetained int `yaml:"max_sessions_retained"`
+
+	// Persistencia del registro de accounting (TECHDEBT #13).
+	// StateFile: ruta del snapshot JSON (usage/cost/sesiones). Vacío =
+	// deshabilitado (todo en memoria, backward compatible). Al arrancar,
+	// si el archivo existe y es válido se restaura; un archivo corrupto
+	// NO impide el arranque (se loguea y se sigue con estado limpio).
+	StateFile string `yaml:"state_file"`
+	// StateSaveInterval: cada cuánto se persiste el estado en caliente.
+	// 0 = solo al shutdown limpio. Con StateFile vacío se ignora.
+	StateSaveInterval time.Duration `yaml:"state_save_interval"`
 }
 
 // RetryConfig: reintentos sobre el MISMO provider (002-001-retry).
@@ -174,6 +184,8 @@ func defaults() Config {
 			MaxConcurrentRequests: 0, // 0 = ilimitado (backward compatible)
 			BackpressureTimeout:   10 * time.Second,
 			MaxSessionsRetained:   100,
+			StateFile:             "", // persistencia deshabilitada por default
+			StateSaveInterval:     0,
 		},
 		Fallback: FallbackConfig{
 			MaxRetries:     2,
@@ -320,6 +332,9 @@ func (c *Config) validate() error {
 	if c.Server.MaxSessionsRetained < 0 {
 		// 008-003 external review (Major): tope negativo no tiene sentido.
 		return fmt.Errorf("config: server.max_sessions_retained no puede ser negativo")
+	}
+	if c.Server.StateSaveInterval < 0 {
+		return fmt.Errorf("config: server.state_save_interval no puede ser negativo")
 	}
 	// model_metadata (007-001): valores negativos y thinking_default fuera
 	// de la lista se rechazan temprano (P4).

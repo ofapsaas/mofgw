@@ -130,6 +130,18 @@ func run() error {
 	authz := auth.New(authClients)
 	m := metrics.New()
 
+	// TECHDEBT #13: persistencia del registro de accounting. Si el
+	// snapshot existe y es válido, se restaura (los contadores pasan a
+	// ser acumulados entre restarts). Corrupto/ausente → log + estado
+	// limpio, nunca bloquea el arranque.
+	if cfg.Server.StateFile != "" {
+		if err := m.LoadState(cfg.Server.StateFile); err != nil {
+			logger.Warn("state file no restaurado (arranque con estado limpio)", "path", cfg.Server.StateFile, "err", err)
+		} else {
+			logger.Info("state restaurado", "path", cfg.Server.StateFile)
+		}
+	}
+
 	// EPIC-004 wiring: límites de concurrencia (004-001 global con
 	// backpressure; 004-002 aislamiento por cliente/agente). Todo en 0 =
 	// ilimitado (backward compatible).
@@ -188,6 +200,46 @@ func run() error {
 	}
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
+
+	// Guardado periódico del state (TECHDEBT #13). Intervalo 0 = solo
+	// shutdown; StateFile vacío = persistencia deshabilitada.
+	var stateTicker *time.Ticker
+	var stateStop, stateDone chan struct{}
+	if cfg.Server.StateFile != "" {
+		saveState := func(reason string) {
+			if err := m.SaveState(cfg.Server.StateFile); err != nil {
+				logger.Error("state save falló", "reason", reason, "err", err)
+			} else {
+				logger.Info("state guardado", "reason", reason, "path", cfg.Server.StateFile)
+			}
+		}
+		if cfg.Server.StateSaveInterval > 0 {
+			stateTicker = time.NewTicker(cfg.Server.StateSaveInterval)
+			stateStop = make(chan struct{})
+			stateDone = make(chan struct{})
+			go func() {
+				defer close(stateDone)
+				for {
+					select {
+					case <-stateTicker.C:
+						saveState("interval")
+					case <-stateStop:
+						return
+					}
+				}
+			}()
+		}
+		defer func() {
+			if stateTicker != nil {
+				stateTicker.Stop()
+			}
+			if stateStop != nil {
+				close(stateStop) // señal de stop al goroutine
+				<-stateDone      // esperar salida (evita doble write)
+			}
+			saveState("shutdown")
+		}()
+	}
 
 	// Shutdown limpio en SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
