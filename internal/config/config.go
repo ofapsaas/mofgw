@@ -35,6 +35,10 @@ type ServerConfig struct {
 	// si expira → 429 rate_limit_exceeded.
 	MaxConcurrentRequests int           `yaml:"max_concurrent_requests"`
 	BackpressureTimeout   time.Duration `yaml:"backpressure_timeout"`
+
+	// Tope de retención de sesiones en /v1/usage (008-003 P4).
+	// 0 = default (100). Setter cableado en main.go desde config.
+	MaxSessionsRetained int `yaml:"max_sessions_retained"`
 }
 
 // RetryConfig: reintentos sobre el MISMO provider (002-001-retry).
@@ -168,6 +172,7 @@ func defaults() Config {
 			WriteTimeout:          300 * time.Second,
 			MaxConcurrentRequests: 0, // 0 = ilimitado (backward compatible)
 			BackpressureTimeout:   10 * time.Second,
+			MaxSessionsRetained:   100,
 		},
 		Fallback: FallbackConfig{
 			MaxRetries:     2,
@@ -311,6 +316,10 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: client %q: max_concurrent_requests/max_concurrent_per_agent no pueden ser negativos", cl.ID)
 		}
 	}
+	if c.Server.MaxSessionsRetained < 0 {
+		// 008-003 external review (Major): tope negativo no tiene sentido.
+		return fmt.Errorf("config: server.max_sessions_retained no puede ser negativo")
+	}
 	// model_metadata (007-001): valores negativos y thinking_default fuera
 	// de la lista se rechazan temprano (P4).
 	for model, md := range c.ModelMetadata {
@@ -319,6 +328,11 @@ func (c *Config) validate() error {
 		}
 		if md.MaxOutput < 0 {
 			return fmt.Errorf("config: model_metadata %q: max_output no puede ser negativo", model)
+		}
+		if md.ThinkingDefault != "" && len(md.Thinking) == 0 {
+			// 007-001 external review (Major): thinking_default para una
+			// capability inexistente es inconsistencia → rechazar.
+			return fmt.Errorf("config: model_metadata %q: thinking_default %q pero thinking está vacío", model, md.ThinkingDefault)
 		}
 		if md.ThinkingDefault != "" && len(md.Thinking) > 0 {
 			found := false
