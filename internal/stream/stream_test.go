@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"ofap.sh/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/provider"
 )
 
 func TestNewWriterSetsHeaders(t *testing.T) {

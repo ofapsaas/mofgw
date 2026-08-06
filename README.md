@@ -1,7 +1,7 @@
 # mofgw — MOF Gateway
 
 **Status:** ✅ MVP implementado (EPIC-001) + EPIC-002 (resiliencia) + EPIC-004 (escala) + EPIC-005 (ops) — desplegable como systemd user service con varios providers OpenAI-compatible. Suite de 83+ tests verde con `-race`.
-**Go module:** `ofap.sh/mofgw`
+**Go module:** `github.com/ofapsaas/mofgw`
 **Puerto:** 3369 (default)
 **Guía de usuario:** [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) — instalación, configuración, endpoints y uso práctico
 

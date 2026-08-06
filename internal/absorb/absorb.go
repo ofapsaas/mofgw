@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"ofap.sh/mofgw/internal/provider"
-	"ofap.sh/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/router"
 )
 
 // AbsorbedError es la estructura pública mínima de un error saliente.

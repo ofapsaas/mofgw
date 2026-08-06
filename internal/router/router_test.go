@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"ofap.sh/mofgw/internal/health"
-	"ofap.sh/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/health"
+	"github.com/ofapsaas/mofgw/internal/provider"
 )
 
 // ---- fakes ----
