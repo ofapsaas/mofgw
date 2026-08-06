@@ -1,0 +1,36 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ai-gateway
+gateway
+
+# Go
+*.test
+*.out
+go.work
+go.work.sum
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+/tmp/
+/dist/
+
+# Ops / local state (not for public repo)
+logs/
+task_plan.md
+docs/.cdad-state.json
+docs/P1-aprobacion.md
