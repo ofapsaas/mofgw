@@ -104,8 +104,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	var providerID string
 	model := ""
+	var lastUsage *provider.Usage
 	defer func() {
-		s.emitRequestEnd(logger, start, sr.status, providerID, model)
+		s.emitRequestEnd(logger, start, sr.status, providerID, model, lastUsage)
 	}()
 
 	s.metrics.IncRequests()
@@ -189,7 +190,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// 5. Streaming o no-stream
 	if req.Stream {
 		s.metrics.IncStreams()
-		providerID = s.handleStream(ctx, w, r, req, body, logger)
+		providerID, streamUsage := s.handleStream(ctx, w, r, req, body, logger)
+		lastUsage = streamUsage
+		if providerID != "" {
+			s.recordCacheTokens(providerID, req.Model, streamUsage)
+		}
 		return
 	}
 
@@ -201,6 +206,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID = res.ProviderID
 	s.metrics.SetLastProvider(res.ProviderID)
+	s.recordCacheTokens(res.ProviderID, req.Model, &res.Response.Usage)
+	lastUsage = &res.Response.Usage
 	// reescribir model → el que pidió el cliente (no el alias interno)
 	out := rewriteResponseModel(res.Raw, req.Model)
 	w.Header().Set("Content-Type", "application/json")
@@ -208,14 +215,55 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
+// recordCacheTokens acumula los tokens de cache/reasoning de un request
+// en /metrics (003-001 P3). miss = prompt - cached (los proveedores
+// OpenAI-compatibles no reportan miss explícito; el estándar es
+// prompt_tokens_details.cached_tokens). Nunca crashea con usage ausente.
+func (s *Server) recordCacheTokens(providerID, model string, u *provider.Usage) {
+	hit, miss, reasoning := int64(0), int64(0), int64(0)
+	if u != nil {
+		hit = int64(u.CachedTokens)
+		if d := int64(u.PromptTokens - u.CachedTokens); d > 0 {
+			miss = d
+		}
+		reasoning = int64(u.ReasoningTokens)
+	}
+	s.metrics.IncCacheTokens(providerID, model, hit, miss, reasoning)
+}
+
 // emitRequestEnd loguea el evento request_end al finalizar un handler.
-func (s *Server) emitRequestEnd(logger *slog.Logger, start time.Time, statusCode int, providerID, model string) {
+// Incluye los campos de cache/reasoning (003-001 P4) cuando el usage
+// upstream está disponible.
+func (s *Server) emitRequestEnd(logger *slog.Logger, start time.Time, statusCode int, providerID, model string, u *provider.Usage) {
 	logger.Debug("request_end",
 		"status_code", statusCode,
 		"duration_ms", time.Since(start).Milliseconds(),
 		"provider", providerID,
 		"model", model,
+		"cache_hit_tokens", cacheTokensOrZero(u, true),
+		"cache_miss_tokens", cacheTokensOrZero(u, false),
+		"reasoning_tokens", reasoningTokensOrZero(u),
 	)
+}
+
+func cacheTokensOrZero(u *provider.Usage, hit bool) int {
+	if u == nil {
+		return 0
+	}
+	if hit {
+		return u.CachedTokens
+	}
+	if d := u.PromptTokens - u.CachedTokens; d > 0 {
+		return d
+	}
+	return 0
+}
+
+func reasoningTokensOrZero(u *provider.Usage) int {
+	if u == nil {
+		return 0
+	}
+	return u.ReasoningTokens
 }
 
 // statusRecorder captura el código de estado HTTP real de la respuesta.
@@ -252,23 +300,26 @@ func (r *statusRecorder) Flush() {
 }
 
 // handleStream: router.Stream + passthrough SSE con frontera primer-byte.
-// Devuelve el ID del provider que sirvió el stream, o vacío si falló.
-func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, body []byte, logger *slog.Logger) string {
+// Devuelve el ID del provider que sirvió el stream ("" si falló) y el
+// usage capturado del chunk final (003-001 P4; nil si el upstream no lo
+// mandó o el stream falló).
+func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, body []byte, logger *slog.Logger) (string, *provider.Usage) {
 	res, err := s.router.Stream(ctx, req, body)
 	if err != nil {
 		s.handleChainError(w, err, logger)
-		return ""
+		return "", nil
 	}
 	s.metrics.SetLastProvider(res.Provider.ID())
 	sw, err := stream.NewWriter(w)
 	if err != nil {
 		openAIError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
-		return ""
+		return "", nil
 	}
-	if err := sw.Copy(res.Events, req.Model); err != nil {
+	events := stream.CaptureUsage(res.Events)
+	if err := sw.Copy(events.Events, req.Model); err != nil {
 		logger.Warn("stream interrumpido", "provider", res.Provider.ID(), "err", err)
 	}
-	return res.Provider.ID()
+	return res.Provider.ID(), events.Usage()
 }
 
 // handleChainError traduce errores del router a respuesta

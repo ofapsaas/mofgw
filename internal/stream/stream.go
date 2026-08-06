@@ -134,6 +134,45 @@ func reencode(m map[string]json.RawMessage) string {
 	return strings.TrimSpace(buf.String())
 }
 
+// CapturedStream es un canal de eventos SSE envuelto con captura de
+// usage (003-001 P4). Events es el canal para consumir; Usage() devuelve
+// el usage del chunk final y es VÁLIDO solo después de drenar Events
+// (la sincronización la da el cierre del canal: las escrituras de usage
+// ocurren antes del último send, que precede al close).
+type CapturedStream struct {
+	Events <-chan provider.StreamEvent
+	usage  *provider.Usage
+}
+
+// CaptureUsage envuelve un canal de eventos SSE reenviándolos intactos
+// y extrayendo el objeto usage del chunk final (streaming con
+// include_usage=true). Es transparente: ningún evento se altera ni se
+// pierde.
+func CaptureUsage(events <-chan provider.StreamEvent) *CapturedStream {
+	cs := &CapturedStream{}
+	out := make(chan provider.StreamEvent, 8)
+	cs.Events = out
+	go func() {
+		defer close(out)
+		for ev := range events {
+			if ev.Err == nil && ev.Data != "" && ev.Data != "[DONE]" {
+				var chunk struct {
+					Usage *provider.Usage `json:"usage"`
+				}
+				if json.Unmarshal([]byte(ev.Data), &chunk) == nil && chunk.Usage != nil {
+					cs.usage = chunk.Usage
+				}
+			}
+			out <- ev
+		}
+	}()
+	return cs
+}
+
+// Usage devuelve el usage capturado (nil si el upstream no lo mandó).
+// Válido solo después de drenar Events (ver CapturedStream).
+func (c *CapturedStream) Usage() *provider.Usage { return c.usage }
+
 // Copy reenvía el canal de eventos del router al cliente, reescribiendo
 // model (modelo pedido por el cliente) e id estable. Si el canal muere
 // con error a mitad de stream, emite SSE de error + [DONE]. Devuelve el

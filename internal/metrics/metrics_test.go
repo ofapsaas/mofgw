@@ -35,8 +35,12 @@ func TestNamesSorted(t *testing.T) {
 	m := New()
 	m.IncErrors()
 	names := m.Names()
-	if len(names) != 5 { // 5 contadores (last_provider solo si se seteó)
-		t.Fatalf("names = %v (len %d), want 5", names, len(names))
+	// 8 contadores base: requests, streams, errors, failovers, cooldown,
+	// cache_hit_tokens, cache_miss_tokens, reasoning_tokens
+	// (003-001 P3: los totales de cache se emiten siempre, en 0 si no
+	// hubo datos; last_provider solo si se seteó).
+	if len(names) != 8 {
+		t.Fatalf("names = %v (len %d), want 8", names, len(names))
 	}
 	for i := 1; i < len(names); i++ {
 		if names[i-1] > names[i] {

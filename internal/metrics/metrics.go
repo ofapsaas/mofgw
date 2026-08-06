@@ -29,11 +29,24 @@ type Metrics struct {
 	// Cardinalidad acotada por clientes configurados x razones fijas.
 	rejectedMu sync.Mutex
 	rejected   map[string]int64 // "client|reason" -> count
+
+	// tokens: contadores de tokens con labels (provider, model) —
+	// 003-001-provider-cache (P3). Cardinalidad acotada por providers
+	// configurados x modelos servidos.
+	tokensMu  sync.Mutex
+	cacheHit  map[string]int64 // "provider|model" -> cached tokens
+	cacheMiss map[string]int64 // "provider|model" -> prompt - cached
+	reasoning map[string]int64 // "provider|model" -> reasoning tokens
 }
 
 // New construye un registro vacío.
 func New() *Metrics {
-	m := &Metrics{rejected: make(map[string]int64)}
+	m := &Metrics{
+		rejected:  make(map[string]int64),
+		cacheHit:  make(map[string]int64),
+		cacheMiss: make(map[string]int64),
+		reasoning: make(map[string]int64),
+	}
 	m.lastProvider.Store("")
 	return m
 }
@@ -51,6 +64,19 @@ func (m *Metrics) IncRejected(client, reason string) {
 	m.rejectedMu.Lock()
 	m.rejected[client+"|"+reason]++
 	m.rejectedMu.Unlock()
+}
+
+// IncCacheTokens acumula tokens de cache/reasoning de un request
+// (003-001 P3). hit = cached_tokens, miss = prompt - cached,
+// reasoning = reasoning_tokens. El llamado con valores 0 es válido y
+// asegura que el contador aparezca en /metrics (aunque en 0).
+func (m *Metrics) IncCacheTokens(provider, model string, hit, miss, reasoning int64) {
+	key := provider + "|" + model
+	m.tokensMu.Lock()
+	m.cacheHit[key] += hit
+	m.cacheMiss[key] += miss
+	m.reasoning[key] += reasoning
+	m.tokensMu.Unlock()
 }
 
 // SetLastProvider registra el provider que respondió (observabilidad).
@@ -93,6 +119,53 @@ func (m *Metrics) Render() string {
 		b.WriteString(parts[1])
 		b.WriteString("\"} ")
 		b.WriteString(fmt.Sprint(vals[k]))
+		b.WriteString("\n")
+	}
+	// tokens: totales sin labels (siempre presentes, 0 si no hubo datos)
+	// + una línea por (provider, model) cuando hay datos (003-001 P3).
+	m.tokensMu.Lock()
+	type tokenRow struct{ hit, miss, reasoning int64 }
+	rows := make(map[string]tokenRow, len(m.cacheHit))
+	var hitTotal, missTotal, reasoningTotal int64
+	for k, v := range m.cacheHit {
+		r := rows[k]
+		r.hit = v
+		rows[k] = r
+		hitTotal += v
+	}
+	for k, v := range m.cacheMiss {
+		r := rows[k]
+		r.miss = v
+		rows[k] = r
+		missTotal += v
+	}
+	for k, v := range m.reasoning {
+		r := rows[k]
+		r.reasoning = v
+		rows[k] = r
+		reasoningTotal += v
+	}
+	m.tokensMu.Unlock()
+
+	write("cache_hit_tokens_total", fmt.Sprint(hitTotal))
+	write("cache_miss_tokens_total", fmt.Sprint(missTotal))
+	write("reasoning_tokens_total", fmt.Sprint(reasoningTotal))
+
+	keys := make([]string, 0, len(rows))
+	for k := range rows {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		parts := strings.SplitN(k, "|", 2)
+		label := "mofgw_cache_tokens{provider=\"" + parts[0] + "\",model=\"" + parts[1] + "\"}"
+		b.WriteString(label)
+		b.WriteString(" hit=")
+		b.WriteString(fmt.Sprint(rows[k].hit))
+		b.WriteString(" miss=")
+		b.WriteString(fmt.Sprint(rows[k].miss))
+		b.WriteString(" reasoning=")
+		b.WriteString(fmt.Sprint(rows[k].reasoning))
 		b.WriteString("\n")
 	}
 	return b.String()
