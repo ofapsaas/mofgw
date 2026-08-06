@@ -22,6 +22,7 @@ package limiter
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Limiter es un semáforo de slots. n==0 = ilimitado (no bloquea nunca).
@@ -87,7 +88,20 @@ type Keyed struct {
 	budgets map[string]ClientBudget
 
 	clientLimits map[string]*Limiter
-	agentLimits  map[string]*Limiter
+	// agentLimits: (cliente, agente) -> limiter + lastUsed para TTL
+	// (SEC-001 P2: purga de entries inactivas acota cardinalidad).
+	agentLimits map[string]*agentEntry
+
+	// agentTTL: inactividad máxima de una entry de agente antes de
+	// purgarse (SEC-001 P2). Default 10 min.
+	agentTTL time.Duration
+}
+
+// agentEntry es una entry del mapa de agentes: el limiter + cuándo se
+// usó por última vez (para TTL de purga, SEC-001 P2).
+type agentEntry struct {
+	limiter  *Limiter
+	lastUsed time.Time
 }
 
 // ClientBudget son los límites de un cliente (004-002). 0 = ilimitado.
@@ -102,8 +116,33 @@ func NewKeyed(clientBudgets map[string]ClientBudget) *Keyed {
 	return &Keyed{
 		budgets:      clientBudgets,
 		clientLimits: make(map[string]*Limiter),
-		agentLimits:  make(map[string]*Limiter),
+		agentLimits:  make(map[string]*agentEntry),
+		agentTTL:     10 * time.Minute,
 	}
+}
+
+// SetAgentTTL configura el TTL de inactividad de las entries de agentes
+// (SEC-001 P2). Las entries inactivas por más del TTL se purgan en
+// PurgeStaleAgents. Default 10 min.
+func (k *Keyed) SetAgentTTL(ttl time.Duration) {
+	k.mu.Lock()
+	k.agentTTL = ttl
+	k.mu.Unlock()
+}
+
+// PurgeStaleAgents elimina las entries de agentes cuyo lastUsed es
+// anterior a now - agentTTL (SEC-001 P2). Acota la cardinalidad de
+// agentLimits ante X-Agent-Id arbitrarios (memory leak lento). El
+// caller decide cuándo llamarlo (el proxy puede llamarlo periódicamente
+// o en Acquire).
+func (k *Keyed) PurgeStaleAgents(now time.Time) {
+	k.mu.Lock()
+	for key, entry := range k.agentLimits {
+		if now.Sub(entry.lastUsed) > k.agentTTL {
+			delete(k.agentLimits, key)
+		}
+	}
+	k.mu.Unlock()
 }
 
 // SetBudget define/actualiza el budget de un cliente (útil en tests).
@@ -142,9 +181,15 @@ func (k *Keyed) AcquireClient(clientID string) (release func(), ok bool) {
 	return l.Release, true
 }
 
+// maxAgentIDLen acota la longitud del X-Agent-Id usado como key del
+// limiter (SEC-001 P2). IDs más largos se truncan — los agentes con el
+// mismo prefijo de 64 chars comparten limiter (cardinalidad acotada).
+const maxAgentIDLen = 64
+
 // AcquireAgent toma un slot del budget por (cliente, agente)
 // (fast-fail). Si agentID está vacío, usa el budget del cliente como
-// agente único (misma key, sin separación).
+// agente único (misma key, sin separación). El agentID se trunca a
+// maxAgentIDLen (SEC-001 P2) y la entry se marca como usada (TTL).
 func (k *Keyed) AcquireAgent(clientID, agentID string) (release func(), ok bool) {
 	k.mu.Lock()
 	budget, exists := k.budgets[clientID]
@@ -155,12 +200,17 @@ func (k *Keyed) AcquireAgent(clientID, agentID string) (release func(), ok bool)
 	if agentID == "" {
 		agentID = clientID
 	}
-	key := agentKey(clientID, agentID)
-	l, lExists := k.agentLimits[key]
-	if !lExists {
-		l = New(budget.MaxPerAgent)
-		k.agentLimits[key] = l
+	if len(agentID) > maxAgentIDLen {
+		agentID = agentID[:maxAgentIDLen]
 	}
+	key := agentKey(clientID, agentID)
+	entry, lExists := k.agentLimits[key]
+	if !lExists {
+		entry = &agentEntry{limiter: New(budget.MaxPerAgent)}
+		k.agentLimits[key] = entry
+	}
+	entry.lastUsed = time.Now()
+	l := entry.limiter
 	k.mu.Unlock()
 	if !l.TryAcquire() {
 		return nil, false

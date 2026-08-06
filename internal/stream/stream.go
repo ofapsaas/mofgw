@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/ofapsaas/mofgw/internal/absorb"
 	"github.com/ofapsaas/mofgw/internal/provider"
 )
 
@@ -177,11 +178,20 @@ func (c *CapturedStream) Usage() *provider.Usage { return c.usage }
 // model (modelo pedido por el cliente) e id estable. Si el canal muere
 // con error a mitad de stream, emite SSE de error + [DONE]. Devuelve el
 // error del upstream (para logging) o nil si terminó limpio.
+//
+// SEC-001 P1: el mensaje al cliente vía SSE se sanea (absorb.Sanitize)
+// — nunca se filtra detalle interno del error (hosts, rutas, TLS). El
+// detalle completo queda en logs (el error se devuelve intacto).
 func (s *Writer) Copy(events <-chan provider.StreamEvent, clientModel string) error {
 	var stableID string
 	for ev := range events {
 		if ev.Err != nil {
-			_ = s.WriteError("upstream stream interrupted: "+ev.Err.Error(), "upstream_error")
+			ae := absorb.Sanitize(ev.Err)
+			msg := "upstream stream interrupted"
+			if ae != nil {
+				msg = ae.Message
+			}
+			_ = s.WriteError(msg, "upstream_error")
 			return ev.Err
 		}
 		if ev.Data == "[DONE]" {
