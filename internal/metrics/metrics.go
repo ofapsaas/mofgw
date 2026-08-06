@@ -45,6 +45,11 @@ type Metrics struct {
 	promptTokens  map[string]int64 // "client|provider|model" -> prompt tokens
 	completionTok map[string]int64 // "client|provider|model" -> completion tokens
 	totalTokens   map[string]int64 // "client|provider|model" -> total tokens
+
+	// cost: costo estimado USD por (client, provider, model) —
+	// 006-002-costos (P3). Misma cardinalidad que usage.
+	costMu sync.Mutex
+	cost   map[string]float64 // "client|provider|model" -> USD acumulado
 }
 
 // New construye un registro vacío.
@@ -57,6 +62,7 @@ func New() *Metrics {
 		promptTokens:  make(map[string]int64),
 		completionTok: make(map[string]int64),
 		totalTokens:   make(map[string]int64),
+		cost:          make(map[string]float64),
 	}
 	m.lastProvider.Store("")
 	return m
@@ -105,6 +111,19 @@ func (m *Metrics) IncUsage(client, provider, model string, prompt, completion, t
 	m.completionTok[key] += completion
 	m.totalTokens[key] += total
 	m.usageMu.Unlock()
+}
+
+// IncCost acumula el costo estimado en USD de un request por
+// (client, provider, model) — 006-002-costos (P3). client vacío cae en
+// "unknown" (consistente con IncUsage).
+func (m *Metrics) IncCost(client, provider, model string, costUsd float64) {
+	if client == "" {
+		client = "unknown"
+	}
+	key := client + "|" + provider + "|" + model
+	m.costMu.Lock()
+	m.cost[key] += costUsd
+	m.costMu.Unlock()
 }
 
 // SetLastProvider registra el provider que respondió (observabilidad).
@@ -241,6 +260,31 @@ func (m *Metrics) Render() string {
 		b.WriteString(fmt.Sprint(usageRows[k].completion))
 		b.WriteString(" total=")
 		b.WriteString(fmt.Sprint(usageRows[k].total))
+		b.WriteString("\n")
+	}
+	// costo estimado por (client, provider, model) (006-002 P3).
+	m.costMu.Lock()
+	costRows := make(map[string]float64, len(m.cost))
+	var costTotal float64
+	for k, v := range m.cost {
+		costRows[k] = v
+		costTotal += v
+	}
+	m.costMu.Unlock()
+
+	write("cost_usd_total", fmt.Sprintf("%.6f", costTotal))
+
+	cKeys := make([]string, 0, len(costRows))
+	for k := range costRows {
+		cKeys = append(cKeys, k)
+	}
+	sort.Strings(cKeys)
+	for _, k := range cKeys {
+		parts := strings.SplitN(k, "|", 3)
+		label := "mofgw_cost_usd{client=\"" + parts[0] + "\",provider=\"" + parts[1] + "\",model=\"" + parts[2] + "\"}"
+		b.WriteString(label)
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%.6f", costRows[k]))
 		b.WriteString("\n")
 	}
 	return b.String()
