@@ -181,7 +181,7 @@ func TestPersistVersionReject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	up := strings.Replace(string(data), `"version":1`, `"version":99`, 1)
+	up := strings.Replace(string(data), `"version":2`, `"version":99`, 1)
 	if err := os.WriteFile(path, []byte(up), 0o600); err != nil {
 		t.Fatal(err)
 	}
