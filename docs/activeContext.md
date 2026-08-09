@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-09 (cdad-scribe, feature 009-002 closed — EPIC-009 3/3 done).
+> Última actualización: 2026-08-09 (cdad-scribe, EPIC-009 cerrado — 3/3 features done + integración E3 + closure E4).
 
 ## Estado del programa
 
-**🔜 EPIC-009: 3/3 features DONE (009-000 / 009-001 / 009-002). Pendiente: integración cross-feature (E3) + closure del epic (E4). Resto de epics DONE.**
+**✅ Todos los epics del programa DONE — EPIC-009 (mofgw-contexto-analisis) CERRADO 09 Ago 2026: 3/3 features done, integración E3 verde, closure E4 completado. Resto: criterios de aceptación del programa completo (plan.md).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -18,13 +18,34 @@
 | EPIC-007 (catálogo) | 3 features | ✅ DONE | (06 Ago) |
 | EPIC-008 (contexto) | 3 features | ✅ DONE | (06 Ago) |
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
-| EPIC-009 (contexto-análisis) | 3 features | 🔜 3/3 DONE — pendiente integración (E3) + closure (E4) | 009-000 ✅ / 009-001 ✅ / 009-002 ✅ done |
+| EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 
-**Suite:** 14 paquetes, 326 tests verde con `-race`. vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
+**Suite:** 14 paquetes, **332 tests verde con `-race`** (326 + 6 E2E cross-feature del epic 009). vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
+**Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
+**Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz + E2E cross-feature epic 009 verde.
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz.
 
 ## Decisiones recientes (cronología inversa)
+
+## 2026-08-09 — Epic 009 cerrado
+
+### Decisiones relevantes
+
+- **EPIC-009 (mofgw-contexto-analisis) CERRADO — 3/3 features done, integración cross-feature verde (E3) y closure (E4) completados.** El epic cumplió su objetivo: descubrir y optimizar la composición del contexto del tráfico real. Cadena entregada: telemetría de descubrimiento (009-000, desplegada en prod 09 Ago) → composición de contexto `/v1/context` (009-001) → sticky routing por sesión (009-002). Los 4 criterios de aceptación del epic (plan.md:211-215) verificados: E2E cross-feature `TestE2EEpic009_FlujoCompuesto` (6 subtests) verde; suite completa **332 tests `-race`** (326 + 6 cross-feature); **cero bugs cross-feature** (integration-009.md, commit `da8446c`).
+- **Dual-keying confirmado por captura real (~103 eventos) — el criterio de cierre del epic (ADR-001, creado en 009-001):** solo opencode manda `X-Session-Id` (header); openclaw/zot no (ni header ni metadata, `detected_ids` = 0 en todos los eventos) → composición y sticky keyed `client|session` para opencode y `client|` para openclaw/zot, conviviendo simultáneamente en runtime.
+- **Sticky como reordenamiento post-filtro (ADR-002, creado en 009-002):** `applyStickyReorder` solo mueve al preferido al frente del slice `ready` post-`resolveReady` (cooldown/health/Serves ya aplicaron); nunca fuerza. El criterio del epic "respeta cooldown/health/cadena" (plan.md:215) queda cubierto por diseño, no por accidente.
+- **Integración E3 sin fricción:** las 3 features conviven en el proxy sin pisarse — la fase 2 de 009-001 (`UpdateContextUsage`) y el registro sticky de 009-002 (`Affinity().Set`) viven en el MISMO punto (`recordCacheTokens`) y coexisten sin conflicto; el dual-keying se confirmó en el flujo real con y sin sesión. Cero refactor de features done.
+- **Operativo pendiente (default off — no altera comportamiento sin habilitarlo):** activar `context.analysis.enabled: true` (009-001) + `fallback.sticky_routing.enabled: true` (009-002) en `~/.config/mofgw/config.yaml` de prod. `telemetry` ya está activa (009-000, desplegada).
+
+### Deuda técnica detectada
+
+- **El epic se lleva al índice consolidado (TECHDEBT):** #20 (gofmt preexistente en `e2e_009000_test.go`, LOW), #21 (concurrencia sticky sin test dedicado — hardening post-cierre, LOW), #22 (`X-Session-Affinity` sin test dedicado — hardening post-cierre, FYI) + nits sin registro de la review 009-002 (idiom `evictLRU`; `AffinityStore` incondicional — aceptados, sin acción). Ninguna bloqueante; el resto de la deuda del epic (16-19) ya está registrada.
+- **Dos lecciones de proceso del epic (AUDIT post-hoc, documentadas en TECHDEBT §Deuda de proceso):** (1) 009-001 — el AUDIT previo al RED debe escanear literales de fixture que el spec cambia (bump `stateVersion` 1→2); (2) 009-002 — los contadores/harness deben medir lo que el test afirma (5 de 32 tests nuevos nacieron con bugs de test, detectados en GREEN).
+
+### Próxima feature en cola
+
+- **Ninguna — el epic 009 está cerrado.** El programa mofgw queda con los 9 epics done (001-009). Siguiente paso: criterios de aceptación del programa completo (plan.md §Criterios del programa) — E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes. Operativo opcional: habilitar `context.analysis` + `sticky_routing` en prod.
 
 ### 09 Ago 2026 — Feature: 009-002-sticky-session (cierre de ciclo — última del epic)
 
@@ -119,9 +140,9 @@
 
 ## Próximos pasos
 
-1. **EPIC-009: 3/3 features DONE** (009-000 desplegada; 009-001 y 009-002 con ciclo cerrado, default off en prod). Siguiente: **integración cross-feature (E3)** — verificar criterios de aceptación del epic (plan.md:211-215) y habilitar `context.analysis` + `sticky_routing` en config de prod — y **closure del epic (E4)**. Volver a `cdad-epic` (chat nuevo) para coordinar.
-2. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes.
-3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 22 entradas registradas (#21-22 = deuda 009-002), varias cerradas, resto BAJA/FUTURO.
+1. **EPIC-009 CERRADO** (3/3 features done + integración E3 + closure E4). Operativo opcional pendiente: habilitar `context.analysis.enabled` + `fallback.sticky_routing.enabled` en config de prod (default off).
+2. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes, /metrics con tokens/costo, /v1/models capabilities, rechazo temprano por ventana.
+3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 22 entradas registradas (#20-22 = deuda del epic 009), varias cerradas, resto BAJA/FUTURO.
 4. **Budget para cliente zot/OpenClaw** (decisión de Pablo pendiente — evaluado y diferido 08 Ago: el gasto es intencional, no se limita).
 
 ## Conocimiento operativo clave
