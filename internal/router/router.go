@@ -648,10 +648,17 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 				r.recordFailure(s)
 				break
 			}
-			actx, cancel := timeouts.Attempt(ctx, timeout)
-			ch, err := s.Provider.Stream(actx, attemptBody)
+			// ctx hijo SIN deadline de intento, SOLO cancelable (spec 001-006:
+			// el timeout de Stream mide TTFB, no la duración total — después
+			// del primer byte el stream lo gobierna el write_timeout del
+			// server). NO usar timeouts.Attempt acá: un ctx con deadline
+			// cancelaría el body read del HTTP request del provider en un
+			// stream largo (incidente 09 Ago 2026, fix 1efef81 revertido).
+			// El TTFB se mide con un timer separado (más abajo).
+			pctx, pcancel := context.WithCancel(ctx)
+			ch, err := s.Provider.Stream(pctx, attemptBody)
 			if err != nil {
-				cancel()
+				pcancel()
 				clErr := timeouts.Classify(err)
 				retryable, _, _, msg := classify(clErr)
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
@@ -670,10 +677,105 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 				r.recordFailure(s)
 				continue
 			}
-			// Buffer del primer evento (frontera primer-byte).
+
+			// commitStream arma la goroutine merged con defer pcancel():
+			// re-emite el primer evento + el resto del canal, y libera el
+			// context del hijo al terminar el drenado (m5).
+			commitStream := func(first provider.StreamEvent) *StreamResult {
+				merged := make(chan provider.StreamEvent, 8)
+				go func() {
+					defer close(merged)
+					defer pcancel()
+					merged <- first
+					for ev := range ch {
+						merged <- ev
+					}
+				}()
+				r.resetDegraded()
+				return &StreamResult{Provider: s.Provider, Events: merged}
+			}
+
+			if timeout > 0 {
+				// TTFB: timer que compite contra el primer evento (M2, M4).
+				ttfb := time.NewTimer(timeout)
+				select {
+				case <-ttfb.C:
+					// ← CRÍTICO (M2): aborta el HTTP request → la goroutine
+					// del provider sale → ch se cierra. Sin pcancel() acá se
+					// filtra la goroutine/conexión.
+					pcancel()
+					lastChain = &ChainError{
+						Status:     http.StatusBadGateway,
+						Type:       "upstream_error",
+						Code:       "upstream_unavailable",
+						Message:    "ttfb timeout",
+						ProviderID: s.Provider.ID(),
+						Err:        provider.NewErrUpstream(http.StatusBadGateway, "timeout", "ttfb timeout"),
+					}
+					if try < maxTries {
+						wait := r.backoffFor(retryCfg, try-1, lastChain.Err)
+						r.logger.Debug("retry_same_provider", "provider", s.Provider.ID(), "try", try, "wait", wait.String(), "causa", "ttfb timeout")
+						if !sleepCtx(ctx, wait) {
+							return nil, &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "request cancelled during retry backoff", ProviderID: s.Provider.ID(), Err: ctx.Err()}
+						}
+						continue
+					}
+					r.logFallback(s, attempts, len(ready), "ttfb timeout")
+					r.recordFailure(s)
+					continue
+				case first, ok := <-ch:
+					// drain del timer si ya disparó en la carrera del select
+					// (M3): un timer detenido que ya expiró deja valor en su
+					// canal; el select elige aleatoriamente si ambos están
+					// listos, y en el borde exacto se trata como timeout.
+					if !ttfb.Stop() {
+						<-ttfb.C
+					}
+					if !ok {
+						pcancel()
+						lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "stream closed before first byte", ProviderID: s.Provider.ID()}
+						if try < maxTries {
+							wait := r.backoffFor(retryCfg, try-1, nil)
+							r.logger.Debug("retry_same_provider", "provider", s.Provider.ID(), "try", try, "wait", wait.String())
+							if !sleepCtx(ctx, wait) {
+								return nil, &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "request cancelled during retry backoff", ProviderID: s.Provider.ID(), Err: ctx.Err()}
+							}
+							continue
+						}
+						r.logFallback(s, attempts, len(ready), "stream closed before first byte")
+						r.recordFailure(s)
+						continue
+					}
+					if first.Err != nil {
+						pcancel()
+						clErr := timeouts.Classify(first.Err)
+						retryable, _, _, msg := classify(clErr)
+						lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
+						if !retryable {
+							return nil, lastChain
+						}
+						if try < maxTries {
+							wait := r.backoffFor(retryCfg, try-1, clErr)
+							r.logger.Debug("retry_same_provider", "provider", s.Provider.ID(), "try", try, "wait", wait.String())
+							if !sleepCtx(ctx, wait) {
+								return nil, &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "request cancelled during retry backoff", ProviderID: s.Provider.ID(), Err: ctx.Err()}
+							}
+							continue
+						}
+						r.logFallback(s, attempts, len(ready), "first event error")
+						r.recordFailure(s)
+						continue
+					}
+					return commitStream(first), nil
+				}
+			}
+
+			// timeout <= 0 → sin TTFB (M4): espera el primer byte sin límite
+			// de tiempo; el stream completo lo gobierna write_timeout.
+			// Manejo de !ok/first.Err idéntico al branch timeout>0 (m2).
 			first, ok := <-ch
 			if !ok {
-				cancel()
+				pcancel()
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "stream closed before first byte", ProviderID: s.Provider.ID()}
 				if try < maxTries {
 					wait := r.backoffFor(retryCfg, try-1, nil)
@@ -688,7 +790,7 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 				continue
 			}
 			if first.Err != nil {
-				cancel()
+				pcancel()
 				clErr := timeouts.Classify(first.Err)
 				retryable, _, _, msg := classify(clErr)
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
@@ -707,28 +809,7 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 				r.recordFailure(s)
 				continue
 			}
-			// Comprometido: re-emitimos el primer evento + el resto del canal.
-			// El timeout de intento (TTFB) ya cumplió su función — el primer
-			// byte llegó. Después del primer byte, el stream completo queda
-			// gobernado por el write_timeout del server (spec 001-006).
-			//
-			// OJO: NO cancelar el ctx acá. El ctx (con deadline de intento)
-			// está vinculado al body read del HTTP request del provider
-			// (http.NewRequestWithContext) — cancelarlo tras el primer byte
-			// mata el stream completo (incidente 09 Ago 2026, fix 1efef81
-			// revertido). El cancel() se ejecuta al final del drenado, en la
-			// goroutine merged, donde estaba originalmente.
-			merged := make(chan provider.StreamEvent, 8)
-			go func() {
-				defer close(merged)
-				defer cancel()
-				merged <- first
-				for ev := range ch {
-					merged <- ev
-				}
-			}()
-			r.resetDegraded()
-			return &StreamResult{Provider: s.Provider, Events: merged}, nil
+			return commitStream(first), nil
 		}
 	}
 	r.logger.Debug("decision", "motivo", "max attempts reached", "attempts", attempts)
