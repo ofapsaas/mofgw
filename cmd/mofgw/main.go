@@ -211,6 +211,11 @@ func run() error {
 		// (external review 008-003: setter era dead code sin wiring).
 		m.SetMaxSessionsRetained(cfg.Server.MaxSessionsRetained)
 	}
+	// Análisis estructural del contexto (009-001 P6): setter pre-tráfico
+	// (patrón SetContextMargin) + ring buffer de history en metrics
+	// (patrón SetMaxSessionsRetained). enabled=false → sin records.
+	srv.SetContextAnalysis(cfg.Context.Analysis.Enabled, cfg.Context.Analysis.HistoryPerSession)
+	m.SetContextHistoryPerSession(cfg.Context.Analysis.HistoryPerSession)
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 

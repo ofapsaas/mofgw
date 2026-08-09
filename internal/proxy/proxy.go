@@ -72,6 +72,11 @@ type Server struct {
 	// límite exacto). Default 0.1 (seteado en New).
 	contextMargin float64
 
+	// contextAnalysis: análisis estructural del contexto habilitado
+	// (009-001 P6). Seteado pre-tráfico por SetContextAnalysis (patrón
+	// SetContextMargin); false = sin records ni memoria (C10).
+	contextAnalysis bool
+
 	// budgets: límite de consumo por clientID (008-002-budget). keyed
 	// por clientID (como están en config.clients[].ID). Inmutable tras
 	// SetBudget.
@@ -182,6 +187,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
+	mux.HandleFunc("GET /v1/context", s.handleContext)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	// rutas no declaradas en el mux → 404 OpenAI-compatible
@@ -207,6 +213,16 @@ func (s *Server) SetModelMetadata(meta map[string]config.ModelMetadata) {
 // Debe llamarse antes del tráfico (lectura concurrente segura después).
 func (s *Server) SetContextMargin(margin float64) {
 	s.contextMargin = margin
+}
+
+// SetContextAnalysis configura el análisis estructural del contexto
+// (009-001 P6): enabled=false (default) → sin records en memoria y
+// /v1/context responde 200 con ceros/vacío. historyPerSession se propaga
+// al ring buffer de Metrics (patrón SetMaxSessionsRetained). Debe
+// llamarse antes del tráfico.
+func (s *Server) SetContextAnalysis(enabled bool, historyPerSession int) {
+	s.contextAnalysis = enabled
+	s.metrics.SetContextHistoryPerSession(historyPerSession)
 }
 
 // SetBudget configura los límites de consumo por cliente (008-002 P1).
@@ -327,6 +343,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// no-stream, incluidos los rechazos). JSON malformado (400 de parseo)
 	// no llega acá (R4). Best-effort: un error de emisión no falla (I7).
 	s.emitRequestTelemetry(r, req, clientID, body, logger)
+	// Fase 1 del análisis de contexto (009-001 P4): mismo gate que la
+	// telemetría (body válido, stream y no-stream, incluidos los rechazos
+	// por limiter/budget/ventana/upstream). Best-effort: un error de
+	// análisis jamás falla el request (I7/I2, P8).
+	if s.contextAnalysis {
+		if res, err := composition.Analyze(body, 10); err == nil {
+			s.metrics.RecordContext(clientID, sessionID, logging.RequestID(r.Context()), req.Model, res, time.Now().Unix())
+		}
+	}
 	if s.globalLimiter != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), s.backpressureTimeout)
 		if !s.globalLimiter.Acquire(ctx) {
@@ -404,7 +429,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		providerID, streamUsage := s.handleStream(ctx, w, r, req, body, logger)
 		lastUsage = streamUsage
 		if providerID != "" {
-			s.recordCacheTokens(clientID, sessionID, providerID, req.Model, streamUsage)
+			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, req.Model, streamUsage)
 		}
 		return
 	}
@@ -417,7 +442,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID = res.ProviderID
 	s.metrics.SetLastProvider(res.ProviderID)
-	s.recordCacheTokens(clientID, sessionID, res.ProviderID, req.Model, &res.Response.Usage)
+	s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, res.ProviderID, req.Model, &res.Response.Usage)
 	lastUsage = &res.Response.Usage
 	// headers de usage (007-003 P1): el cliente ve su consumo por request
 	s.setUsageHeaders(w.Header(), res.ProviderID, req.Model, &res.Response.Usage)
@@ -454,12 +479,14 @@ func (s *Server) setUsageHeaders(h http.Header, providerID, model string, u *pro
 
 // recordCacheTokens acumula los tokens de cache/reasoning de un request
 // en /metrics (003-001 P3), los tokens totales por cliente (006-001
-// P1-P3), el costo estimado (006-002 P2-P3) y el registro por sesión
-// (008-003 P2). miss = prompt - cached (los proveedores
-// OpenAI-compatibles no reportan miss explícito; el estándar es
+// P1-P3), el costo estimado (006-002 P2-P3), el registro por sesión
+// (008-003 P2) y la fase 2 del análisis de contexto (009-001 P4:
+// UpdateContextUsage con Usage.PromptTokens post-response, stream y
+// no-stream). miss = prompt - cached (los proveedores OpenAI-compatibles
+// no reportan miss explícito; el estándar es
 // prompt_tokens_details.cached_tokens). Nunca crashea con usage ausente
 // ni con modelo sin pricing.
-func (s *Server) recordCacheTokens(clientID, sessionID, providerID, model string, u *provider.Usage) {
+func (s *Server) recordCacheTokens(requestID, clientID, sessionID, providerID, model string, u *provider.Usage) {
 	hit, miss, reasoning := int64(0), int64(0), int64(0)
 	prompt, completion, total := int64(0), int64(0), int64(0)
 	if u != nil {
@@ -477,6 +504,12 @@ func (s *Server) recordCacheTokens(clientID, sessionID, providerID, model string
 	s.metrics.IncUsage(clientID, providerID, model, prompt, completion, total)
 	s.metrics.IncCost(clientID, providerID, model, cost)
 	s.metrics.RecordSession(clientID, sessionID, prompt, completion, total, cost, time.Now().Unix())
+	// Fase 2 del análisis de contexto (P4): el usage upstream setea el
+	// prompt_tokens_actual de la entry (matcheo exacto por request_id) y
+	// acumula el agregado. Best-effort: sin usage no se toca nada.
+	if s.contextAnalysis && u != nil {
+		s.metrics.UpdateContextUsage(clientID, sessionID, requestID, int64(u.PromptTokens))
+	}
 }
 
 // estimateCost calcula el costo estimado en USD de un request usando la
@@ -768,6 +801,124 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		"by_model": byModel,
 		"sessions": sessions,
 	})
+}
+
+// handleContext expone la composición estructural del contexto del cliente
+// autenticado (009-001 P3): GET /v1/context con auth Bearer (aislamiento
+// por clientID). Con ?session=<id> → 200 con el record client|<id> (404 si
+// no existe para el cliente, consistente 008-003 P5); sin session → 200
+// scope:"client" con el agregado client| (ceros/vacío sin data, nunca nil).
+// SOLO metadata estructural: roles, part types, bytes, tokens, conteos —
+// jamás contenido (P7/I1).
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
+	clientID := auth.ClientIDFrom(r.Context())
+
+	if session := r.URL.Query().Get("session"); session != "" {
+		snap, ok := s.metrics.ContextSnapshot(clientID, session)
+		if !ok {
+			openAIError(w, http.StatusNotFound, "session not found", "not_found_error")
+			return
+		}
+		s.writeContext(w, snap)
+		return
+	}
+
+	snap, _ := s.metrics.ContextSnapshot(clientID, "")
+	s.writeContext(w, snap)
+}
+
+// writeContext serializa la vista de un ContextSnapshot (P3): shape
+// {client, scope, session, requests, summary, latest, history} con keys
+// snake_case. `summary.prompt_tokens_actual` y los entry
+// `prompt_tokens_actual` son null mientras la fase 2 no corrió.
+func (s *Server) writeContext(w http.ResponseWriter, snap metrics.ContextSnapshot) {
+	w.Header().Set("Content-Type", "application/json")
+	out := map[string]any{
+		"client":   snap.Client,
+		"scope":    snap.Scope,
+		"requests": snap.Requests,
+		"summary": map[string]any{
+			"roles":                   roleAggsToJSON(snap.Summary.Roles),
+			"part_types":              partAggsToJSON(snap.Summary.PartTypes),
+			"num_tools_total":         snap.Summary.NumToolsTotal,
+			"prompt_tokens_estimated": snap.Summary.PromptTokensEstimated,
+			"prompt_tokens_actual":    contextActualJSON(snap),
+			"first_request_at":        snap.Summary.FirstRequestAt,
+			"last_request_at":         snap.Summary.LastRequestAt,
+		},
+		"latest":  contextEntryToJSON(snap.Latest),
+		"history": contextEntriesToJSON(snap.History),
+	}
+	if snap.Scope == "session" {
+		out["session"] = snap.Session
+	}
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// contextActualJSON devuelve el prompt_tokens_actual agregado del summary,
+// o null si la fase 2 nunca corrió (sin entries con actual set y sin
+// agregado — C9). Un 0 real post-phase-2 se reporta como 0.
+func contextActualJSON(snap metrics.ContextSnapshot) any {
+	if snap.Summary.PromptTokensActual != 0 {
+		return snap.Summary.PromptTokensActual
+	}
+	for i := range snap.History {
+		if snap.History[i].PromptTokensActual != nil {
+			return snap.Summary.PromptTokensActual
+		}
+	}
+	return nil
+}
+
+func roleAggsToJSON(aggs []metrics.RoleAgg) []map[string]any {
+	out := make([]map[string]any, 0, len(aggs))
+	for _, a := range aggs {
+		out = append(out, map[string]any{
+			"role":       a.Role,
+			"messages":   a.Messages,
+			"est_tokens": a.EstTokens,
+			"pct":        a.Pct,
+		})
+	}
+	return out
+}
+
+func partAggsToJSON(aggs []metrics.PartAgg) []map[string]any {
+	out := make([]map[string]any, 0, len(aggs))
+	for _, a := range aggs {
+		out = append(out, map[string]any{
+			"type":       a.Type,
+			"count":      a.Count,
+			"bytes":      a.Bytes,
+			"est_tokens": a.EstTokens,
+		})
+	}
+	return out
+}
+
+func contextEntryToJSON(e *metrics.ContextEntry) map[string]any {
+	if e == nil {
+		return nil
+	}
+	return map[string]any{
+		"request_id":              e.RequestID,
+		"model":                   e.Model,
+		"roles":                   e.Roles,
+		"part_types":              e.PartTypes,
+		"num_tools":               e.NumTools,
+		"total_bytes":             e.TotalBytes,
+		"prompt_tokens_estimated": e.PromptTokensEstimated,
+		"prompt_tokens_actual":    e.PromptTokensActual,
+		"request_at":              e.RequestAt,
+	}
+}
+
+func contextEntriesToJSON(entries []metrics.ContextEntry) []map[string]any {
+	out := make([]map[string]any, 0, len(entries))
+	for i := range entries {
+		out = append(out, contextEntryToJSON(&entries[i]))
+	}
+	return out
 }
 
 // handleHealth es el healthcheck sin auth (loopback). Con health store
