@@ -196,6 +196,26 @@ Usado por: 001-003, 001-004, 001-005, 001-006.
 
 ---
 
+### EPIC-009: mofgw-contexto-analisis — telemetría, composición de contexto y sticky routing por sesión
+**Resumen:** Descubrir y optimizar la composición del contexto del tráfico real. Investigación (08 Ago) confirmó que solo opencode manda `X-Session-Id`; openclaw y zot no. Decisión de Pablo: **telemetría primero** — loguear la metadata real del tráfico (headers + paths de claves del body) a un archivo dedicado para descubrir dónde viven los ids de sesión (posiblemente anidados en metadata del ctx), y con esa data diseñar la composición de contexto por sesión/cliente y el sticky routing.
+
+**In scope:** telemetría de requests (009-000), análisis de composición de contexto con endpoint dedicado (009-001), sticky routing por sesión (009-002). **Out of scope:** modificación de runtimes, análisis de contenido (nunca — privacidad), alertas proactivas (futuro).
+
+**Decomposición (orden de ejecución: telemetría primero, diseño de 009-001/009-002 depende de sus hallazgos):**
+| # | Feature ID | Descripción | Dependencias | Paralelizable |
+|---|-----------|------------------------|--------------|---------------|
+| 1 | 009-000-request-telemetry | Loguear metadata real del tráfico (allowlist de headers + paths de claves del body + conteos) a `telemetry.jsonl` dedicado, para descubrir dónde viven los ids de sesión | — | Sí |
+| 2 | 009-001-context-composition | Composición de contexto por sesión/cliente + endpoint `/v1/context?session=<id>` (diseño informado por hallazgos de telemetría) | 009-000 | No |
+| 3 | 009-002-sticky-session | Afinidad de provider por sesión para maximizar cache hit (fuente de sesión según telemetría) | 009-000 | No |
+
+**Criterios de aceptación del epic:**
+- [ ] telemetry.jsonl captura headers + paths de claves del tráfico real sin contenido ni keys (privacidad 005-005)
+- [ ] Documento de patrones (`docs/research-context-patterns.md`) con hallazgos por runtime (dónde vive la sesión: header vs metadata anidada vs ninguna)
+- [ ] `/v1/context?session=<id>` devuelve composición (roles, part types, tamaños, evolución) con aislamiento por cliente
+- [ ] Sticky routing opcional por config (`fallback.sticky_routing`), transparente, respeta cooldown/health/cadena
+
+---
+
 ## Orden de ejecución
 
 ```
@@ -210,9 +230,17 @@ EPIC-003 (cache providers — rápido, primero por decisión Pablo) → EPIC-006
 
 Racional: cache primero porque es rápido y la decisión de Pablo es avanzar en ese orden. Medición segundo porque sin datos no hay optimización real. Catálogo tercero porque da valor a los runtimes (pueden elegir modelo). Contexto al final porque depende de medición (006), ventanas conocidas (007) y budget (006-002).
 
+**Actualizado 08 Ago 2026:** Replanteo (003-008) CERRADO — epic done. Nuevo EPIC-009 aprobado (telemetría → composición + sticky). Orden:
+
+```
+EPIC-009: 009-000 (telemetría) → análisis de patrones → 009-001 (composición) → 009-002 (sticky)
+```
+
+Racional: telemetría primero porque la investigación mostró que las suposiciones sobre dónde vive la sesión eran incorrectas (solo opencode manda X-Session-Id). Observar antes de diseñar (patrón lección 26 Jun). La composición y el sticky se diseñan con los hallazgos reales del tráfico.
+
 ## Criterios de aceptación del programa completo
 
-- [ ] Los 8 epics están done (001-008).
+- [ ] Los 9 epics están done (001-009).
 - [ ] E2E integral: OpenClaw (sesiones, crons, sesiones aisladas) corriendo contra mofgw en 3369, sin omniroute, sin fallbacks nativos de OpenClaw, durante 48h sin un solo error visible al cliente.
 - [ ] omniroute.service deshabilitado, ~1GB RAM liberada.
 - [ ] Métricas en Prometheus muestran fallbacks y cooldowns en acción.
@@ -223,11 +251,12 @@ Racional: cache primero porque es rápido y la decisión de Pablo es avanzar en 
 
 ## Stakeholders
 
-- **Aprobador del plan**: Pablo (autor del proyecto)
-- **Aprobador de specs**: Pablo
+- **Aprobador del plan**: Pablo (autor del proyecto) — delegó a Ofap el rol de dueño del proceso (08 Ago): auto-aprobación GVR
+- **Aprobador de specs**: Pablo → delegado a Ofap (dueño del proceso, 08 Ago)
 - **Operador del resultado**: Ofap + futuros agentes autónomos
 
 ## Cambios al plan
 
 - 2026-08-03: Plan inicial creado. Investigación de arquitectura en curso (subagente). La decomposición de EPIC-003 queda pendiente de research-architecture.md.
 - 2026-08-06: EPIC-001/002/004/005 marcados DONE (verificado en README + suite). EPIC-003 replanteado: cache de providers (003-001) + nuevos EPIC-006 (medición), EPIC-007 (catálogo), EPIC-008 (contexto). Decisión Pablo: delegación total a Ofap (auto-aprobación GVR). Discovery en curso.
+- 2026-08-08: Replanteo 003-008 CERRADO (P4 done, Memory Bank aprobada, epic_closed). Nuevo **EPIC-009** (telemetría → composición de contexto → sticky routing) planificado y aprobado. Investigación: solo opencode manda X-Session-Id; openclaw/zot no. Pablo delega a Ofap el rol de dueño del proceso (reemplaza HITL).
