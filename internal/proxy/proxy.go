@@ -274,14 +274,18 @@ func estimatePromptTokens(body []byte) int {
 
 // exceedsContextWindow decide si un request excede la ventana de contexto
 // del modelo destino (008-001 P1/P3). Sin metadata → false (sin rechazo).
-// El margen se aplica como context_window × (1 + margin).
-func (s *Server) exceedsContextWindow(model string, promptTokens int) bool {
+// El margen se aplica como context_window × (1 + margin). maxTokens es el
+// max_tokens pedido por el cliente (0 si ausente): el upstream cuenta
+// prompt + completion contra la ventana real, así que el chequeo debe
+// incluirlo (TECHDEBT #23 — 502 upstream 04:32/04:49: prompt 1,016,660 +
+// max_tokens 32,000 = 1,048,660 > límite real 1,048,576).
+func (s *Server) exceedsContextWindow(model string, promptTokens, maxTokens int) bool {
 	md, ok := s.modelMeta[model]
 	if !ok || md.ContextWindow <= 0 {
 		return false
 	}
 	limit := float64(md.ContextWindow) * (1 + s.contextMargin)
-	return float64(promptTokens) > limit
+	return float64(promptTokens+maxTokens) > limit
 }
 
 // withRequestID inyecta un id de request por request (observabilidad).
@@ -416,13 +420,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// 4.5 Rechazo temprano por ventana de contexto (008-001 P1): si el
-	// prompt estimado excede la ventana del modelo (con margen), 400 sin
-	// gastar intentos de la cadena. Sin metadata → sin rechazo (P4).
-	if promptTokens := estimatePromptTokens(body); s.exceedsContextWindow(req.Model, promptTokens) {
+	// prompt estimado + max_tokens excede la ventana del modelo (con
+	// margen), 400 sin gastar intentos de la cadena. Sin metadata → sin
+	// rechazo (P4). max_tokens cuenta porque el upstream valida
+	// prompt+completion contra la ventana real (TECHDEBT #23).
+	maxTokens := 0
+	if req.MaxTokens != nil {
+		maxTokens = int(*req.MaxTokens)
+	}
+	if promptTokens := estimatePromptTokens(body); s.exceedsContextWindow(req.Model, promptTokens, maxTokens) {
 		s.metrics.IncRejected(clientID, "context_window")
-		msg := fmt.Sprintf("estimated prompt tokens %d exceed context window %d for model %q", promptTokens, s.modelMeta[req.Model].ContextWindow, req.Model)
+		msg := fmt.Sprintf("estimated prompt tokens %d + max_tokens %d exceed context window %d for model %q", promptTokens, maxTokens, s.modelMeta[req.Model].ContextWindow, req.Model)
 		openAIError(w, http.StatusBadRequest, msg, "invalid_request_error")
-		logger.Debug("context_window_rejected", "model", req.Model, "estimated", promptTokens)
+		logger.Debug("context_window_rejected", "model", req.Model, "estimated", promptTokens, "max_tokens", maxTokens)
 		return
 	}
 

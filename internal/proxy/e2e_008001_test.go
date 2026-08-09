@@ -96,6 +96,52 @@ func TestRED_SinMetadataSinRechazo(t *testing.T) {
 	}
 }
 
+// TestRED_MaxTokensCuentaEnVentana: prompt que cabe pero prompt+max_tokens
+// excede la ventana → 400 sin intentos upstream (cierra el gap del 502
+// upstream 04:49: prompt 1,016,660 + max_tokens 32,000 = 1,048,660 >
+// límite real 1,048,576; el chequeo viejo solo miraba el prompt).
+func TestRED_MaxTokensCuentaEnVentana(t *testing.T) {
+	ups := upstreamOK("m", "x")
+	h := buildMultiClient(t, []*upstream{ups}, "k1")
+	// window 1000, margin 0 → límite exacto 1000
+	h.proxySrv.SetContextMargin(0)
+	h.proxySrv.SetModelMetadata(map[string]config.ModelMetadata{
+		"m": {ContextWindow: 1000, MaxOutput: 100},
+	})
+
+	body := bigBody(3000) // estimado ~750 tokens ≤ 1000 → el prompt cabe
+	body["max_tokens"] = 400
+	resp := h.chatAs(t, "k1", body)
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400 (750+400 > 1000)", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	if ups.gotBody != "" {
+		t.Fatalf("hubo intento upstream tras rechazo por ventana con max_tokens: %s", ups.gotBody)
+	}
+}
+
+// TestRED_MaxTokensQueCabe: prompt + max_tokens dentro de la ventana → 200.
+func TestRED_MaxTokensQueCabe(t *testing.T) {
+	ups := upstreamOK("m", "hola")
+	h := buildMultiClient(t, []*upstream{ups}, "k1")
+	h.proxySrv.SetContextMargin(0)
+	h.proxySrv.SetModelMetadata(map[string]config.ModelMetadata{
+		"m": {ContextWindow: 1000, MaxOutput: 100},
+	})
+
+	body := bigBody(3000) // estimado ~750 tokens
+	body["max_tokens"] = 200 // 750+200 = 950 ≤ 1000 → cabe
+	resp := h.chatAs(t, "k1", body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 (750+200 ≤ 1000)", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	if ups.gotBody == "" {
+		t.Fatal("request que cabe no llegó al upstream")
+	}
+}
+
 // TestRED_MargenRespetado: margin 0.5 y context_window 1000 → request
 // estimado 1250 tokens ≤ 1000×1.5=1500 → 200 (C4).
 func TestRED_MargenRespetado(t *testing.T) {
