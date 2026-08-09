@@ -40,6 +40,7 @@
 | 20 | gofmt sucio en `internal/proxy/e2e_009000_test.go` | ⏳ PENDIENTE | LOW | 009-001 review (preexistente en HEAD) | Deuda preexistente, NO introducida por 009-001 (el diff de la feature excluye el archivo). gofmt reporta diff en HEAD. Correr `gofmt -w` sobre el archivo la próxima vez que se toque (evita ruido de diff en reviews). |
 | 21 | Concurrencia sticky sin test dedicado (C13) | ⏳ ACEPTADA (hardening post-cierre) | LOW | 009-002 review Optional #3 + test-audit §9.2 | No hay test que dispare requests concurrentes de la misma sesión con sticky on; la garantía es estructural (mutex de `AffinityStore`, spec P3) + `-race` sobre la suite. Análisis del reviewer: sin TOCTOU — Get/Set atómicas individualmente; la operación compuesta no requiere atomicidad cruzada (peor caso: ambos requests registran al mismo ganador, resultado correcto). Test concurrente dedicado en hardening futuro. |
 | 22 | `X-Session-Affinity` irrelevante sin test dedicado (I3/D5) | ⏳ ACEPTADA (hardening post-cierre) | FYI | 009-002 test-audit §9.3 | Ningún test manda `X-Session-Affinity` y verifica que no influye en el keying; la garantía es por construcción (P2: el proxy solo lee `X-Session-Id`; D5) + guard existente `e2e_008003` untouched. Test dedicado que envíe el header y verifique keying inalterado → hardening post-cierre. |
+| 23 | Margen de contexto subestima límite real upstream (1,048,660 req → 502) | ⏳ PENDIENTE | MEDIA | Observación prod 09 Ago 04:32 | Request de 1,048,660 tokens pasó el margin check (0.1 → rechaza >1.1M) pero upstream go-5 rechazó (límite real 1,048,576) → 502 upstream_error. La estimación subestima el límite real. Evaluar: margin más chico (0.05) o mejor estimación del límite. No bloqueante (la cadena reintenta; el fallo fue puntual). |
 
 > Nota 009-002: de los 5 opcionales del review (APPROVE), 1 fue aplicado (Nit #5 — `max_sessions_retained`
 > documentado en `config.example.yaml`), 2 quedan registrados arriba (#21, #22) y 2 son nits sin registro
@@ -80,6 +81,7 @@
 
 ## Cambios
 
+- 2026-08-09: #23 agregada (margen de contexto subestima límite real upstream — 502 04:32, hallazgo de telemetría prod).
 - 2026-08-09: #21-#22 agregadas (009-002-sticky-session, deuda aceptada del review APPROVE + test-audit — hardening post-cierre) + lección de proceso AUDIT post-hoc (test-audit.md §2/§5.2: contadores deben medir lo que el test afirma).
 - 2026-08-09: #16-#20 agregadas (deuda opcional del review 009-001-context-composition, APPROVE 0 bloqueantes) + lección de proceso AUDIT post-hoc (test-audit.md §2).
 - 2026-08-08 13:5x: #4 cerrada parcial — pricing verificado (OpenRouter API: $0.09/$0.18/$0.018, ctx 1M) + ARC-AGI comparable a Luna a 1/4 costo (HN 49214008). Matiz: costo real vía cadena Zen.
