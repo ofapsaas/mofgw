@@ -23,7 +23,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -162,7 +164,18 @@ func run() error {
 		keyedLimiter = limiter.NewKeyed(budgets)
 		logger.Info("aislamiento por cliente/agente activo", "clients", len(budgets))
 	}
-	srv := proxy.New(r, providers, authz, m, logger, cfg.Server.MaxBodyBytes, globalLimiter, keyedLimiter, cfg.Server.BackpressureTimeout)
+
+	// Telemetría de descubrimiento (009-000 P2/R8): canal dedicado
+	// telemetry.jsonl. Gestiona AMBOS closers (operativo + telemetría).
+	telemetryLogger, telemetryCloser, err := buildTelemetryFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if telemetryCloser != nil {
+		defer telemetryCloser.Close()
+	}
+
+	srv := proxy.New(r, providers, authz, m, logger, telemetryLogger, cfg.Server.MaxBodyBytes, globalLimiter, keyedLimiter, cfg.Server.BackpressureTimeout)
 
 	// Cableado del catálogo y eficiencia (006-002/007-001/008-002/008-003):
 	// pricing, metadata de modelos, budgets por cliente y margen de
@@ -279,6 +292,59 @@ func newHTTPServer(sc config.ServerConfig, handler http.Handler) *http.Server {
 		ReadHeaderTimeout: 5 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+}
+
+// buildTelemetryFromConfig construye el logger de telemetría desde config
+// (009-000 P2/P8, R8 del audit — patrón newHTTPServer de SEC-001):
+//   - enabled=false → (nil, nil, nil) sin abrir archivo (C1/C11).
+//   - enabled=true + file → (logger, closer, nil).
+//   - enabled=true + file="" → error (fail-fast, C10/I5).
+//
+// Con sample_rate < 1 el logger muestrea la EMISIÓN del evento (P9): un
+// handler descarta una fracción 1-rate de los records con aleatorio
+// (mecanismo a elección del implementer; C9 valida la banda resultante).
+func buildTelemetryFromConfig(cfg *config.Config) (*slog.Logger, io.Closer, error) {
+	if cfg == nil || !cfg.Telemetry.Enabled {
+		return nil, nil, nil
+	}
+	if cfg.Telemetry.File == "" {
+		return nil, nil, fmt.Errorf("telemetry: enabled=true requiere file")
+	}
+	logger, closer, err := logging.BuildTelemetry(cfg.Telemetry.File)
+	if err != nil {
+		return nil, nil, err
+	}
+	if cfg.Telemetry.SampleRate < 1 {
+		logger = slog.New(samplingHandler{next: logger.Handler(), keep: cfg.Telemetry.SampleRate})
+	}
+	return logger, closer, nil
+}
+
+// samplingHandler descarta una fracción de records (muestreo de la
+// emisión, 009-000 P9). Aleatorio (math/rand global, seguro para uso
+// concurrente); keep = probabilidad de emitir (sample_rate).
+type samplingHandler struct {
+	next slog.Handler
+	keep float64
+}
+
+func (h samplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h samplingHandler) Handle(ctx context.Context, r slog.Record) error {
+	if rand.Float64() >= h.keep {
+		return nil
+	}
+	return h.next.Handle(ctx, r)
+}
+
+func (h samplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return samplingHandler{next: h.next.WithAttrs(attrs), keep: h.keep}
+}
+
+func (h samplingHandler) WithGroup(name string) slog.Handler {
+	return samplingHandler{next: h.next.WithGroup(name), keep: h.keep}
 }
 
 // anyClientLimit reporta si algún cliente del config tiene límites de

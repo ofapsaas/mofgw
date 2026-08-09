@@ -21,10 +21,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ofapsaas/mofgw/internal/absorb"
 	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/composition"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/limiter"
 	"github.com/ofapsaas/mofgw/internal/logging"
@@ -51,7 +53,10 @@ type Server struct {
 	auth      *auth.Authenticator
 	metrics   *metrics.Metrics
 	logger    *slog.Logger
-	maxBody   int64
+	// telemetryLogger: destino dedicado de la telemetría de descubrimiento
+	// (009-000). nil = telemetría deshabilitada (C1/C12). Inmutable post-New.
+	telemetryLogger *slog.Logger
+	maxBody         int64
 
 	// pricing: tabla de precios por modelo (006-002-costos). Inmutable
 	// tras SetPricing (antes del tráfico); lectura concurrente segura
@@ -81,14 +86,93 @@ type Server struct {
 // New construye el Server. Los parámetros de concurrencia se pasan ya
 // construidos (nil globalLimiter = sin límite global; keyedLimiter nil =
 // sin aislamiento por cliente — backward compatible con EPIC-001/002/005).
-func New(r *router.Router, providers []provider.Provider, a *auth.Authenticator, m *metrics.Metrics, logger *slog.Logger, maxBodyBytes int64, globalLimiter *limiter.Limiter, keyedLimiter *limiter.Keyed, backpressureTimeout time.Duration) *Server {
+// telemetryLogger nil = telemetría deshabilitada (009-000 P2).
+func New(r *router.Router, providers []provider.Provider, a *auth.Authenticator, m *metrics.Metrics, logger *slog.Logger, telemetryLogger *slog.Logger, maxBodyBytes int64, globalLimiter *limiter.Limiter, keyedLimiter *limiter.Keyed, backpressureTimeout time.Duration) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if m == nil {
 		m = metrics.New()
 	}
-	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1}
+	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, telemetryLogger: telemetryLogger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1}
+}
+
+// telemetryHeaderAllowlist: únicos headers capturados en el evento
+// request_telemetry (009-000 P5).
+var telemetryHeaderAllowlist = map[string]bool{
+	"X-Session-Id":       true,
+	"X-Agent-Id":         true,
+	"X-Session-Affinity": true,
+	"User-Agent":         true,
+	"Content-Length":     true,
+	"Content-Type":       true,
+	"Accept":             true,
+}
+
+// emitRequestTelemetry emite el evento request_telemetry (009-000 P3-P5):
+// un evento por request con body válido, con el schema exacto de P4 (sin
+// otros campos, R10). El request_id lo adjunta logging.WithRequest desde
+// el context. Best-effort: nunca falla el request (I7).
+func (s *Server) emitRequestTelemetry(r *http.Request, req *provider.ChatRequest, clientID string, body []byte, logger *slog.Logger) {
+	if s.telemetryLogger == nil {
+		return
+	}
+	keyPaths, detected, _ := composition.Walk(body, 10) // default maxDepth (P6/I4)
+	paths := make([]string, len(keyPaths))
+	for i, p := range keyPaths {
+		paths[i] = string(p)
+	}
+	roles := make([]string, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		var msg struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(m, &msg) == nil && msg.Role != "" {
+			roles = append(roles, msg.Role)
+		}
+	}
+	var rawTools struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	_ = json.Unmarshal(body, &rawTools)
+
+	logging.WithRequest(s.telemetryLogger, r.Context()).Info("request_telemetry",
+		"ts", time.Now().Format(time.RFC3339),
+		"client_id", clientID,
+		"model", req.Model,
+		"stream", req.Stream,
+		"headers", s.captureTelemetryHeaders(r, logger),
+		"key_paths", paths,
+		"num_messages", len(req.Messages),
+		"num_tools", len(rawTools.Tools),
+		"roles", roles,
+		"detected_ids", detected,
+	)
+}
+
+// captureTelemetryHeaders captura solo los headers de la allowlist
+// presentes (P5). Content-Length se lee de r.ContentLength (R2: Go no lo
+// expone en r.Header; el contrato es la longitud del body). Todo header
+// X-* fuera de la allowlist se niega y dispara un warn al logger
+// OPERATIVO con el NOMBRE (nunca el valor, I2). Los headers prohibidos
+// (Authorization, Cookie, X-Forwarded-For, X-Api-Key, X-Real-Ip, X-Host,
+// Forwarded, Via) jamás se capturan, aunque estén presentes.
+func (s *Server) captureTelemetryHeaders(r *http.Request, logger *slog.Logger) map[string]string {
+	headers := make(map[string]string)
+	for _, name := range []string{"X-Session-Id", "X-Agent-Id", "X-Session-Affinity", "User-Agent", "Content-Type", "Accept"} {
+		if v := r.Header.Get(name); v != "" {
+			headers[name] = v
+		}
+	}
+	if r.ContentLength > 0 {
+		headers["Content-Length"] = strconv.FormatInt(r.ContentLength, 10)
+	}
+	for name := range r.Header {
+		if strings.HasPrefix(name, "X-") && !telemetryHeaderAllowlist[name] {
+			logger.Warn("telemetry header negado", "header", name)
+		}
+	}
+	return headers
 }
 
 // Handler devuelve el mux con auth aplicada a /v1/* (healthz y metrics
@@ -237,6 +321,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// X-Session-Id: solo lectura, NUNCA upstream (008-003 I1) — se usa
 	// para correlacionar requests de una sesión lógica del runtime.
 	sessionID := r.Header.Get("X-Session-Id")
+	// Telemetría de descubrimiento (009-000 P3): UN evento por request con
+	// body válido, emitido ANTES de los chequeos de limiter/budget/ventana/
+	// upstream para que el descubrimiento vea TODO el tráfico (stream y
+	// no-stream, incluidos los rechazos). JSON malformado (400 de parseo)
+	// no llega acá (R4). Best-effort: un error de emisión no falla (I7).
+	s.emitRequestTelemetry(r, req, clientID, body, logger)
 	if s.globalLimiter != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), s.backpressureTimeout)
 		if !s.globalLimiter.Acquire(ctx) {

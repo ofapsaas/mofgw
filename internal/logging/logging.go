@@ -11,6 +11,7 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -133,6 +134,25 @@ func Build(level slog.Level, logFile string, stdoutWriter io.Writer) (*slog.Logg
 		fileLevel:     level,
 	}
 
+	return slog.New(handler), f, nil
+}
+
+// BuildTelemetry construye un logger JSON nivel Info que escribe UNA línea
+// JSON por evento en file (jsonl) — destino dedicado de la telemetría de
+// descubrimiento (009-000 P1). Constructor SEPARADO de Build(): la
+// telemetría se enruta por contenido, no por nivel; no reutiliza
+// levelFanoutHandler. file == "" → error. Fail-fast si el archivo no abre
+// (mismo patrón que Build(): os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640).
+// Devuelve un closer que cierra el archivo.
+func BuildTelemetry(file string) (*slog.Logger, io.Closer, error) {
+	if file == "" {
+		return nil, nopCloser{}, fmt.Errorf("logging: BuildTelemetry: file vacío")
+	}
+	f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	if err != nil {
+		return nil, nopCloser{}, err
+	}
+	handler := slog.NewJSONHandler(f, &slog.HandlerOptions{Level: slog.LevelInfo})
 	return slog.New(handler), f, nil
 }
 

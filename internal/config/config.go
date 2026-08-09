@@ -146,6 +146,16 @@ type ContextConfig struct {
 	Margin float64 `yaml:"margin"`
 }
 
+// TelemetryConfig es la configuración de la telemetría de descubrimiento
+// (009-000-request-telemetry): canal dedicado telemetry.jsonl con metadata
+// de cada request (headers allowlist + key paths + ids detectados en safe
+// fields). Independiente de --verbose (I6); enabled=false = apagado (C1).
+type TelemetryConfig struct {
+	Enabled    bool    `yaml:"enabled"`
+	SampleRate float64 `yaml:"sample_rate"`
+	File       string  `yaml:"file"`
+}
+
 // ModelMetadata es la metadata declarativa de un modelo para el catálogo
 // (007-001-model-metadata). Alimenta /v1/models (007-002) y, en el futuro,
 // decisiones de ruteo. Datos verificados en research-token-efficiency.md §4.
@@ -171,6 +181,9 @@ type Config struct {
 
 	// Context: rechazo por ventana (008-001).
 	Context ContextConfig `yaml:"context"`
+
+	// Telemetry: telemetría de descubrimiento (009-000).
+	Telemetry TelemetryConfig `yaml:"telemetry"`
 }
 
 // Defaults aplicados sobre YAML parcial.
@@ -208,6 +221,11 @@ func defaults() Config {
 		},
 		Context: ContextConfig{
 			Margin: -1, // -1 = usar default del proxy (0.1)
+		},
+		Telemetry: TelemetryConfig{
+			Enabled:    false,
+			SampleRate: 1,
+			File:       "",
 		},
 	}
 }
@@ -376,6 +394,16 @@ func (c *Config) validate() error {
 			math.IsNaN(p.CacheHitUSDPerM) || math.IsInf(p.CacheHitUSDPerM, 0) {
 			return fmt.Errorf("config: pricing %q: precios deben ser finitos (no NaN/Inf)", model)
 		}
+	}
+	// telemetry (009-000 P8): sample_rate debe estar en (0, 1]; NaN/Inf se
+	// rechazan (mismo patrón que pricing); enabled=true con file vacío es
+	// error de arranque (C10/I5, fail-fast).
+	if c.Telemetry.SampleRate <= 0 || c.Telemetry.SampleRate > 1 ||
+		math.IsNaN(c.Telemetry.SampleRate) || math.IsInf(c.Telemetry.SampleRate, 0) {
+		return fmt.Errorf("config: telemetry.sample_rate debe estar entre 0 y 1")
+	}
+	if c.Telemetry.Enabled && c.Telemetry.File == "" {
+		return fmt.Errorf("config: telemetry.enabled=true requiere telemetry.file")
 	}
 	return nil
 }
