@@ -28,6 +28,13 @@
 
 ## Decisiones recientes (cronología inversa)
 
+### 09 Ago 2026 — Deploy del epic 009 en producción
+
+- **Binario con las 3 features del epic desplegado** (09 Ago, ~02:12 ART): el binario anterior en `~/.local/bin/mofgw` NO tenía 009-001/009-002 (verificado por strings: 0 matches vs 16 del build nuevo). Reemplazado por build fresco (`go build ./cmd/mofgw`, 10.3M), backup en `mofgw.bak-20260809`. Servicio reiniciado: healthz OK (6 providers healthy), state.json restaurado (v1→v2 sin error — C12 funcionando en prod), config cargada, tráfico real fluyendo (WARN "telemetry header negado" de agentes con X-Parent-Session-Id — telemetría 009-000 viva).
+- **`context.analysis` HABILITADO en prod** (read-only, no invasivo — P8 de 009-001): `~/.config/mofgw/config.yaml` → `context: {margin: 0.1, analysis: {enabled: true, history_per_session: 50}}`. El endpoint `GET /v1/context` queda activo para el cliente `zot` (auth Bearer).
+- **`fallback.sticky_routing` queda DEFAULT OFF** (decisión de criterio): es la feature más delicada para activar en tráfico real (cambia ruteo de requests vivos). Se habilita tras observar la composición funcionando — el diseño post-filtro (ADR-002) garantiza que no rompe la cadena si se activa, pero se prefiere activación escalonada.
+- **plan.md actualizado** (commit `3a484f8`): status del cierre del epic 009 + criterios del programa 9/9 done.
+
 ## 2026-08-09 — Epic 009 cerrado
 
 ### Decisiones relevantes
