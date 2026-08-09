@@ -45,6 +45,8 @@ Proxy self-hosted en Go que expone **un endpoint OpenAI-compatible único** y ha
 
 **✅ REPLANTEO COMPLETO + DEPLOYADO (06 Ago):** EPIC-003 (cache), EPIC-006 (medición), EPIC-007 (catálogo), EPIC-008 (contexto) — 9/9 features done (spec→audit→RED→GREEN→review cada una), suite 13 paquetes `-race` verde, deploy a producción verificado E2E (medición viva: cache_hit 96.7%). Pendientes: validación externa anti-bias (runtime de delegación estuvo caído toda la sesión) + cablear pricing/metadata reales en config de producción.
 
+**✅ EPIC-009 (contexto-análisis): CERRADO 09 Ago 2026.** 3/3 features done (009-000-request-telemetry desplegada en prod; 009-001-context-composition `/v1/context`; 009-002-sticky-session) — spec→RED→GREEN→review→merge cada una, suite 332 tests `-race` verde, integración cross-feature (E3) sin bugs, closure (E4) completado (commit `307757a`). Decisiones arquitectónicas documentadas: **ADR-001** (dual-keying: opencode → `X-Session-Id`/sesión, openclaw/zot → `client|`; confirmado por captura ~103 eventos) y **ADR-002** (sticky como reordenamiento post-filtro, nunca fuerza cooldown/health/cadena). Operativo pendiente (default off): habilitar `context.analysis.enabled` + `fallback.sticky_routing.enabled` en config de prod. → `docs/epics/closure-009.md`, `docs/epics/integration-009.md`.
+
 ## Epics del programa
 
 ### EPIC-001: mofgw-core — MVP del proxy transparente
@@ -240,14 +242,14 @@ Racional: telemetría primero porque la investigación mostró que las suposicio
 
 ## Criterios de aceptación del programa completo
 
-- [ ] Los 9 epics están done (001-009).
+- [x] Los 9 epics están done (001-009). — ✅ verificado 09 Ago 2026 (EPIC-009 cerrado: suite 332 tests `-race` verde, E2E cross-feature, closure-009.md).
 - [ ] E2E integral: OpenClaw (sesiones, crons, sesiones aisladas) corriendo contra mofgw en 3369, sin omniroute, sin fallbacks nativos de OpenClaw, durante 48h sin un solo error visible al cliente.
 - [ ] omniroute.service deshabilitado, ~1GB RAM liberada.
 - [ ] Métricas en Prometheus muestran fallbacks y cooldowns en acción.
 - [ ] 10+ agentes clientes concurrentes sin degradación.
-- [ ] (Nuevo 06 Ago) /metrics contabiliza tokens y costo por cliente/modelo/provider.
-- [ ] (Nuevo 06 Ago) /v1/models expone capabilities (context window, max_output, thinking) y opencode/openclaw las consumen.
-- [ ] (Nuevo 06 Ago) Requests que exceden la ventana de contexto se rechazan temprano sin quemar intentos de la cadena.
+- [x] (Nuevo 06 Ago) /metrics contabiliza tokens y costo por cliente/modelo/provider. — ✅ (006-001/006-002, verificado en prod: cache_hit 96.7%).
+- [x] (Nuevo 06 Ago) /v1/models expone capabilities (context window, max_output, thinking) y opencode/openclaw las consumen. — ✅ (007-002).
+- [x] (Nuevo 06 Ago) Requests que exceden la ventana de contexto se rechazan temprano sin quemar intentos de la cadena. — ✅ (008-001).
 
 ## Stakeholders
 
@@ -260,3 +262,4 @@ Racional: telemetría primero porque la investigación mostró que las suposicio
 - 2026-08-03: Plan inicial creado. Investigación de arquitectura en curso (subagente). La decomposición de EPIC-003 queda pendiente de research-architecture.md.
 - 2026-08-06: EPIC-001/002/004/005 marcados DONE (verificado en README + suite). EPIC-003 replanteado: cache de providers (003-001) + nuevos EPIC-006 (medición), EPIC-007 (catálogo), EPIC-008 (contexto). Decisión Pablo: delegación total a Ofap (auto-aprobación GVR). Discovery en curso.
 - 2026-08-08: Replanteo 003-008 CERRADO (P4 done, Memory Bank aprobada, epic_closed). Nuevo **EPIC-009** (telemetría → composición de contexto → sticky routing) planificado y aprobado. Investigación: solo opencode manda X-Session-Id; openclaw/zot no. Pablo delega a Ofap el rol de dueño del proceso (reemplaza HITL).
+- 2026-08-09: **EPIC-009 CERRADO** — 3/3 features done (telemetría desplegada; composición `/v1/context`; sticky routing), integración cross-feature E3 sin bugs, closure E4 (commit `307757a`, `docs/epics/closure-009.md` + `integration-009.md`). ADR-001 (dual-keying) y ADR-002 (sticky post-filtro) creados. Suite 332 tests `-race`. Operativo pendiente: habilitar `context.analysis` + `sticky_routing` en prod. Programa: 9/9 epics done; restan los criterios E2E integral 48h del programa.
