@@ -57,6 +57,16 @@ type Metrics struct {
 	sessionsMu          sync.Mutex
 	sessions            map[string]*SessionRecord // "client|session" -> record
 	maxSessionsRetained int
+
+	// contexts: composición estructural del contexto por (client, session)
+	// — 009-001 (P2). Keyed como 008-003: "client|session" cuando hay
+	// sesión; "client|" para el record de cliente. Los records por sesión
+	// se evictan FIFO por last_request_at con el MISMO maxSessionsRetained;
+	// el record de cliente (client|) NUNCA se evicta. History acotada por
+	// contextHistoryPerSession (ring buffer, default 50).
+	contextsMu               sync.Mutex
+	contexts                 map[string]*ContextRecord
+	contextHistoryPerSession int
 }
 
 // SessionRecord es el acumulado de consumo de una sesión (008-003 P2/P3).
@@ -96,6 +106,9 @@ func New() *Metrics {
 		cost:                make(map[string]float64),
 		sessions:            make(map[string]*SessionRecord),
 		maxSessionsRetained: 100,
+
+		contexts:                 make(map[string]*ContextRecord),
+		contextHistoryPerSession: 50,
 	}
 	m.lastProvider.Store("")
 	return m

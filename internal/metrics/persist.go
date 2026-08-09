@@ -25,11 +25,16 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/ofapsaas/mofgw/internal/composition"
 )
 
 // stateVersion identifica el formato del snapshot. Incrementar ante
-// cambios de schema (LoadState rechaza versiones mayores).
-const stateVersion = 1
+// cambios de schema (LoadState rechaza versiones mayores). v2 (009-001
+// P5): persistedState gana `contexts` (composición de contexto). El
+// binario nuevo lee v1 sin error (contexts ausente = vacío); el binario
+// viejo (v1) rechaza v2 con el check de abajo.
+const stateVersion = 2
 
 // persistedState es la representación serializable de Metrics.
 type persistedState struct {
@@ -49,6 +54,7 @@ type persistedState struct {
 	TotalTokens   map[string]int64          `json:"total_tokens"`
 	Cost          map[string]float64        `json:"cost_usd"`
 	Sessions      map[string]*SessionRecord `json:"sessions"`
+	Contexts      map[string]*ContextRecord `json:"contexts,omitempty"`
 }
 
 // snapshot captura todo el estado bajo locks en un persistedState.
@@ -88,6 +94,12 @@ func (m *Metrics) snapshot() persistedState {
 		s.Sessions[k] = &cp
 	}
 	m.sessionsMu.Unlock()
+	m.contextsMu.Lock()
+	s.Contexts = make(map[string]*ContextRecord, len(m.contexts))
+	for k, r := range m.contexts {
+		s.Contexts[k] = cloneContextRecord(r)
+	}
+	m.contextsMu.Unlock()
 	return s
 }
 
@@ -129,6 +141,54 @@ func (m *Metrics) restore(s persistedState) {
 		m.evictOldestLocked()
 	}
 	m.sessionsMu.Unlock()
+	m.contextsMu.Lock()
+	m.contexts = make(map[string]*ContextRecord, len(s.Contexts))
+	for k, r := range s.Contexts {
+		m.contexts[k] = cloneContextRecord(r)
+	}
+	// Mismo criterio de retención que sessions: si el snapshot trae más
+	// records por sesión que el tope vigente, evictar los más viejos
+	// (los records de cliente nunca se evictan). La history se acota al
+	// ring buffer vigente (0 = sin history).
+	for _, r := range m.contexts {
+		if len(r.History) > m.contextHistoryPerSession {
+			r.History = r.History[:m.contextHistoryPerSession]
+		}
+	}
+	for m.sessionContextCountLocked() > m.maxSessionsRetained {
+		m.evictOldestContextLocked()
+	}
+	m.contextsMu.Unlock()
+}
+
+// cloneContextRecord copia profundo un ContextRecord (nil-safe): maps de
+// agregados y history con sus slices/pointers propios.
+func cloneContextRecord(r *ContextRecord) *ContextRecord {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	cp.Roles = make(map[string]*RoleAgg, len(r.Roles))
+	for k, v := range r.Roles {
+		a := *v
+		cp.Roles[k] = &a
+	}
+	cp.PartTypes = make(map[string]*PartAgg, len(r.PartTypes))
+	for k, v := range r.PartTypes {
+		a := *v
+		cp.PartTypes[k] = &a
+	}
+	cp.History = make([]ContextEntry, len(r.History))
+	for i, e := range r.History {
+		e.PartTypes = append([]composition.PartType(nil), e.PartTypes...)
+		e.Roles = append([]string(nil), e.Roles...)
+		if e.PromptTokensActual != nil {
+			v := *e.PromptTokensActual
+			e.PromptTokensActual = &v
+		}
+		cp.History[i] = e
+	}
+	return &cp
 }
 
 // SaveState serializa el estado completo a path con escritura atómica
