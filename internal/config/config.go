@@ -139,11 +139,21 @@ type PricingConfig struct {
 	CacheHitUSDPerM float64 `yaml:"cache_hit_usd_per_m"`
 }
 
+// ContextAnalysisConfig es la configuración del análisis estructural del
+// contexto (009-001 P6): composición por sesión/cliente en /v1/context.
+// Enabled=false (default) → sin records ni memoria; HistoryPerSession =
+// ring buffer de history por record (0 = sin history, solo agregados).
+type ContextAnalysisConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	HistoryPerSession int  `yaml:"history_per_session"`
+}
+
 // ContextConfig es la configuración del rechazo por contexto
 // (008-001). Margin: fracción 0-1 sobre context_window (default 0.1;
-// -1 = usar default).
+// -1 = usar default). Analysis: análisis de composición (009-001).
 type ContextConfig struct {
-	Margin float64 `yaml:"margin"`
+	Margin   float64               `yaml:"margin"`
+	Analysis ContextAnalysisConfig `yaml:"analysis"`
 }
 
 // TelemetryConfig es la configuración de la telemetría de descubrimiento
@@ -221,6 +231,10 @@ func defaults() Config {
 		},
 		Context: ContextConfig{
 			Margin: -1, // -1 = usar default del proxy (0.1)
+			Analysis: ContextAnalysisConfig{
+				Enabled:           false,
+				HistoryPerSession: 50,
+			},
 		},
 		Telemetry: TelemetryConfig{
 			Enabled:    false,
@@ -404,6 +418,12 @@ func (c *Config) validate() error {
 	}
 	if c.Telemetry.Enabled && c.Telemetry.File == "" {
 		return fmt.Errorf("config: telemetry.enabled=true requiere telemetry.file")
+	}
+	// context.analysis (009-001 P6): history_per_session negativo no tiene
+	// sentido (0 = sin history, solo agregados — consistente con la
+	// validación de max_sessions_retained).
+	if c.Context.Analysis.HistoryPerSession < 0 {
+		return fmt.Errorf("config: context.analysis.history_per_session no puede ser negativo")
 	}
 	return nil
 }

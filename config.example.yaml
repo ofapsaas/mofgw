@@ -82,3 +82,12 @@ model_metadata:
 # margin: fracción 0-1 sobre context_window (default 0.1).
 context:
   margin: 0.1
+  # Análisis estructural del contexto por sesión/cliente (009-001).
+  # Expone GET /v1/context con la composición de cada sesión (roles,
+  # part types, tokens estimados/actuales). SOLO metadata estructural,
+  # nunca contenido. enabled=false (default) → endpoint 200 vacío, sin
+  # memoria. history_per_session: ring buffer de entries por record
+  # (0 = sin history, solo agregados).
+  analysis:
+    enabled: false
+    history_per_session: 50
