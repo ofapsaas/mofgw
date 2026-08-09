@@ -3,9 +3,9 @@
 ---
 feature_id: 009-001-context-composition
 epic: mofgw-009-contexto-analisis
-status: draft (sin aprobar — pendiente decisión de keying al cerrar la captura; ver §Decisiones pendientes)
+status: approved (keying confirmado por captura 2026-08-09, ~103 eventos)
 created_at: 2026-08-09
-updated_at: 2026-08-09
+updated_at: 2026-08-09T13:00:00-03:00
 depends_on: 009-000-request-telemetry (paquete composition, gate de emisión, audit R1), 008-003-stats-por-sesion (X-Session-Id solo lectura, keying client|session, FIFO), 007-003-usage-para-clientes (patrón endpoint ?session= + aislamiento), 001-007-auth (clientID), 006-001-usage-accounting (Usage.PromptTokens post-response), 005-005-verbose (privacidad nunca contenido)
 paralelizable: no
 ---
@@ -33,6 +33,11 @@ postcondiciones que dependen de esa decisión están marcadas **[KEYING]** y el
 orquestador las ajusta al aprobar con el análisis de patrones. Fallback
 documentado: si openclaw/zot no muestran sesión (ni anidada en metadata) →
 composición por client_id para ellos.
+
+La captura de telemetría (2026-08-09, ~103 eventos) confirmó el diseño
+dual-keying: opencode → X-Session-Id en header; openclaw/zot → sin sesión
+(solo client_id). `detected_ids` = 0 en todos los eventos (hipótesis de sesión
+anidada descartada). Ver `docs/research-context-patterns.md`.
 
 ## Contexto técnico
 
@@ -148,11 +153,11 @@ type ContextAnalysisConfig struct {
    `history_per_session`, default 50). Retención: los records por sesión se
    evictan FIFO por `last_request_at` con el MISMO tope `max_sessions_retained`
    (008-003 P4); el record de cliente (`client|`) NUNCA se evicta (acotado por
-   la cantidad de clientes del config). **[KEYING]** El comportamiento para
-   tráfico SIN sesión (openclaw/zot → solo record de cliente) es el fallback
-   m4: si el análisis de la captura confirmara sesión anidada (detected_ids),
-   esa fuente podría sumarse — el orquestador ajusta esta postcondición al
-   aprobar.
+   la cantidad de clientes del config). Confirmado por la captura 2026-08-09
+   (~103 eventos): el tráfico SIN sesión (openclaw/zot) va solo al record de
+   cliente (`client|`), que es el fallback diseñado — openclaw/zot no mandan
+   session id ni en header ni en metadata del body (`detected_ids` = 0), por
+   lo que no hay fuente adicional de sesión que sumar.
 
 3. **P3 — Endpoint `GET /v1/context` [KEYING parcial].** Con auth Bearer
    (`/v1/*` ya protegido por `auth.Wrap`, proxy.go:188) y aislamiento por
@@ -171,10 +176,10 @@ type ContextAnalysisConfig struct {
      entries request a request, más nuevo primero, acotado a
      `history_per_session`. Sin data → 200 con ceros/vacío (nunca nil,
      consistente con `UsageSnapshot`); con `history_per_session=0` → `history`
-     vacío y `latest` ausente. **[KEYING]** La semántica de 404 para clientes
-     sin sesiones (openclaw/zot) y el contenido del agregado por client_id son
-     el fallback m4 — se ajustan al aprobar si la captura cambia la fuente de
-     sesión.
+   vacío y `latest` ausente. Confirmado por la captura 2026-08-09 (~103
+   eventos): la semántica de 404 para clientes sin sesiones (openclaw/zot) y
+   el contenido del agregado por client_id son el comportamiento final — no
+   existe fuente de sesión alternativa (ni header ni metadata) que ajustar.
 
 4. **P4 — prompt_tokens_actual en DOS fases (independiente de keying).**
    Fase 1 (pre-request, en `handleChat` tras leer clientID/sessionID, mismo
@@ -292,13 +297,14 @@ type ContextAnalysisConfig struct {
   `version: 3` → LoadState error (check existente).
 - C13 (P7): strings distintivos en content/arguments → grep negativo en
   `/v1/context` y en el state file serializado.
-- C14 (P2/P3): [KEYING] con `max_sessions_retained: 1` y 3 sesiones distintas
+- C14 (P2/P3): con `max_sessions_retained: 1` y 3 sesiones distintas
   → `GET /v1/context` (cliente) muestra `requests: 3` (record de cliente
   sobrevive); `GET /v1/context?session=<la más vieja>` → 404 (evictada).
-- C15 (P2/P3): [KEYING — fallback m4] requests SIN sesión (openclaw/zot) →
+- C15 (P2/P3): requests SIN sesión (openclaw/zot) →
   `GET /v1/context` muestra su composición agregada por client_id;
-  `GET /v1/context?session=<cualquier id>` → 404. El orquestador ajusta este
-  criterio al aprobar con el análisis de patrones.
+  `GET /v1/context?session=<cualquier id>` → 404. Confirmado por la captura
+  2026-08-09: este fallback (client_id, sin sesión) es el comportamiento
+  final.
 - C16 (P8): suite completa verde `go test ./... -race`, vet y gofmt limpios.
 
 ## Decisiones pendientes — criterio de cierre del epic (keying)

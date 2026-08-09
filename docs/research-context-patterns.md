@@ -74,6 +74,15 @@ documentó el research de opencode).
   "metadata de sesión en el ctx" solo se descarta con muestra representativa
   de openclaw/zot (heartbeats, crons, Telegram).
 
+## Correlación validada (2026-08-09, ~103 eventos)
+
+El método de correlación por valor quedó VALIDADO: los 5 session ids de
+opencode capturados por la telemetría (`ses_01be9796...`, `ses_01bed502...`,
+`ses_01bfb235...`, `ses_01d155e10...`, `ses_01df471f...`) existen en
+`opencode.log` con alta frecuencia (52 y 161 matches para los verificados).
+Cada sesión capturada en el header de telemetría corresponde a una sesión real
+de opencode → se puede mapear sesión → runtime → composición completa.
+
 ## Pendiente (al completar la captura)
 
 1. Agregados por runtime: volumen, % con session id, % con detected_ids.
