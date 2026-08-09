@@ -709,16 +709,19 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 			}
 			// Comprometido: re-emitimos el primer evento + el resto del canal.
 			// El timeout de intento (TTFB) ya cumplió su función — el primer
-			// byte llegó. Liberar el deadline acá cumple el spec 001-006: el
-			// timeout mide TTFB (hasta el primer evento SSE); después, el
-			// stream completo queda gobernado por el write_timeout del server.
-			// (Incidente 09 Ago: sin este cancel, un stream largo de un
-			// sub-agente se cortaba a los fallback.timeout segundos exactos
-			// — context.WithTimeout envuelve todo el intento, no solo TTFB.)
-			cancel()
+			// byte llegó. Después del primer byte, el stream completo queda
+			// gobernado por el write_timeout del server (spec 001-006).
+			//
+			// OJO: NO cancelar el ctx acá. El ctx (con deadline de intento)
+			// está vinculado al body read del HTTP request del provider
+			// (http.NewRequestWithContext) — cancelarlo tras el primer byte
+			// mata el stream completo (incidente 09 Ago 2026, fix 1efef81
+			// revertido). El cancel() se ejecuta al final del drenado, en la
+			// goroutine merged, donde estaba originalmente.
 			merged := make(chan provider.StreamEvent, 8)
 			go func() {
 				defer close(merged)
+				defer cancel()
 				merged <- first
 				for ev := range ch {
 					merged <- ev
