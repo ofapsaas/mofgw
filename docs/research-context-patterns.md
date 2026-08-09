@@ -20,6 +20,25 @@ Consistente con la investigación estática previa (`ref:naughty-black-trout`,
 `ref:philosophical-lime-gopher`): solo opencode serializa el session id, y va
 en header, no en el body.
 
+## Actualización 2026-08-09 (~30 min de captura, 74 eventos)
+
+El patrón se sostiene con muestra más grande:
+
+- **opencode/1.18.10**: 28+ eventos, SIEMPRE con `X-Session-Id` — 4 sesiones
+  distintas observadas (ses_01d155..., ses_01bed502..., ses_01bfb235...,
+  ses_01be979... — las conversaciones activas del epic).
+- **OpenAI/JS 6.45.0**: 10 eventos, SIN sesión (zot vía su SDK).
+- **node**: 2 eventos, SIN sesión (openclaw u otro cliente Node).
+- **`detected_ids` = 0 en TODOS los 74 eventos** — ningún runtime embebe el id
+  de sesión en metadata del body (metadata.session_id/thread_id).
+
+**Lectura:** la hipótesis de Pablo ("session id en metadata del ctx") no se
+confirma con esta muestra. La investigación estática se valida con datos de
+producción: solo opencode, y en header. La decisión de keying de 009-001 se
+perfila: opencode → sesión; openclaw/zot → client_id. **Límite:** la muestra de
+node (openclaw) es chica (2 eventos) — faltan heartbeats/crons/Telegram que
+corren con openclaw. Se confirma al completar la captura (24-48h).
+
 ## Implicación para el diseño de 009-001 (composición)
 
 El criterio de cierre del epic (spec 009-000 §Fuera de alcance, m4 del audit)
