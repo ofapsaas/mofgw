@@ -201,7 +201,7 @@ func TestE2E009002_PreferidoUnhealthyNoAplica(t *testing.T) {
 	up1.modelsStatus = 500 // el health check ve a A caído
 	up2 := upstreamOK("m", "de B")
 	hs := health.New(time.Second, 5*time.Second, nil)
-	h, r, sups := buildSticky(t, []*upstream{up1, up2}, "sk-test-1", router.Options{
+	h, r, _ := buildSticky(t, []*upstream{up1, up2}, "sk-test-1", router.Options{
 		MaxRetries: 2, Cooldown: 0, GlobalTimeout: 30 * time.Second, Health: hs,
 	})
 	// Afinidad previa a A (como si hubiera ganado antes).
@@ -215,11 +215,14 @@ func TestE2E009002_PreferidoUnhealthyNoAplica(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
-	if sups[0].calls() != 0 {
-		t.Fatalf("A calls = %d, want 0 (unhealthy, preferido no aplica — C4)", sups[0].calls())
+	// gotBody mide SOLO requests de chat: el health check de buildSticky
+	// (o.Health.CheckNow()) sondea a ambos upstreams y contamina
+	// stickyUpstream.calls() — patrón TestE2EHealthSkipsDownProvider.
+	if up1.gotBody != "" {
+		t.Fatalf("A recibió un request de chat (unhealthy, preferido no aplica — C4): %q", up1.gotBody)
 	}
-	if sups[1].calls() != 1 {
-		t.Fatalf("B calls = %d, want 1", sups[1].calls())
+	if up2.gotBody == "" {
+		t.Fatal("B no recibió el request de chat (want 1 — C4)")
 	}
 	// El ganador B se registra (P6).
 	if got, ok := r.Affinity().Get("test|s1"); !ok || got != "up2" {
@@ -363,11 +366,23 @@ func TestE2E009002_SinReconexionPostPrimerByte(t *testing.T) {
 // ---- C9 — el registro post-éxito no pisa la afinidad en fallos ----
 
 func TestE2E009002_FalloTotalNoActualizaAfinidad(t *testing.T) {
-	upA := upstreamOK("m", "de A")
+	// upA devuelve usage.prompt_tokens para que el request exitoso acumule
+	// costo (upstreamOK solo trae total_tokens → costo 0 → el budget nunca
+	// excede — patrón upstreamUsagePrompt de e2e_009001).
+	upA := upstreamUsagePrompt("m", 1000)
 	h, r, _ := buildSticky(t, []*upstream{upA, upstreamFail(500)}, "sk-test-1", router.Options{
 		MaxRetries: 2, Cooldown: 0, GlobalTimeout: 30 * time.Second,
 	})
-	// req1: A responde → afinidad test|s1 = A.
+	// Pricing y budget ANTES del tráfico (patrón TestRED_BudgetCosto):
+	// req1 acumula costo y el siguiente request es rechazado por budget.
+	h.proxySrv.SetPricing(map[string]proxy.ModelPricing{
+		"m": {InputUSDPerM: 1e9, OutputUSDPerM: 1e9, CacheHitUSDPerM: 1e9},
+	})
+	h.proxySrv.SetBudget(map[string]config.BudgetConfig{
+		"test": {CostUSDMax: 0.01},
+	})
+
+	// req1: A responde → afinidad test|s1 = A (y acumula costo ≥ budget).
 	resp := chatWithHeaders(t, h, "sk-test-1", map[string]string{"X-Session-Id": "s1"}, map[string]any{
 		"model":    "m",
 		"messages": []map[string]any{{"role": "user", "content": "hola"}},
@@ -380,37 +395,32 @@ func TestE2E009002_FalloTotalNoActualizaAfinidad(t *testing.T) {
 		t.Fatalf("afinidad test|s1 = (%q,%v), want (up1,true)", got, ok)
 	}
 
-	// Ahora AMBOS fallan → 502; la afinidad NO se actualiza (P6).
+	// Request rechazado por budget (429, pre-router) → afinidad intacta (C9).
+	resp = chatWithHeaders(t, h, "sk-test-1", map[string]string{"X-Session-Id": "s1"}, map[string]any{
+		"model":    "m",
+		"messages": []map[string]any{{"role": "user", "content": "hola"}},
+	})
+	if resp.StatusCode != 429 {
+		t.Fatalf("req2 status = %d, want 429 (budget excedido)", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	if got, ok := r.Affinity().Get("test|s1"); !ok || got != "up1" {
+		t.Fatalf("afinidad tras 429 = (%q,%v), want (up1,true) — rechazos pre-router no tocan afinidad (C9)", got, ok)
+	}
+
+	// Ahora AMBOS fallan (budget fuera) → 502; la afinidad NO se actualiza (P6/C9).
+	h.proxySrv.SetBudget(map[string]config.BudgetConfig{}) // quita budget
 	upA.status = 500
 	resp = chatWithHeaders(t, h, "sk-test-1", map[string]string{"X-Session-Id": "s1"}, map[string]any{
 		"model":    "m",
 		"messages": []map[string]any{{"role": "user", "content": "hola"}},
 	})
 	if resp.StatusCode != 502 {
-		t.Fatalf("req2 status = %d, want 502 (todos fallan)", resp.StatusCode)
+		t.Fatalf("req3 status = %d, want 502 (todos fallan)", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
 	if got, ok := r.Affinity().Get("test|s1"); !ok || got != "up1" {
 		t.Fatalf("afinidad test|s1 = (%q,%v), want (up1,true) — el fallo total NO actualiza (C9)", got, ok)
-	}
-
-	// Request rechazado por budget (429, pre-router) → afinidad intacta.
-	h.proxySrv.SetPricing(map[string]proxy.ModelPricing{
-		"m": {InputUSDPerM: 1e9, OutputUSDPerM: 1e9, CacheHitUSDPerM: 1e9},
-	})
-	h.proxySrv.SetBudget(map[string]config.BudgetConfig{
-		"test": {CostUSDMax: 0.01},
-	})
-	resp = chatWithHeaders(t, h, "sk-test-1", map[string]string{"X-Session-Id": "s1"}, map[string]any{
-		"model":    "m",
-		"messages": []map[string]any{{"role": "user", "content": "hola"}},
-	})
-	if resp.StatusCode != 429 {
-		t.Fatalf("req3 status = %d, want 429 (budget excedido)", resp.StatusCode)
-	}
-	io.Copy(io.Discard, resp.Body)
-	if got, ok := r.Affinity().Get("test|s1"); !ok || got != "up1" {
-		t.Fatalf("afinidad tras 429 = (%q,%v), want (up1,true) — rechazos pre-router no tocan afinidad (C9)", got, ok)
 	}
 }
 
@@ -419,13 +429,19 @@ func TestE2E009002_FalloTotalNoActualizaAfinidad(t *testing.T) {
 
 func TestE2E009002_TransparenciaByteIdentical(t *testing.T) {
 	// Body de referencia: harness legacy (sticky off) con el mismo par de
-	// upstreams — el ganador es up2 (A falla 500 → B).
+	// upstreams — el ganador es up2 (A falla 500 → B). Se capturan también
+	// los headers legacy: la transparencia exige el MISMO SET de headers
+	// (setUsageHeaders de 007-003 escribe X-Usage-* SIEMPRE en el path
+	// no-stream exitoso, con o sin sticky — prohibir X-* genéricamente
+	// sería incorrecto, C10/I1/P7).
+	var legacyHeaders http.Header
 	legacyBody := func() []byte {
 		h := build(t, []*upstream{upstreamFail(500), upstreamOK("m", "RESPUESTA-FIJA-009002")}, "sk-test-1")
 		resp := h.chat(t, map[string]any{"model": "m", "messages": []map[string]any{{"role": "user", "content": "hola"}}})
 		if resp.StatusCode != 200 {
 			t.Fatalf("legacy status = %d, want 200", resp.StatusCode)
 		}
+		legacyHeaders = resp.Header.Clone()
 		b, _ := io.ReadAll(resp.Body)
 		return b
 	}()
@@ -461,16 +477,38 @@ func TestE2E009002_TransparenciaByteIdentical(t *testing.T) {
 	if !bytes.Equal(stickyBody, legacyBody) {
 		t.Fatalf("body sticky != legacy (byte-identical — C10):\nsticky: %s\nlegacy: %s", stickyBody, legacyBody)
 	}
-	// Sin headers X-* nuevos (la única diferencia es la elección interna).
-	for k := range resp.Header {
-		if strings.HasPrefix(k, "X-") && k != "X-Request-Id" {
-			t.Fatalf("header X-* nuevo en respuesta sticky: %q (C10/I1)", k)
-		}
+	// Sin headers NUEVOS respecto del provider ganador sin sticky (C10/I1).
+	if !headerNameSetEqual(resp.Header, legacyHeaders) {
+		t.Fatalf("headers sticky != headers no-sticky (mismos headers — C10/I1):\nsticky: %v\nlegacy: %v", resp.Header, legacyHeaders)
 	}
 	// Log debug sticky_applied cuando el reorder se aplicó (D6).
 	if !waitForSubstring(t, &buf, "sticky_applied") {
 		t.Fatalf("sin sticky_applied en logs debug (C10):\n%s", buf.String())
 	}
+}
+
+// headerNameSetEqual: compara los conjuntos de nombres de headers
+// (canonicalizados). Para la transparencia C10/I1/P7: con sticky no debe
+// aparecer NINGÚN header nuevo respecto del path no-sticky del mismo
+// provider ganador. Date está en ambas respuestas HTTP y no se excluye.
+func headerNameSetEqual(a, b http.Header) bool {
+	names := func(h http.Header) map[string]struct{} {
+		m := make(map[string]struct{}, len(h))
+		for k := range h {
+			m[http.CanonicalHeaderKey(k)] = struct{}{}
+		}
+		return m
+	}
+	na, nb := names(a), names(b)
+	if len(na) != len(nb) {
+		return false
+	}
+	for k := range na {
+		if _, ok := nb[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- C11 — sticky off (default) → legacy ----

@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -316,6 +317,16 @@ func TestPostcondition4_SesionesIndependientes(t *testing.T) {
 	if res1.ProviderID != "p1" {
 		t.Fatalf("s1 provider = %s, want p1", res1.ProviderID)
 	}
+	// C6: s1 NO usa el preferido de s2 (p2). Verifico la independencia
+	// ANTES del request de s2: tras el request de s1, p2 no fue probado
+	// y p1 atendió exactamente una vez.
+	if p2.callCount() != 0 {
+		t.Fatalf("p2 intentos tras el request de s1 = %d, want 0 (s1 no usa el preferido de s2 — C6)", p2.callCount())
+	}
+	if p1.callCount() != 1 {
+		t.Fatalf("p1 intentos tras el request de s1 = %d, want 1", p1.callCount())
+	}
+
 	res2, err := r.CompleteFor(context.Background(), reqFor("m"), bodyFor("m", nil), "test|s2")
 	if err != nil {
 		t.Fatalf("CompleteFor s2: %v", err)
@@ -323,11 +334,13 @@ func TestPostcondition4_SesionesIndependientes(t *testing.T) {
 	if res2.ProviderID != "p2" {
 		t.Fatalf("s2 provider = %s, want p2", res2.ProviderID)
 	}
-	if p2.callCount() != 0 {
-		t.Fatalf("p2 intentos = %d, want 0 (s1 no usa el preferido de s2 — C6)", p2.callCount())
+	// C6: cada sesión usó su preferido exactamente una vez; las claves son
+	// independientes (sin contaminación).
+	if p1.callCount() != 1 {
+		t.Fatalf("p1 intentos totales = %d, want 1 (s2 no usa el preferido de s1 — C6)", p1.callCount())
 	}
-	if p1.callCount() != 0 {
-		t.Fatalf("p1 intentos = %d, want 0 (s2 no usa el preferido de s1 — C6)", p1.callCount())
+	if p2.callCount() != 1 {
+		t.Fatalf("p2 intentos totales = %d, want 1", p2.callCount())
 	}
 }
 
@@ -384,10 +397,36 @@ func TestPostcondition5_PreferidoPrimeroStream(t *testing.T) {
 	}
 }
 
+// streamCountingFake: envuelve un fakeProvider y cuenta los intentos de
+// Stream. fakeProvider/streamFake NO incrementan calls["complete"] en el
+// path streaming (solo Complete lo hace — router_test.go), así que
+// callCount() es inútil para verificar "el preferido se probó primero"
+// en el fallback pre-primer-byte (C8).
+type streamCountingFake struct {
+	*fakeProvider
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *streamCountingFake) Stream(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return f.fakeProvider.Stream(ctx, body)
+}
+
+func (f *streamCountingFake) streamCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 func TestPostcondition5_FallbackPrePrimerByteConPreferencia(t *testing.T) {
-	// Preferido p2 devuelve 429 antes del primer byte → fallback a p1
-	// (el reorder solo cambia el orden de prueba — P5/C8).
-	p2 := newFake("p2", "m").fail429()
+	// Preferido p2 (en config es SEGUNDO: el orden es p1,p2) devuelve 429
+	// antes del primer byte → el reorder lo prueba primero y el fallback
+	// pre-primer-byte lo sirve p1 (P5/C8). p2 = streamCountingFake porque
+	// fakeProvider.Stream no cuenta en calls["complete"].
+	p2 := &streamCountingFake{fakeProvider: newFake("p2", "m").fail429()}
 	p1 := &streamFake{fakeProvider: newFake("p1", "m").ok("x"), script: []provider.StreamEvent{{Data: "hola"}, {Data: "[DONE]"}}}
 	r := NewWithOptions([]ProviderSpec{{Provider: p1}, {Provider: p2}}, Options{
 		MaxRetries: 1, Cooldown: time.Minute, GlobalTimeout: 30 * time.Second,
@@ -402,8 +441,8 @@ func TestPostcondition5_FallbackPrePrimerByteConPreferencia(t *testing.T) {
 	if res.Provider.ID() != "p1" {
 		t.Fatalf("provider = %s, want p1 (fallback pre-primer-byte del preferido — C8)", res.Provider.ID())
 	}
-	if p2.callCount() != 1 {
-		t.Fatalf("p2 intentos = %d, want 1 (el preferido se prueba primero)", p2.callCount())
+	if p2.streamCallCount() < 1 {
+		t.Fatalf("p2 intentos de Stream = %d, want >= 1 (el preferido se prueba primero — C8)", p2.streamCallCount())
 	}
 	var datas []string
 	for ev := range res.Events {
