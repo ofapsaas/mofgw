@@ -708,6 +708,14 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 				continue
 			}
 			// Comprometido: re-emitimos el primer evento + el resto del canal.
+			// El timeout de intento (TTFB) ya cumplió su función — el primer
+			// byte llegó. Liberar el deadline acá cumple el spec 001-006: el
+			// timeout mide TTFB (hasta el primer evento SSE); después, el
+			// stream completo queda gobernado por el write_timeout del server.
+			// (Incidente 09 Ago: sin este cancel, un stream largo de un
+			// sub-agente se cortaba a los fallback.timeout segundos exactos
+			// — context.WithTimeout envuelve todo el intento, no solo TTFB.)
+			cancel()
 			merged := make(chan provider.StreamEvent, 8)
 			go func() {
 				defer close(merged)
@@ -715,7 +723,6 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 				for ev := range ch {
 					merged <- ev
 				}
-				cancel()
 			}()
 			r.resetDegraded()
 			return &StreamResult{Provider: s.Provider, Events: merged}, nil
