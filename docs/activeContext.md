@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-09 (cdad-scribe, feature 009-001 closed).
+> Última actualización: 2026-08-09 (cdad-scribe, feature 009-002 closed — EPIC-009 3/3 done).
 
 ## Estado del programa
 
-**🔄 EPIC-009 EN PROGRESO (009-000 y 009-001 done; 009-002 pendiente). Resto de epics DONE.**
+**🔜 EPIC-009: 3/3 features DONE (009-000 / 009-001 / 009-002). Pendiente: integración cross-feature (E3) + closure del epic (E4). Resto de epics DONE.**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -18,13 +18,40 @@
 | EPIC-007 (catálogo) | 3 features | ✅ DONE | (06 Ago) |
 | EPIC-008 (contexto) | 3 features | ✅ DONE | (06 Ago) |
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
-| EPIC-009 (contexto-análisis) | 3 features | 🔄 EN PROGRESO | 009-000 ✅ done / 009-001 ✅ done / 009-002 ⏳ pending |
+| EPIC-009 (contexto-análisis) | 3 features | 🔜 3/3 DONE — pendiente integración (E3) + closure (E4) | 009-000 ✅ / 009-001 ✅ / 009-002 ✅ done |
 
-**Suite:** 14 paquetes, 294 tests verde con `-race`. vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
+**Suite:** 14 paquetes, 326 tests verde con `-race`. vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz.
 
 ## Decisiones recientes (cronología inversa)
+
+### 09 Ago 2026 — Feature: 009-002-sticky-session (cierre de ciclo — última del epic)
+
+## 2026-08-09 — Feature: 009-002-sticky-session
+
+### Decisiones relevantes
+
+- **Afinidad como reordenamiento post-filtro (I2/P9) — el corazón de la feature:** `applyStickyReorder` actúa SOLO sobre el slice `ready` post-`resolveReady` (ya post-cooldown/health/Serves): si el preferido está en `ready`, se mueve al frente preservando el orden relativo del resto; si NO está (cooldown, unhealthy, ya no sirve el modelo, clave ausente/evictada, stickyKey vacío) → slice intacto, comportamiento IDÉNTICO a legacy. NUNCA fuerza un provider que el filtro descartó, nunca cambia `maxAttempts` ni la clasificación de errores. Garantiza el criterio del epic (plan.md:215, "respeta cooldown/health/cadena") y la transparencia total (P7/I1/D6): el cliente nunca percibe el ruteo; única diferencia observable es el log debug `sticky_applied`. → **ADR-002**.
+- **Keying `client|session` + `client|` (P2, consume ADR-001):** misma fuente de sesión que 009-001 — `X-Session-Id` solo lectura, nunca upstream (I4). opencode → `clientID|sessionID` (afinidad por sesión real); openclaw/zot sin sesión → `clientID|` (afinidad por cliente, comportamiento deseado según captura 009-000). `X-Session-Affinity` deliberadamente NO se usa (D5/I3: en opencode es idéntico a `X-Session-Id`). `clientID` nunca vacío (token autenticado) → clave nunca `""`.
+- **`AffinityStore` efímero LRU (P3/D3/D4):** store en memoria (patrón `CooldownStore`; restart → frío; sin bump de `stateVersion`), evicción LRU por last-used (Set y Get refrescan — un cliente activo no se evicta, C12), cap = `Options.StickyMaxEntries` REUTILIZANDO el MISMO knob `server.max_sessions_retained` (default 100): D1 limita la config a `enabled`, el operador gobierna retención de sesiones y afinidad con un solo knob. Claves `client|` cuentan contra el mismo tope; pérdida benigna (re-registra en frío).
+- **`CompleteFor`/`StreamFor` con backward compat total (P8/D2):** refactor del loop de `Complete`/`Stream` a helpers compartidos (`complete`/`stream` + `applyStickyReorder`); `Complete`/`Stream`/`New` legacy intactos (stickyKey `""` → retorno inmediato); `StickyMaxEntries` nuevo en Options (0 = default). Con sticky off (default) el proxy llama legacy → cero diferencias observables (C11), e2e existentes pasan sin cambios.
+- **Registro post-éxito del GANADOR (P6):** en `recordCacheTokens` (punto único post-éxito con providerID para stream y no-stream), gated por `s.stickyRouting` (off → store vacío, cero memoria). Registra el provider que RESPONDIÓ/arrancó el stream (no necesariamente el preferido). Fallo total (502) o rechazos pre-router (400/413/limiter/budget/ventana) NO tocan la afinidad (C9); stream arrancado que muere a mitad SÍ registra (cache calentado). Best-effort: error de registro jamás falla el request.
+- **No invasivo + bounds (P9):** sin cambios en limiter/budget/ventana/clamp/usage/persistencia (`stateVersion` intacta)/telemetría; sin métricas nuevas (solo log debug); cardinalidad acotada (LRU) + mutex, seguro concurrente. Limitación aceptada (D4): afinidad por clave, no por `(clave, modelo)` — el óptimo de cache del segundo modelo puede no alcanzarse; corrección siempre garantizada vía `Serves`.
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** 0 bloqueantes, 5 opcionales (4 aceptados como deuda #21-#22 + nits sin registro; 1 aplicado — Nit #5: `max_sessions_retained` documentado en `config.example.yaml`). Suite completa 326 tests `-race` verde (294 + 32 nuevos), vet limpio, gofmt limpio (salvo `e2e_009000_test.go`, deuda preexistente #20).
+- **Feature aditiva (test-audit):** 0 tests existentes modificados, 38 archivos untouched, 32 tests nuevos (3 config + 18 router + 11 e2e) que cubren P1-P9 / C1-C13; 5 fixes de tests NUEVOS documentados (§5.2) con lección: **los contadores deben medir lo que el test afirma** (`fakeProvider.Stream` no cuenta en `callCount`; el health check de `buildSticky` contamina contadores; `upstreamOK` no produce costo → budget nunca dispara).
+- **Operativo:** la feature cierra el ciclo (merge) y el EPIC-009 (3/3 done). Habilitar `fallback.sticky_routing.enabled: true` en config de prod es paso operativo pendiente (default off; no altera comportamiento sin activarlo) — junto con `context.analysis.enabled` de 009-001.
+
+### Deuda técnica detectada
+
+- **TECHDEBT #21** — concurrencia sticky sin test dedicado (C13): garantía estructural (mutex de `AffinityStore`) + `-race` en suite; sin TOCTOU. Test concurrente dedicado → hardening post-cierre.
+- **TECHDEBT #22** — `X-Session-Affinity` irrelevante sin test dedicado (I3/D5): garantía por construcción (proxy solo lee `X-Session-Id`) + guard `e2e_008003` untouched. Test dedicado → hardening post-cierre.
+- **Nits de la review sin registro** (aceptados, sin acción de mejora): `evictLRU` con flag `first` (idiom Go correcto, refactor cosmético opcional); `AffinityStore` creado incondicionalmente (costo ~120 bytes, consistente con `CooldownStore`); `Get` refresca siempre `LastUsed` (semántica EXACTA del spec P3, revisado "no cambiar").
+- **Lección de proceso (test-audit §2/§5.2):** AUDIT previo al RED no ejecutado como sesión formal → 5 de los 32 tests nuevos nacieron con bugs de test (detectados en GREEN: 3 por el implementer respetando AP-4, 2 por el orquestador). Lección: además de escanear fixtures (009-001), escanear que los contadores/harness midan lo que el test afirma medir. Ver entrada de proceso en TECHDEBT.
+
+### Próxima feature en cola
+
+- **Ninguna del epic 009 — las 3 features están done.** Siguiente paso: **integración cross-feature (E3) y closure del epic (E4)** vía `cdad-epic` (chat nuevo): verificar los criterios de aceptación del epic (telemetry.jsonl capturando; `docs/research-context-patterns.md`; `/v1/context?session=<id>`; sticky routing opcional por config transparente que respeta cooldown/health/cadena — este último cubierto por 009-002), habilitar las features en prod y decidir el cierre formal.
 
 ### 09 Ago 2026 — Feature: 009-001-context-composition (cierre de ciclo)
 
@@ -92,9 +119,9 @@
 
 ## Próximos pasos
 
-1. **EPIC-009 (en curso):** 009-000-request-telemetry DONE y desplegada; 009-001-context-composition DONE (ciclo cerrado, default off en prod). Siguiente: **009-002-sticky-session** (afinidad de provider por sesión; consume composición 009-001 y la fuente de sesión confirmada). Volver a `cdad-epic` para coordinar la próxima feature.
+1. **EPIC-009: 3/3 features DONE** (009-000 desplegada; 009-001 y 009-002 con ciclo cerrado, default off en prod). Siguiente: **integración cross-feature (E3)** — verificar criterios de aceptación del epic (plan.md:211-215) y habilitar `context.analysis` + `sticky_routing` en config de prod — y **closure del epic (E4)**. Volver a `cdad-epic` (chat nuevo) para coordinar.
 2. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes.
-3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 20 entradas registradas (16-20 = deuda opcional review 009-001), varias cerradas, resto BAJA/FUTURO.
+3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 22 entradas registradas (#21-22 = deuda 009-002), varias cerradas, resto BAJA/FUTURO.
 4. **Budget para cliente zot/OpenClaw** (decisión de Pablo pendiente — evaluado y diferido 08 Ago: el gasto es intencional, no se limita).
 
 ## Conocimiento operativo clave

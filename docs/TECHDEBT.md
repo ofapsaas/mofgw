@@ -38,6 +38,14 @@
 | 18 | `latest`/`history` siempre presentes en el JSON de `/v1/context` ("latest ausente" con `history_per_session=0`) | ⏳ ACEPTADA | FYI | 009-001 review Optional #4 | `latest: null` es representación válida de "ausente" en JSON; el spec lo declara "ausente" y el e2e test `TestE2E009001_DisabledByDefault` espera explícitamente `body["latest"] == nil`. Diferencia cosmética sin impacto en consumidores. |
 | 19 | Ring buffer con prepend O(N) en `internal/metrics/context.go:171` | ⏳ ACEPTADA | FYI | 009-001 review Optional #5 | `rec.History = append([]ContextEntry{entry}, rec.History...)` → O(N) por request; costo cuadrático para `history_per_session` grande. Default 50 → despreciable. No se agrega tope superior a `history_per_session` ahora (spec P6 solo valida `< 0`); si un operador lo sube mucho es decisión consciente con costo documentado. Futuro: deque circular O(1). |
 | 20 | gofmt sucio en `internal/proxy/e2e_009000_test.go` | ⏳ PENDIENTE | LOW | 009-001 review (preexistente en HEAD) | Deuda preexistente, NO introducida por 009-001 (el diff de la feature excluye el archivo). gofmt reporta diff en HEAD. Correr `gofmt -w` sobre el archivo la próxima vez que se toque (evita ruido de diff en reviews). |
+| 21 | Concurrencia sticky sin test dedicado (C13) | ⏳ ACEPTADA (hardening post-cierre) | LOW | 009-002 review Optional #3 + test-audit §9.2 | No hay test que dispare requests concurrentes de la misma sesión con sticky on; la garantía es estructural (mutex de `AffinityStore`, spec P3) + `-race` sobre la suite. Análisis del reviewer: sin TOCTOU — Get/Set atómicas individualmente; la operación compuesta no requiere atomicidad cruzada (peor caso: ambos requests registran al mismo ganador, resultado correcto). Test concurrente dedicado en hardening futuro. |
+| 22 | `X-Session-Affinity` irrelevante sin test dedicado (I3/D5) | ⏳ ACEPTADA (hardening post-cierre) | FYI | 009-002 test-audit §9.3 | Ningún test manda `X-Session-Affinity` y verifica que no influye en el keying; la garantía es por construcción (P2: el proxy solo lee `X-Session-Id`; D5) + guard existente `e2e_008003` untouched. Test dedicado que envíe el header y verifique keying inalterado → hardening post-cierre. |
+
+> Nota 009-002: de los 5 opcionales del review (APPROVE), 1 fue aplicado (Nit #5 — `max_sessions_retained`
+> documentado en `config.example.yaml`), 2 quedan registrados arriba (#21, #22) y 2 son nits sin registro
+> (idiom `evictLRU` con flag `first` — estilo correcto, refactor cosmético; `AffinityStore` creado
+> incondicionalmente — consistente con `CooldownStore`, costo ~120 bytes). El FYI "Get refresca LastUsed
+> siempre" es la semántica EXACTA del spec P3 (revisado "no cambiar") — no es deuda.
 
 ## Deuda de proceso del replanteo (no técnica)
 
@@ -58,9 +66,21 @@
   feature con bump de schema debe escanear literales de fixture que el spec
   cambia, no solo call-sites de firma. (La deuda quedó cubierta por
   `TestPersistContextV2_*` — el riesgo real era que quedara oculto.)
+- **AUDIT previo al RED no ejecutado formalmente (feature 009-002, lección
+  documentada en test-audit.md §2/§5.2):** el AUDIT post-hoc detectó que 5 de los
+  32 tests NUEVOS de la feature nacieron con bugs de test (detectados en GREEN: 3
+  por el implementer, que respetó AP-4 y no tocó tests; 2 por el orquestador;
+  corregidos en sesión B, commit 1a94eb9, sin relajar ningún assert). Lección
+  extendida: además de escanear literales de fixture que el spec cambia (009-001),
+  escanear que **los contadores/harness midan lo que el test afirma medir**:
+  `fakeProvider.Stream` no incrementa el contador de Complete; el health check
+  (`o.Health.CheckNow()`) sondea upstreams y contamina contadores; `upstreamOK`
+  solo trae `total_tokens` → costo 0 → el budget nunca dispara. Los fixes quedan
+  documentados, no ocultos.
 
 ## Cambios
 
+- 2026-08-09: #21-#22 agregadas (009-002-sticky-session, deuda aceptada del review APPROVE + test-audit — hardening post-cierre) + lección de proceso AUDIT post-hoc (test-audit.md §2/§5.2: contadores deben medir lo que el test afirma).
 - 2026-08-09: #16-#20 agregadas (deuda opcional del review 009-001-context-composition, APPROVE 0 bloqueantes) + lección de proceso AUDIT post-hoc (test-audit.md §2).
 - 2026-08-08 13:5x: #4 cerrada parcial — pricing verificado (OpenRouter API: $0.09/$0.18/$0.018, ctx 1M) + ARC-AGI comparable a Luna a 1/4 costo (HN 49214008). Matiz: costo real vía cadena Zen.
 - 2026-08-06 16:35: #13 cerrada — persistencia implementada y deployada (commit f90c0b7).
