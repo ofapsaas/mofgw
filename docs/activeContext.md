@@ -28,6 +28,13 @@
 
 ## Decisiones recientes (cronología inversa)
 
+### 09 Ago 2026 — Verificación de criterios del programa en prod
+
+- **Métricas vivas confirman el proxy absorbiendo todo el tráfico real:** 18,221 requests / 18,121 streams, **0 failovers, 0 cooldown hits, 87 errores totales** (todos absorbidos — el cliente nunca los ve). RAM 18.6M. Cache hit ~97.7% (2.31B hit vs 55M miss). Costos contabilizados: $77.09 USD total, cliente `zot`, por provider/modelo (`/metrics`).
+- **Criterios del programa verificados en prod (plan.md §Criterios):** /metrics contabiliza tokens y costo por cliente/modelo/provider ✅; /v1/models responde (con capabilities, 007-002) ✅; rechazo temprano por ventana (008-001) activo en el binario ✅; omniroute no aparece como servicio ✅ (criterio E2E integral 48h + 10+ agentes = validación de observación pendiente).
+- **Telemetría viva (1,943 eventos):** opencode capturado con `X-Session-Id`/`X-Session-Affinity` reales, key paths correctos, sin contenido (privacidad). 
+- **Composición habilitada:** `/v1/context` responde 401 sin auth (ruta registrada + protegida — esperado); la verificación autenticada de acumulación de records requiere la key plana del cliente `zot` (operativo del operador, no expuesto en el registro).
+
 ### 09 Ago 2026 — Deploy del epic 009 en producción
 
 - **Binario con las 3 features del epic desplegado** (09 Ago, ~02:12 ART): el binario anterior en `~/.local/bin/mofgw` NO tenía 009-001/009-002 (verificado por strings: 0 matches vs 16 del build nuevo). Reemplazado por build fresco (`go build ./cmd/mofgw`, 10.3M), backup en `mofgw.bak-20260809`. Servicio reiniciado: healthz OK (6 providers healthy), state.json restaurado (v1→v2 sin error — C12 funcionando en prod), config cargada, tráfico real fluyendo (WARN "telemetry header negado" de agentes con X-Parent-Session-Id — telemetría 009-000 viva).
