@@ -110,7 +110,7 @@ func buildWithLogger(t *testing.T, ups []*upstream, clientKey string, logger *sl
 	r := router.New(specs, 2, 0, 0, 30*1000*1000*1000, logger) // cooldown 0 en tests unitarios (cada provider distinto)
 	authz := auth.New([]auth.Client{{ID: "test", KeySHA256: auth.HashKey(clientKey)}})
 	m := metrics.New()
-	s := proxy.New(r, providers, authz, m, logger, 10<<20, nil, nil, 0)
+	s := proxy.New(r, providers, authz, m, logger, nil, 10<<20, nil, nil, 0)
 	h.srv = httptest.NewServer(s.Handler())
 	t.Cleanup(h.srv.Close)
 	return h
@@ -142,7 +142,7 @@ func buildWithOptions(t *testing.T, ups []*upstream, clientKey string, o router.
 	r := router.NewWithOptions(specs, o)
 	authz := auth.New([]auth.Client{{ID: "test", KeySHA256: auth.HashKey(clientKey)}})
 	m := metrics.New()
-	s := proxy.New(r, providers, authz, m, o.Logger, 10<<20, nil, nil, 0)
+	s := proxy.New(r, providers, authz, m, o.Logger, nil, 10<<20, nil, nil, 0)
 	h.srv = httptest.NewServer(s.Handler())
 	t.Cleanup(h.srv.Close)
 	return h, r

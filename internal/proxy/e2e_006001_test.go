@@ -53,7 +53,7 @@ func buildMultiClient(t *testing.T, ups []*upstream, clientKeys ...string) *harn
 	}
 	authz := auth.New(clients)
 	m := metrics.New()
-	s := proxy.New(r, providers, authz, m, nil, 10<<20, nil, nil, 0)
+	s := proxy.New(r, providers, authz, m, nil, nil, 10<<20, nil, nil, 0)
 	h.proxySrv = s
 	h.srv = httptest.NewServer(s.Handler())
 	t.Cleanup(h.srv.Close)

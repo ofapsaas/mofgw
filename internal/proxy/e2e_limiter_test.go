@@ -103,7 +103,7 @@ func buildLimited(t *testing.T, clients map[string]string, globalMax int, backpr
 		keyedLimiter = limiter.NewKeyed(budgets)
 	}
 
-	s := proxy.New(r, providers, authz, m, nil, 10<<20, globalLimiter, keyedLimiter, backpressure)
+	s := proxy.New(r, providers, authz, m, nil, nil, 10<<20, globalLimiter, keyedLimiter, backpressure)
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	return srv, m
