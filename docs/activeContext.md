@@ -25,6 +25,10 @@
 
 ## Decisiones recientes (cronología inversa)
 
+### 08 Ago 2026
+- **Cierre formal del replanteo de eficiencia:** P4 CERRADO — Memory Bank aprobada por Pablo, `.cdad-state.json` marcado epic-closed (006/007/008 done). Validación externa CERRADA (7 APPROVE + 2 REQUEST CHANGES corregidos).
+- **EPIC-009 planificado y aprobado:** telemetría de tráfico (009-000) → composición de contexto (009-001) + sticky routing por sesión (009-002). Fase 1 = telemetría: loguear headers/metadata del body del tráfico real para descubrir dónde viven los ids de sesión (investigación confirmó: solo opencode manda X-Session-Id; openclaw y zot no). Destino: telemetry.jsonl dedicado.
+
 ### 07 Ago 2026
 - **Memory Bank creada** (cdad-scribe): `docs/projectbrief.md` + `docs/activeContext.md` — Etapa 5 del epic cycle completada.
 - **GAP 1 resuelto:** `docs/specs/external-reviews/` ya existe con 9 `.resp.json` (evidencia de validación externa). El reporte del orchestrator era incorrecto.
@@ -53,12 +57,10 @@
 
 ## Próximos pasos
 
-No hay features pendientes. El programa está completo. Posibles evoluciones futuras (no comprometidas):
-
-1. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes.
-2. **Deuda técnica** (ver `docs/TECHDEBT.md`): 15 entradas registradas, 3 cerradas, 12 abiertas (mayoría BAJA/FUTURO).
-3. **Cablear pricing/metadata reales** de todos los modelos en config de producción (parcialmente hecho).
-4. **Budget para cliente zot/OpenClaw** (decisión de Pablo pendiente).
+1. **EPIC-009 (aprobado 08 Ago):** Fase 1 = telemetría (009-000-request-telemetry) — capturar metadata real del tráfico (headers + paths de claves del body) a telemetry.jsonl, analizar patrones de sesión, y con esa data diseñar composición (/v1/context) + sticky routing.
+2. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes.
+3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 15 entradas registradas, varias cerradas, resto BAJA/FUTURO.
+4. **Budget para cliente zot/OpenClaw** (decisión de Pablo pendiente — evaluado y diferido 08 Ago: el gasto es intencional, no se limita).
 
 ## Conocimiento operativo clave
 
