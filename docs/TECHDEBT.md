@@ -33,6 +33,11 @@
 | 13 | Persistencia de accounting entre restarts | ✅ CERRADA 06 Ago | MEDIA | 006-001/006-002/008-003 | SaveState/LoadState a JSON atómico (temp+rename): contadores, rejected, cache, usage, cost, sesiones. Config `server.state_file` + `state_save_interval` (default deshabilitado). Restore rechaza versión >1; corrupto no bloquea arranque. 7 tests, -race OK, deploy con interval 10m (state.json 0600). Commit f90c0b7. |
 | 14 | Tokenizer real vs estimación len/4 | ⏳ ACEPTADA | BAJA | 008-001 spec | Rechazo por ventana usa estimación rough con margen 0.1. Adecuado para el caso de uso (prompts gigantes). |
 | 15 | Auth sin rate limiting/anti-brute-force | ⏳ ACEPTADA | BAJA | SEC-001 P5 | No hay backoff/bloqueo tras intentos fallidos con Bearer inválido. Aceptada: proxy interno, firewalld filtra internet (verificado), tailnet confiado, hash 256-bit hace la fuerza bruta impráctica. Si se expone fuera del tailnet → re-evaluar. |
+| 16 | Redundancia `SetContextHistoryPerSession` en main.go:218 | ⏳ ACEPTADA (refactor futuro) | LOW | 009-001 review Optional #2 | `srv.SetContextAnalysis(...)` (main.go:217) ya propaga `historyPerSession` a metrics vía proxy.go:225; la línea 218 setea lo mismo dos veces. Aceptada sin cambio: es defensa en profundidad explícita en el wiring (setter del proxy y de metrics acoplados por contrato, no por efecto colateral); coste cero. Limpiar en un refactor de wiring si molesta. |
+| 17 | Casing inconsistente JSON en `/v1/context`: entry-level PascalCase vs summary snake_case | ⏳ ACEPTADA | LOW | 009-001 review Optional #3 | `contextEntryToJSON` (proxy.go:899-914) expone `e.PartTypes` crudo → `PartType` serializa `Role/Type/Bytes/EstTokens` PascalCase, mientras `summary.part_types` es snake_case. El spec no fija el casing a nivel entry; consumidores propios no dependen. Si se expone públicamente: agregar JSON tags snake_case a `PartType` o una vista API dedicada. |
+| 18 | `latest`/`history` siempre presentes en el JSON de `/v1/context` ("latest ausente" con `history_per_session=0`) | ⏳ ACEPTADA | FYI | 009-001 review Optional #4 | `latest: null` es representación válida de "ausente" en JSON; el spec lo declara "ausente" y el e2e test `TestE2E009001_DisabledByDefault` espera explícitamente `body["latest"] == nil`. Diferencia cosmética sin impacto en consumidores. |
+| 19 | Ring buffer con prepend O(N) en `internal/metrics/context.go:171` | ⏳ ACEPTADA | FYI | 009-001 review Optional #5 | `rec.History = append([]ContextEntry{entry}, rec.History...)` → O(N) por request; costo cuadrático para `history_per_session` grande. Default 50 → despreciable. No se agrega tope superior a `history_per_session` ahora (spec P6 solo valida `< 0`); si un operador lo sube mucho es decisión consciente con costo documentado. Futuro: deque circular O(1). |
+| 20 | gofmt sucio en `internal/proxy/e2e_009000_test.go` | ⏳ PENDIENTE | LOW | 009-001 review (preexistente en HEAD) | Deuda preexistente, NO introducida por 009-001 (el diff de la feature excluye el archivo). gofmt reporta diff en HEAD. Correr `gofmt -w` sobre el archivo la próxima vez que se toque (evita ruido de diff en reviews). |
 
 ## Deuda de proceso del replanteo (no técnica)
 
@@ -44,9 +49,19 @@
 - **Bug de memento-query** (MEMORY.md indexado sin chunking → todo score
   1.0): reportado para registro en el proyecto memento (decisión Pablo:
   lo reporta él en el proyecto correspondiente).
+- **AUDIT previo al RED no ejecutado formalmente (feature 009-001, lección
+  documentada en test-audit.md §2/§9.1):** el AUDIT post-hoc detectó que el
+  bump `stateVersion` 1→2 (P5) cambia un literal de fixture (`"version":1`)
+  que `TestPersistVersionReject` manipulaba → el replace era no-op y el
+  test falló en GREEN por la razón equivocada. Corregido en sesión B
+  (commit 6e28730) preservando la intención. Lección: el AUDIT de una
+  feature con bump de schema debe escanear literales de fixture que el spec
+  cambia, no solo call-sites de firma. (La deuda quedó cubierta por
+  `TestPersistContextV2_*` — el riesgo real era que quedara oculto.)
 
 ## Cambios
 
+- 2026-08-09: #16-#20 agregadas (deuda opcional del review 009-001-context-composition, APPROVE 0 bloqueantes) + lección de proceso AUDIT post-hoc (test-audit.md §2).
 - 2026-08-08 13:5x: #4 cerrada parcial — pricing verificado (OpenRouter API: $0.09/$0.18/$0.018, ctx 1M) + ARC-AGI comparable a Luna a 1/4 costo (HN 49214008). Matiz: costo real vía cadena Zen.
 - 2026-08-06 16:35: #13 cerrada — persistencia implementada y deployada (commit f90c0b7).
 - 2026-08-06 16:2x: #5 verificada — 401 era stale; keys todas válidas (200). GO_2/GO_3 en 429 por cuota mensual (resets 5/14 días), cubierto por fallback. Sin acción de rotación requerida.

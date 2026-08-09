@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-07 (cdad-scribe, Memory Bank creation).
+> Última actualización: 2026-08-09 (cdad-scribe, feature 009-001 closed).
 
 ## Estado del programa
 
-**✅ TODOS LOS EPICS IMPLEMENTADOS Y DESPLEGADOS.**
+**🔄 EPIC-009 EN PROGRESO (009-000 y 009-001 done; 009-002 pendiente). Resto de epics DONE.**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -18,12 +18,42 @@
 | EPIC-007 (catálogo) | 3 features | ✅ DONE | (06 Ago) |
 | EPIC-008 (contexto) | 3 features | ✅ DONE | (06 Ago) |
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
+| EPIC-009 (contexto-análisis) | 3 features | 🔄 EN PROGRESO | 009-000 ✅ done / 009-001 ✅ done / 009-002 ⏳ pending |
 
-**Suite:** 14 paquetes, 210+ tests verde con `-race`. vet + gofmt limpios.
+**Suite:** 14 paquetes, 294 tests verde con `-race`. vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz.
 
 ## Decisiones recientes (cronología inversa)
+
+### 09 Ago 2026 — Feature: 009-001-context-composition (cierre de ciclo)
+
+## 2026-08-09 — Feature: 009-001-context-composition
+
+### Decisiones relevantes
+
+- **Dual-keying confirmado por captura (~103 eventos) — decisión de cierre del epic resuelta:** opencode manda `X-Session-Id` en header → composición keyed `client|session`; openclaw/zot NO mandan sesión (ni header ni metadata del body, `detected_ids` = 0 en todos los eventos) → composición keyed `client|` (agregado por client_id, fallback diseñado). Ambos keyings conviven simultáneamente en runtime (P2/C15). Fuente: `docs/research-context-patterns.md`. → **ADR-001**.
+- **Endpoint `GET /v1/context` con aislamiento por clientID** (auth Bearer sobre `/v1/*`): `?session=<id>` → `scope:"session"` con 404 si la sesión no existe para el cliente (consistente 008-003 P5); sin session → `scope:"client"` con el agregado `client|` (incluye TODO el tráfico del cliente, con y sin sesión). Shape `{client, scope, session?, requests, summary, latest, history}`, ceros/vacío nunca nil (P3).
+- **Parser estructural en UN solo recorrido (`composition.Analyze`):** superset de `Walk` (absorbe el refactor del audit 009-000 R1); `Walk` intacto y verificado semánticamente idéntico (C3, schema lock R10 de telemetría verde); privacidad por construcción — solo metadata estructural, nunca contenido (P7/I1).
+- **`prompt_tokens_actual` en DOS fases:** fase 1 pre-request (mismo gate que telemetría: body válido, stream y no-stream, incluidos los rechazos por limiter/budget/ventana/upstream — P4/C9); fase 2 post-response con matcheo exacto por `request_id` (evita races entre handlers concurrentes de la misma sesión). Best-effort: error de análisis jamás falla el request (I7).
+- **stateVersion 1→2 con backward compat (P5/I6):** `persistedState` gana `Contexts` (`omitempty`, nil-safe para v1); binario nuevo lee snapshot v1 sin error; binario viejo rechaza v2 con el check existente (persist.go:243); round-trip preserva contexts con history.
+- **Config `context.analysis` aditiva (P6):** `enabled=false` default (sin records ni memoria; endpoint 200 con ceros/vacío), `history_per_session=50` (0 = sin history, solo agregados), valida `< 0`; INDEPENDIENTE de `telemetry`. Wiring pre-tráfico `srv.SetContextAnalysis(...)` + `m.SetContextHistoryPerSession(...)` (patrón SetContextMargin/SetMaxSessionsRetained, main.go:217-218).
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** 0 bloqueantes (1 reportado desestimado con motivo escrito — nil-slices falso positivo: `make(..., 0, len(...))` nunca emite `null`, `[]` garantizado), 5 opcionales aceptados como deuda documentada (#16-#20). Suite completa 294 tests `-race` verde, vet limpio, gofmt limpio (salvo `e2e_009000_test.go`, deuda preexistente #20).
+- **Operativo:** la feature cierra el ciclo (merge). Habilitar `context.analysis.enabled: true` en config de prod es paso operativo pendiente (default off; no altera comportamiento sin activarlo).
+
+### Deuda técnica detectada
+
+- **TECHDEBT #16** — redundancia `SetContextHistoryPerSession` en main.go:218 (defensa en profundidad; limpiar en refactor futuro).
+- **TECHDEBT #17** — casing PascalCase de `PartType` a nivel entry del endpoint (vs snake_case del summary; consumidores propios no dependen).
+- **TECHDEBT #18** — `latest: null` vs "ausente" con `history_per_session=0` (cosmética; representación JSON válida, e2e test la espera).
+- **TECHDEBT #19** — ring buffer con prepend O(N) en context.go:171 (FYI de hardening; default 50 → despreciable; deque circular O(1) futuro).
+- **TECHDEBT #20** — gofmt preexistente en `e2e_009000_test.go` (preexistente en HEAD, fuera del diff de esta feature; correr gofmt cuando se toque el archivo).
+- **Lección de proceso (test-audit §2/§9.1):** AUDIT previo al RED no ejecutado como sesión formal → `TestPersistVersionReject` falló en GREEN porque el bump P5 cambia un literal de fixture (`"version":1` → `"version":2`) y el replace era no-op. Corregido en sesión B (6e28730) preservando la intención. Lección: el AUDIT de una feature con bump de schema debe escanear literales de fixture que el spec cambia, no solo call-sites de firma.
+- (menor, test-audit §9.3) acceso a campo interno en `TestPersistContextV2_BackwardCompatV1` (persist_context_test.go:39-44) — alternativa observable (`ContextSnapshot(client, "")`) recomendada para hardening futuro.
+
+### Próxima feature en cola
+
+- **009-002-sticky-session** (pendiente del epic mofgw-009): afinidad de provider por sesión para maximizar cache hit. Consume la composición de 009-001 y la fuente de sesión confirmada (`X-Session-Id` de opencode; client_id para openclaw/zot). Coordinar vía `cdad-epic` (chat nuevo) — el orquestador sugiere volver al epic al cerrar esta feature.
 
 ### 09 Ago 2026
 - **Feature 009-000-request-telemetry DESPLEGADA en producción:** telemetría de requests activa (`telemetry.enabled: true, sample_rate: 1`), archivo `/home/<user>/logs/mofgw-telemetry.jsonl` (0640). Ciclo CDAD completo: spec → audit → RED → GREEN → review (APPROVE qwen3.7-plus, 0 bloqueantes). Suite 265 tests -race verde.
@@ -62,9 +92,9 @@
 
 ## Próximos pasos
 
-1. **EPIC-009 (aprobado 08 Ago):** Fase 1 = telemetría (009-000-request-telemetry) — capturar metadata real del tráfico (headers + paths de claves del body) a telemetry.jsonl, analizar patrones de sesión, y con esa data diseñar composición (/v1/context) + sticky routing.
+1. **EPIC-009 (en curso):** 009-000-request-telemetry DONE y desplegada; 009-001-context-composition DONE (ciclo cerrado, default off en prod). Siguiente: **009-002-sticky-session** (afinidad de provider por sesión; consume composición 009-001 y la fuente de sesión confirmada). Volver a `cdad-epic` para coordinar la próxima feature.
 2. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes.
-3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 15 entradas registradas, varias cerradas, resto BAJA/FUTURO.
+3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 20 entradas registradas (16-20 = deuda opcional review 009-001), varias cerradas, resto BAJA/FUTURO.
 4. **Budget para cliente zot/OpenClaw** (decisión de Pablo pendiente — evaluado y diferido 08 Ago: el gasto es intencional, no se limita).
 
 ## Conocimiento operativo clave
