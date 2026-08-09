@@ -74,15 +74,24 @@ type DegradationConfig struct {
 	CooldownGrace time.Duration `yaml:"cooldown_grace"`
 }
 
+// StickyRoutingConfig: afinidad de provider por sesión/cliente (009-002 P1).
+// Enabled=false (default) → el proxy usa la cadena en orden de config
+// (cero cambio de comportamiento). El scope (sesión vs cliente) NO es
+// configurable: lo decide la fuente (X-Session-Id, ADR-001 — P2).
+type StickyRoutingConfig struct {
+	Enabled bool `yaml:"enabled"` // default false
+}
+
 // FallbackConfig: política global de la cadena de fallback.
 type FallbackConfig struct {
-	MaxRetries     int               `yaml:"max_retries"`
-	Cooldown       time.Duration     `yaml:"cooldown"`
-	CooldownJitter time.Duration     `yaml:"cooldown_jitter"`
-	Timeout        time.Duration     `yaml:"timeout"`
-	Retry          RetryConfig       `yaml:"retry"`
-	Health         HealthConfig      `yaml:"health"`
-	Degradation    DegradationConfig `yaml:"degradation"`
+	MaxRetries     int                 `yaml:"max_retries"`
+	Cooldown       time.Duration       `yaml:"cooldown"`
+	CooldownJitter time.Duration       `yaml:"cooldown_jitter"`
+	Timeout        time.Duration       `yaml:"timeout"`
+	Retry          RetryConfig         `yaml:"retry"`
+	Health         HealthConfig        `yaml:"health"`
+	Degradation    DegradationConfig   `yaml:"degradation"`
+	StickyRouting  StickyRoutingConfig `yaml:"sticky_routing"` // 009-002
 }
 
 // ProviderConfig: un upstream OpenAI-compatible.
@@ -227,6 +236,9 @@ func defaults() Config {
 			Degradation: DegradationConfig{
 				MaxRequests:   0,
 				CooldownGrace: 5 * time.Second,
+			},
+			StickyRouting: StickyRoutingConfig{
+				Enabled: false, // default: afinidad apagada (P1/P8)
 			},
 		},
 		Context: ContextConfig{

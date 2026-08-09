@@ -20,6 +20,13 @@ fallback:
   cooldown: 60s                # cooldown global por provider tras fallo retryable
   cooldown_jitter: 5s          # ± jitter anti thundering-herd
   timeout: 120s                # timeout global por intento (TTFB)
+  # Afinidad de provider por sesión/cliente (009-002): con enabled: true,
+  # el provider que ganó el último request exitoso de una sesión se prueba
+  # primero en el siguiente (maximiza cache hit del provider). Transparente:
+  # respeta cooldown/health/cadena — solo reordena post-filtro. El tope de
+  # entradas se gobierna con server.max_sessions_retained (default 100).
+  sticky_routing:
+    enabled: false
 
 # Orden de providers = orden de la cadena de fallback (editar el orden
 # acá ES la configuración del fallback).

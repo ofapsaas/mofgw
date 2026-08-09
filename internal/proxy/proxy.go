@@ -77,6 +77,12 @@ type Server struct {
 	// SetContextMargin); false = sin records ni memoria (C10).
 	contextAnalysis bool
 
+	// stickyRouting: afinidad de provider por sesión/cliente habilitada
+	// (009-002 P1). Seteado pre-tráfico por SetStickyRouting; false
+	// (default) → el proxy usa Complete/Stream legacy (cero cambio
+	// observable, P8) y el store de afinidad queda vacío (C11).
+	stickyRouting bool
+
 	// budgets: límite de consumo por clientID (008-002-budget). keyed
 	// por clientID (como están en config.clients[].ID). Inmutable tras
 	// SetBudget.
@@ -223,6 +229,14 @@ func (s *Server) SetContextMargin(margin float64) {
 func (s *Server) SetContextAnalysis(enabled bool, historyPerSession int) {
 	s.contextAnalysis = enabled
 	s.metrics.SetContextHistoryPerSession(historyPerSession)
+}
+
+// SetStickyRouting configura la afinidad de provider por sesión/cliente
+// (009-002 P1). Debe llamarse antes del tráfico (lectura concurrente
+// segura después). false (default) → el proxy usa Complete/Stream legacy
+// y el store de afinidad queda vacío (P8/C11).
+func (s *Server) SetStickyRouting(enabled bool) {
+	s.stickyRouting = enabled
 }
 
 // SetBudget configura los límites de consumo por cliente (008-002 P1).
@@ -423,10 +437,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// 009-002 P2: clave sticky = clientID + "|" + sessionID (X-Session-Id
+	// solo lectura, NUNCA upstream). sessionID "" → afinidad por cliente
+	// (clientID|). clientID nunca es vacío (viene del token autenticado)
+	// → la clave nunca es "". sticky off → clave "" → legacy (P8).
+	stickyKey := ""
+	if s.stickyRouting {
+		stickyKey = clientID + "|" + sessionID
+	}
+
 	// 5. Streaming o no-stream
 	if req.Stream {
 		s.metrics.IncStreams()
-		providerID, streamUsage := s.handleStream(ctx, w, r, req, body, logger)
+		providerID, streamUsage := s.handleStream(ctx, w, r, req, body, logger, stickyKey)
 		lastUsage = streamUsage
 		if providerID != "" {
 			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, req.Model, streamUsage)
@@ -434,8 +457,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. No-stream: router.Complete
-	res, err := s.router.Complete(ctx, req, body)
+	// 6. No-stream: router.Complete/CompleteFor (sticky si está on)
+	var res *provider.CompleteResult
+	if stickyKey != "" {
+		res, err = s.router.CompleteFor(ctx, req, body, stickyKey)
+	} else {
+		res, err = s.router.Complete(ctx, req, body)
+	}
 	if err != nil {
 		s.handleChainError(w, err, logger)
 		return
@@ -509,6 +537,16 @@ func (s *Server) recordCacheTokens(requestID, clientID, sessionID, providerID, m
 	// acumula el agregado. Best-effort: sin usage no se toca nada.
 	if s.contextAnalysis && u != nil {
 		s.metrics.UpdateContextUsage(clientID, sessionID, requestID, int64(u.PromptTokens))
+	}
+	// 009-002 P6: afinidad sticky del provider GANADOR (el que respondió o
+	// arrancó el stream, no necesariamente el preferido). Este método solo
+	// se llama post-éxito (stream que arrancó o no-stream respondido) con
+	// providerID no vacío; un request sin éxito upstream no pasa por acá →
+	// la afinidad previa queda intacta (C9). Gated por s.stickyRouting:
+	// sticky off → store vacío, cero memoria (P8/C11). Best-effort: un
+	// error de registro jamás falla el request (I5 009-000).
+	if s.stickyRouting {
+		s.router.Affinity().Set(clientID+"|"+sessionID, providerID)
 	}
 }
 
@@ -616,12 +654,19 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
-// handleStream: router.Stream + passthrough SSE con frontera primer-byte.
-// Devuelve el ID del provider que sirvió el stream ("" si falló) y el
-// usage capturado del chunk final (003-001 P4; nil si el upstream no lo
-// mandó o el stream falló).
-func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, body []byte, logger *slog.Logger) (string, *provider.Usage) {
-	res, err := s.router.Stream(ctx, req, body)
+// handleStream: router.Stream/StreamFor + passthrough SSE con frontera
+// primer-byte. stickyKey "" → Stream legacy; con clave → StreamFor
+// (afinidad sticky 009-002 P5). Devuelve el ID del provider que sirvió
+// el stream ("" si falló) y el usage capturado del chunk final (003-001
+// P4; nil si el upstream no lo mandó o el stream falló).
+func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, body []byte, logger *slog.Logger, stickyKey string) (string, *provider.Usage) {
+	var res *router.StreamResult
+	var err error
+	if stickyKey != "" {
+		res, err = s.router.StreamFor(ctx, req, body, stickyKey)
+	} else {
+		res, err = s.router.Stream(ctx, req, body)
+	}
 	if err != nil {
 		s.handleChainError(w, err, logger)
 		return "", nil

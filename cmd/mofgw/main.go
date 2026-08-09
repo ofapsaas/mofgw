@@ -123,6 +123,9 @@ func run() error {
 		},
 		Health: hs,
 		Logger: logger,
+		// 009-002 P3: tope del AffinityStore = max_sessions_retained
+		// (mismo knob del config, decisión D4 del spec).
+		StickyMaxEntries: cfg.Server.MaxSessionsRetained,
 	})
 
 	authClients := make([]auth.Client, 0, len(cfg.Clients))
@@ -216,6 +219,10 @@ func run() error {
 	// (patrón SetMaxSessionsRetained). enabled=false → sin records.
 	srv.SetContextAnalysis(cfg.Context.Analysis.Enabled, cfg.Context.Analysis.HistoryPerSession)
 	m.SetContextHistoryPerSession(cfg.Context.Analysis.HistoryPerSession)
+	// Afinidad de provider por sesión/cliente (009-002 P1): setter
+	// pre-tráfico (patrón SetContextAnalysis). enabled=false (default) →
+	// el proxy usa Complete/Stream legacy (P8).
+	srv.SetStickyRouting(cfg.Fallback.StickyRouting.Enabled)
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 

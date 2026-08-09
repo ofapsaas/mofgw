@@ -92,6 +92,10 @@ type Options struct {
 	Degradation    DegradationConfig
 	Health         *health.Store
 	Logger         *slog.Logger
+
+	// StickyMaxEntries es el tope del AffinityStore (009-002 P3);
+	// 0 = default (100, == server.max_sessions_retained).
+	StickyMaxEntries int
 }
 
 // ProviderSpec ata un provider a sus overrides de cooldown/timeout/retry
@@ -191,6 +195,7 @@ type Router struct {
 	retryCfg    RetryConfig
 	degradCfg   DegradationConfig
 	cooldowns   *CooldownStore
+	affinity    *AffinityStore // afinidad sticky por sesión/cliente (009-002)
 	health      *health.Store
 	logger      *slog.Logger
 	randSource  *rand.Rand // jitter determinista en tests
@@ -226,6 +231,7 @@ func NewWithOptions(specs []ProviderSpec, o Options) *Router {
 		retryCfg:    o.Retry,
 		degradCfg:   o.Degradation,
 		cooldowns:   NewCooldownStore(nil, 30*time.Second),
+		affinity:    NewAffinityStore(nil, o.StickyMaxEntries),
 		health:      o.Health,
 		logger:      o.Logger,
 		randSource:  rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -234,6 +240,10 @@ func NewWithOptions(specs []ProviderSpec, o Options) *Router {
 
 // Cooldowns expone el store (para tests y observabilidad).
 func (r *Router) Cooldowns() *CooldownStore { return r.cooldowns }
+
+// Affinity expone el store de afinidad sticky (009-002 P3, patrón
+// Cooldowns) para observabilidad y tests.
+func (r *Router) Affinity() *AffinityStore { return r.affinity }
 
 // Health expone el store de salud (para /healthz del proxy).
 func (r *Router) Health() *health.Store { return r.health }
@@ -505,9 +515,54 @@ func (r *Router) resolveReady(ctx context.Context, model string) ([]int, error) 
 	return nil, r.fastFail()
 }
 
+// applyStickyReorder aplica la preferencia sticky (009-002 P4): si
+// stickyKey tiene afinidad registrada a un provider presente en ready,
+// lo mueve al frente preservando el orden relativo del resto (la cadena
+// sigue en orden de config). SOLO reordenamiento post-filtro: nunca
+// fuerza un provider que candidates/resolveReady ya descartó (cooldown,
+// health, Serves). Sin afinidad o clave vacía → slice intacto
+// (comportamiento IDÉNTICO a legacy). Emite sticky_applied (D6) cuando
+// el reorder se aplica.
+func (r *Router) applyStickyReorder(ready []int, stickyKey, model string) []int {
+	if stickyKey == "" || r.affinity == nil {
+		return ready
+	}
+	pref, ok := r.affinity.Get(stickyKey)
+	if !ok {
+		return ready
+	}
+	for i, idx := range ready {
+		if r.specs[idx].Provider.ID() == pref {
+			reordered := make([]int, 0, len(ready))
+			reordered = append(reordered, idx)
+			reordered = append(reordered, ready[:i]...)
+			reordered = append(reordered, ready[i+1:]...)
+			r.logger.Debug("sticky_applied", "sticky_key", stickyKey, "provider", pref, "model", model)
+			return reordered
+		}
+	}
+	return ready
+}
+
 // Complete recorre la cadena para un request no-stream. Devuelve la
-// respuesta del primer provider exitoso, o ChainError.
+// respuesta del primer provider exitoso, o ChainError. API legacy (P8):
+// comportamiento idéntico a CompleteFor con stickyKey "".
 func (r *Router) Complete(ctx context.Context, req *provider.ChatRequest, body []byte) (*provider.CompleteResult, error) {
+	return r.complete(ctx, req, body, "")
+}
+
+// CompleteFor recorre la cadena para un request no-stream con afinidad
+// sticky (009-002 P4): si stickyKey tiene un provider preferido
+// disponible, se prueba primero (reordenamiento post-filtro; nunca
+// fuerza cooldown/health/Serves). stickyKey "" → idéntico a Complete.
+func (r *Router) CompleteFor(ctx context.Context, req *provider.ChatRequest, body []byte, stickyKey string) (*provider.CompleteResult, error) {
+	return r.complete(ctx, req, body, stickyKey)
+}
+
+// complete es el loop compartido de Complete/CompleteFor: recorre la
+// cadena para un request no-stream y devuelve la respuesta del primer
+// provider exitoso, o ChainError.
+func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body []byte, stickyKey string) (*provider.CompleteResult, error) {
 	ready, err := r.resolveReady(ctx, req.Model)
 	if err != nil {
 		return nil, err
@@ -516,6 +571,7 @@ func (r *Router) Complete(ctx context.Context, req *provider.ChatRequest, body [
 		r.logger.Debug("decision", "motivo", "no provider serves model", "model", req.Model)
 		return nil, &ChainError{Status: http.StatusNotFound, Type: "model_not_found", Code: "model_not_found", Message: fmt.Sprintf("no provider serves model %q", req.Model)}
 	}
+	ready = r.applyStickyReorder(ready, stickyKey, req.Model)
 
 	r.logger.Debug("decision", "motivo", "candidatos listos", "model", req.Model, "count", len(ready))
 
@@ -602,8 +658,26 @@ type StreamResult struct {
 // primer evento: si el intento falla antes del primer byte (429, 5xx,
 // timeout, red), lo descarta silenciosamente y prueba el siguiente
 // provider (con reintentos 002-001 sobre el mismo). El cliente solo ve
-// el primer intento que produce un primer byte.
+// el primer intento que produce un primer byte. API legacy (P8):
+// comportamiento idéntico a StreamFor con stickyKey "".
 func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []byte) (*StreamResult, error) {
+	return r.stream(ctx, req, body, "")
+}
+
+// StreamFor recorre la cadena para un request streaming con afinidad
+// sticky (009-002 P5): mismo reorder post-filtro que CompleteFor + el
+// loop de Stream. El preferido se prueba primero; si falla antes del
+// primer byte, el fallback funciona igual (429 → siguiente). Después del
+// primer byte el stream queda pinneado al provider que lo arrancó (regla
+// 001-003 §B, sin cambios). stickyKey "" → idéntico a Stream.
+func (r *Router) StreamFor(ctx context.Context, req *provider.ChatRequest, body []byte, stickyKey string) (*StreamResult, error) {
+	return r.stream(ctx, req, body, stickyKey)
+}
+
+// stream es el loop compartido de Stream/StreamFor: bufferiza hasta el
+// primer evento y prueba los providers en el orden dado (reorder sticky
+// aplicado si corresponde).
+func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []byte, stickyKey string) (*StreamResult, error) {
 	// 003-001 P2: garantizar include_usage en streaming para que el chunk
 	// final traiga usage (incluidos campos de cache). No aplica a no-stream.
 	body, err := ensureIncludeUsage(body)
@@ -618,6 +692,7 @@ func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []b
 		r.logger.Debug("decision", "motivo", "no provider serves model", "model", req.Model)
 		return nil, &ChainError{Status: http.StatusNotFound, Type: "model_not_found", Code: "model_not_found", Message: fmt.Sprintf("no provider serves model %q", req.Model)}
 	}
+	ready = r.applyStickyReorder(ready, stickyKey, req.Model)
 
 	r.logger.Debug("decision", "motivo", "candidatos listos", "model", req.Model, "count", len(ready))
 
