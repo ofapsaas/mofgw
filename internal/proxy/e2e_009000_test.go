@@ -409,11 +409,12 @@ func TestPostcondition5_HeadersAllowlist(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/v1/chat/completions", bytes.NewReader(raw))
 	req.Header.Set("Authorization", "Bearer "+h.key)
 	for k, v := range map[string]string{
-		"X-Session-Id": "ses_test_1",
-		"X-Agent-Id":   "agent-test",
-		"User-Agent":   "opencode/1.18.4",
-		"Content-Type": "application/json",
-		"Accept":       "application/json",
+		"X-Session-Id":      "ses_test_1",
+		"X-Agent-Id":        "agent-test",
+		"X-Session-Affinity": "sticky-1",
+		"User-Agent":        "opencode/1.18.4",
+		"Content-Type":      "application/json",
+		"Accept":            "application/json",
 	} {
 		req.Header.Set(k, v)
 	}
@@ -435,11 +436,12 @@ func TestPostcondition5_HeadersAllowlist(t *testing.T) {
 		t.Fatalf("headers no es objeto: %v", lines[0]["headers"])
 	}
 	for k, v := range map[string]string{
-		"X-Session-Id": "ses_test_1",
-		"X-Agent-Id":   "agent-test",
-		"User-Agent":   "opencode/1.18.4",
-		"Content-Type": "application/json",
-		"Accept":       "application/json",
+		"X-Session-Id":      "ses_test_1",
+		"X-Agent-Id":        "agent-test",
+		"X-Session-Affinity": "sticky-1",
+		"User-Agent":        "opencode/1.18.4",
+		"Content-Type":      "application/json",
+		"Accept":            "application/json",
 	} {
 		if hdrs[k] != v {
 			t.Fatalf("header %s = %v, want %v (C3)", k, hdrs[k], v)
