@@ -98,8 +98,10 @@ type TelemetryConfig struct {
    `telemetryLogger != nil` y el muestreo pasa, se emite UN evento por request.
    El evento cubre todo request con body válido — stream y no-stream, y también
    los que luego se rechacen por limiter/budget/ventana/upstream (el
-   descubrimiento quiere ver TODO el tráfico). Un request con body inválido
-   (error de parseo → 400) NO emite evento. El evento se loguea con
+   descubrimiento quiere ver TODO el tráfico). Un request con **JSON malformado**
+   (error de parseo → 400) NO emite evento; un body JSON válido pero rechazado
+   por validación de contrato (p.ej. sin messages → 400) SÍ emite evento
+   (decisión del orquestador, R4 del audit). El evento se loguea con
    `logging.WithRequest(telemetryLogger, ctx)` para incluir request_id.
 
 4. **P4 — Schema del evento:** cada evento es un objeto JSON con estos campos:
@@ -207,8 +209,9 @@ type TelemetryConfig struct {
   (`messages[].content`, ...), jamás los valores.
 - C8: Un body con anidamiento > maxDepth (p.ej. 15 niveles) → el walk trunca sin
   error, sin crash y el evento se emite igual.
-- C9: Con `sample_rate=0.5` y 20 requests → entre 8 y 12 emiten evento (banda
-  aceptable del muestreo).
+- C9: Con `sample_rate=0.5` y **100 requests** → entre **40 y 60** emiten evento
+  (banda amplia del muestreo, P≈96.4% binomial — enmendado por orquestador, R1
+  del audit; la muestra de 20 con banda 8-12 era flaky ~26%).
 - C10: `enabled=true` + `file=""` → error de validación de config al arrancar
   (el proceso no levanta).
 - C11: Con `--verbose` y `enabled=false` → no se escribe `telemetry.jsonl`
@@ -239,9 +242,11 @@ type TelemetryConfig struct {
 - `internal/config/config.go`: `TelemetryConfig` + campo en `Config` (líneas
   160-174) + defaults (líneas 177-213) + reglas en `validate()` (líneas
   261-381).
-- `cmd/mofgw/main.go`: flag/lectura de `cfg.Telemetry`, llamada a
-  `BuildTelemetry` cuando `enabled`, pasaje a `proxy.New` (línea 165), gestión
-  del segundo closer.
+- `cmd/mofgw/main.go`: **helper nuevo `buildTelemetryFromConfig(cfg)`** (patrón
+  `newHTTPServer` de SEC-001 — test seam): `enabled=false → (nil, nil, nil)` sin
+  archivo; `enabled=true+file → (logger, closer, nil)`; `enabled=true+file="" →
+  error`. Llamada a `BuildTelemetry` cuando enabled, pasaje a `proxy.New` (línea
+  165), gestión del segundo closer (decisión del orquestador, R8 del audit).
 - `config.example.yaml`: bloque `telemetry` documentado (sección top-level
   nueva, después de `context`).
 - Tests: unit tests de `logging.BuildTelemetry` (fail-fast, jsonl), de
