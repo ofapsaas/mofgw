@@ -223,6 +223,10 @@ func run() error {
 	// pre-tráfico (patrón SetContextAnalysis). enabled=false (default) →
 	// el proxy usa Complete/Stream legacy (P8).
 	srv.SetStickyRouting(cfg.Fallback.StickyRouting.Enabled)
+	// Coalescing de requests idénticos concurrentes (010-001 P0): setter
+	// pre-tráfico (patrón SetStickyRouting). enabled=false (default) →
+	// flujo legacy intacto (cambio de semántica opt-in).
+	srv.SetSingleFlight(cfg.Efficiency.SingleFlight.Enabled, cfg.Efficiency.SingleFlight.MaxFlights)
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 

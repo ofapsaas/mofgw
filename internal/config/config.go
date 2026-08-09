@@ -203,6 +203,26 @@ type Config struct {
 
 	// Telemetry: telemetría de descubrimiento (009-000).
 	Telemetry TelemetryConfig `yaml:"telemetry"`
+
+	// Efficiency: eficiencia de gateway (010-001).
+	Efficiency EfficiencyConfig `yaml:"efficiency"`
+}
+
+// EfficiencyConfig agrupa features de eficiencia a nivel gateway.
+type EfficiencyConfig struct {
+	// SingleFlight: coalescing de requests idénticos CONCURRENTES
+	// (010-001 P0). Off por default (cambio de semántica opt-in).
+	SingleFlight SingleFlightConfig `yaml:"single_flight"`
+}
+
+// SingleFlightConfig configura el dedupe en vuelo de requests idénticos.
+type SingleFlightConfig struct {
+	// Enabled: activa el coalescing para requests determinísticos
+	// (temperature == 0 o seed presente).
+	Enabled bool `yaml:"enabled"`
+	// MaxFlights: tope de vuelos simultáneos; 0 = default 512.
+	// Anti-DoS: un grupo lleno ejecuta sin coalescing (bypass).
+	MaxFlights int `yaml:"max_flights"`
 }
 
 // Defaults aplicados sobre YAML parcial.
@@ -252,6 +272,12 @@ func defaults() Config {
 			Enabled:    false,
 			SampleRate: 1,
 			File:       "",
+		},
+		Efficiency: EfficiencyConfig{
+			SingleFlight: SingleFlightConfig{
+				Enabled:    false,
+				MaxFlights: 512,
+			},
 		},
 	}
 }

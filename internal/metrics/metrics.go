@@ -30,6 +30,12 @@ type Metrics struct {
 	rejectedMu sync.Mutex
 	rejected   map[string]int64 // "client|reason" -> count
 
+	// deduped: requests coalescidos por single-flight (010-001 P0) —
+	// el follower esperó el resultado de un vuelo idéntico en curso.
+	// Cardinalidad acotada por clientes configurados.
+	dedupedMu sync.Mutex
+	deduped   map[string]int64 // "client" -> count
+
 	// tokens: contadores de tokens con labels (provider, model) —
 	// 003-001-provider-cache (P3). Cardinalidad acotada por providers
 	// configurados x modelos servidos.
@@ -97,6 +103,7 @@ type SessionSnapshot struct {
 func New() *Metrics {
 	m := &Metrics{
 		rejected:            make(map[string]int64),
+		deduped:             make(map[string]int64),
 		cacheHit:            make(map[string]int64),
 		cacheMiss:           make(map[string]int64),
 		reasoning:           make(map[string]int64),
@@ -127,6 +134,15 @@ func (m *Metrics) IncRejected(client, reason string) {
 	m.rejectedMu.Lock()
 	m.rejected[client+"|"+reason]++
 	m.rejectedMu.Unlock()
+}
+
+// IncDeduped incrementa el contador de requests coalescidos por
+// single-flight (010-001 P0): un request idéntico en vuelo respondió
+// por el líder, sin llamada upstream propia.
+func (m *Metrics) IncDeduped(client string) {
+	m.dedupedMu.Lock()
+	m.deduped[client]++
+	m.dedupedMu.Unlock()
 }
 
 // IncCacheTokens acumula tokens de cache/reasoning de un request
@@ -432,6 +448,23 @@ func (m *Metrics) Render() string {
 		b.WriteString(parts[1])
 		b.WriteString("\"} ")
 		b.WriteString(fmt.Sprint(vals[k]))
+		b.WriteString("\n")
+	}
+	// deduped: una línea por client (010-001 P0).
+	m.dedupedMu.Lock()
+	dedupedClients := make([]string, 0, len(m.deduped))
+	dedupedVals := make(map[string]int64, len(m.deduped))
+	for k, v := range m.deduped {
+		dedupedClients = append(dedupedClients, k)
+		dedupedVals[k] = v
+	}
+	m.dedupedMu.Unlock()
+	sort.Strings(dedupedClients)
+	for _, k := range dedupedClients {
+		b.WriteString("mofgw_single_flight_deduped_total{client=\"")
+		b.WriteString(k)
+		b.WriteString("\"} ")
+		b.WriteString(fmt.Sprint(dedupedVals[k]))
 		b.WriteString("\n")
 	}
 	// tokens: totales sin labels (siempre presentes, 0 si no hubo datos)

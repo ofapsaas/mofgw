@@ -13,6 +13,7 @@ package proxy
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/metrics"
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/singleflight"
 	"github.com/ofapsaas/mofgw/internal/stream"
 )
 
@@ -88,6 +90,13 @@ type Server struct {
 	// SetBudget.
 	budgets map[string]config.BudgetConfig
 
+	// singleFlightEnabled: coalescing de requests idénticos concurrentes
+	// (010-001 P0). Inmutable tras SetSingleFlight (antes del tráfico);
+	// false (default) → el flujo legacy queda intacto (cero cambio
+	// observable).
+	singleFlightEnabled bool
+	flights             *singleflight.Group
+
 	// Concurrencia (004-001/004-002): global + keyed por cliente/agente.
 	globalLimiter       *limiter.Limiter
 	keyedLimiter        *limiter.Keyed
@@ -105,7 +114,31 @@ func New(r *router.Router, providers []provider.Provider, a *auth.Authenticator,
 	if m == nil {
 		m = metrics.New()
 	}
-	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, telemetryLogger: telemetryLogger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1}
+	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, telemetryLogger: telemetryLogger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1, flights: singleflight.New(512)}
+}
+
+// SetSingleFlight configura el coalescing de requests idénticos
+// concurrentes (010-001 P0). Debe llamarse antes del tráfico
+// (patrón SetStickyRouting). enabled=false (default) → flujo legacy
+// intacto. maxFlights <= 0 → default 512.
+func (s *Server) SetSingleFlight(enabled bool, maxFlights int) {
+	s.singleFlightEnabled = enabled
+	s.flights = singleflight.New(maxFlights)
+}
+
+// singleFlightKey arma la key de coalescing (010-001 P0): sha256 de
+// método + path + body crudo (canónico). Body idéntico al mismo endpoint
+// → misma key. Sin clientID: la respuesta de un request determinístico es
+// función del request, no del cliente — el coalescing no filtra datos
+// (el follower recibe una respuesta válida para SU request idéntico).
+func singleFlightKey(method, path string, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte(method))
+	h.Write([]byte("|"))
+	h.Write([]byte(path))
+	h.Write([]byte("|"))
+	h.Write(body)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // telemetryHeaderAllowlist: únicos headers capturados en el evento
@@ -456,6 +489,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		stickyKey = clientID + "|" + sessionID
 	}
 
+	// 4.7 Single-flight (010-001 P0): elegibilidad de dedupe — solo
+	// requests NO-stream determinísticos (temperature == 0 o seed
+	// presente). Determinístico → misma entrada produce la misma salida,
+	// compartible entre clientes concurrentes. ChatRequest no transporta
+	// sampling params (vista de ruteo) → se leen del body crudo. Off por
+	// default → isDeterministic se queda false y el flujo legacy intacto.
+	isDeterministic := false
+	if s.singleFlightEnabled && !req.Stream {
+		var sampling struct {
+			Temperature *float64 `json:"temperature"`
+			Seed        *int64   `json:"seed"`
+		}
+		if json.Unmarshal(body, &sampling) == nil {
+			isDeterministic = (sampling.Temperature != nil && *sampling.Temperature == 0) ||
+				(sampling.Seed != nil && *sampling.Seed != 0)
+		}
+	}
+
 	// 5. Streaming o no-stream
 	if req.Stream {
 		s.metrics.IncStreams()
@@ -468,12 +519,72 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. No-stream: router.Complete/CompleteFor (sticky si está on)
-	var res *provider.CompleteResult
-	if stickyKey != "" {
-		res, err = s.router.CompleteFor(ctx, req, body, stickyKey)
-	} else {
-		res, err = s.router.Complete(ctx, req, body)
+	complete := func() (*provider.CompleteResult, error) {
+		if stickyKey != "" {
+			return s.router.CompleteFor(ctx, req, body, stickyKey)
+		}
+		return s.router.Complete(ctx, req, body)
 	}
+
+	// 6.5 Single-flight (010-001 P0): dedupe de requests idénticos
+	// CONCURRENTES no-stream determinísticos. El líder ejecuta el flujo
+	// upstream normal y comparte su respuesta; los followers esperan el
+	// mismo vuelo y reescriben el blob compartido (sin llamada upstream
+	// propia, IncDeduped). Key = sha256(method|path|body). Off por
+	// default (singleFlightEnabled=false) → el bloque no se ejecuta y el
+	// flujo legacy de abajo queda intacto.
+	if s.singleFlightEnabled && isDeterministic {
+		sfRes, shared := s.flights.Do(singleFlightKey(r.Method, r.URL.Path, body), func() *singleflight.Result {
+			cres, cerr := complete()
+			if cerr != nil {
+				// Líder: responde su error como en el flujo legacy; el
+				// vuelo termina sin resultado compartido.
+				s.handleChainError(w, cerr, logger)
+				return nil
+			}
+			providerID = cres.ProviderID
+			s.metrics.SetLastProvider(cres.ProviderID)
+			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, cres.ProviderID, req.Model, &cres.Response.Usage)
+			lastUsage = &cres.Response.Usage
+			// headers de usage (007-003 P1): el cliente ve su consumo por request
+			s.setUsageHeaders(w.Header(), cres.ProviderID, req.Model, &cres.Response.Usage)
+			// reescribir model → el que pidió el cliente (no el alias interno)
+			return &singleflight.Result{
+				StatusCode:  http.StatusOK,
+				ContentType: "application/json",
+				Body:        rewriteResponseModel(cres.Raw, req.Model),
+				ProviderID:  cres.ProviderID,
+				Usage: singleflight.Usage{
+					PromptTokens:     cres.Response.Usage.PromptTokens,
+					CompletionTokens: cres.Response.Usage.CompletionTokens,
+					TotalTokens:      cres.Response.Usage.TotalTokens,
+					CachedTokens:     cres.Response.Usage.CachedTokens,
+				},
+			}
+		})
+		if sfRes == nil {
+			// Líder con error ya respondido (handleChainError dentro de
+			// fn), o vuelo fallido/panic recuperado por Group.Do (nada
+			// escrito aún). El follower de un vuelo fallido y el líder
+			// paniqueado reciben error genérico — nunca cuelgan.
+			if !sr.wrote {
+				absorb.Respond(w, absorb.ErrAllProvidersDown)
+			}
+			return
+		}
+		if shared {
+			s.metrics.IncDeduped(clientID)
+		}
+		// Líder y follower escriben el mismo blob compartido (status,
+		// content-type, body). El líder ya seteó usage headers y side
+		// effects dentro de fn.
+		w.Header().Set("Content-Type", sfRes.ContentType)
+		w.WriteHeader(sfRes.StatusCode)
+		_, _ = w.Write(sfRes.Body)
+		return
+	}
+
+	res, err := complete()
 	if err != nil {
 		s.handleChainError(w, err, logger)
 		return
