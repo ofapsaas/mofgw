@@ -28,6 +28,13 @@
 
 ## Decisiones recientes (cronología inversa)
 
+### 09 Ago 2026 — Decisión: sticky_routing NO se habilita (póliza default-off)
+
+- **Decisión formal del dueño del proceso: `fallback.sticky_routing` queda DESHABILITADO en prod (default off), documentado como decisión, no como deuda.** La feature 009-002 está implementada, testeada (332 tests) y mergeada — el costo de habilitarla es solo un toggle de config + reinicio.
+- **Por qué no:** la data real muestra que no haría diferencia hoy — `failovers=0` y `cooldown_hits=0` en ~19.7K requests (la cadena nunca rotó), y el cache hit ya está en ~97.7% sin sticky (el orden de config ya es de facto sticky). El sticky solo paga cuando la cadena rota (cooldown/429/5xx), escenario no observado. Para openclaw/zot (sin sesión) es redundante con el orden de config.
+- **Cuándo re-evaluar:** si aparecen cooldowns recurrentes (señal existente: TECHDEBT #5 — GO_2/GO_3 en 429 por cuota mensual). Si se habilita, validar empíricamente con la frecuencia del log `sticky_applied` en mofgw.log (esperado ~0 hoy).
+- **Estado:** póliza activa — código listo, default off, ADR-002 documenta el diseño (reordenamiento post-filtro, nunca fuerza cooldown/health/cadena).
+
 ### 09 Ago 2026 — Verificación de criterios del programa en prod
 
 - **Métricas vivas confirman el proxy absorbiendo todo el tráfico real:** 18,221 requests / 18,121 streams, **0 failovers, 0 cooldown hits, 87 errores totales** (todos absorbidos — el cliente nunca los ve). RAM 18.6M. Cache hit ~97.7% (2.31B hit vs 55M miss). Costos contabilizados: $77.09 USD total, cliente `zot`, por provider/modelo (`/metrics`).
@@ -156,7 +163,7 @@
 
 1. **EPIC-009 CERRADO** (3/3 features done + integración E3 + closure E4). Operativo opcional pendiente: habilitar `context.analysis.enabled` + `fallback.sticky_routing.enabled` en config de prod (default off).
 2. **Criterios de aceptación del programa** (ver plan.md §criterios): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes, /metrics con tokens/costo, /v1/models capabilities, rechazo temprano por ventana.
-3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 22 entradas registradas (#20-22 = deuda del epic 009), varias cerradas, resto BAJA/FUTURO.
+3. **Deuda técnica** (ver `docs/TECHDEBT.md`): 24 entradas registradas (#16-24 = epic 009 + decisiones), varias cerradas, resto BAJA/FUTURO.
 4. **Budget para cliente zot/OpenClaw** (decisión de Pablo pendiente — evaluado y diferido 08 Ago: el gasto es intencional, no se limita).
 
 ## Conocimiento operativo clave
@@ -179,7 +186,7 @@
 | `docs/research-token-efficiency.md` | Precios verificados, cache providers, thinking capabilities |
 | `docs/research.md` | Competidores y decisiones iniciales |
 | `docs/USER-GUIDE.md` | Guía de usuario (instalación, config, endpoints) |
-| `docs/TECHDEBT.md` | Deuda técnica consolidada (15 entradas) |
+| `docs/TECHDEBT.md` | Deuda técnica consolidada (24 entradas) |
 | `docs/specs/` | Specs de cada feature (27 directorios) |
 | `docs/specs/external-reviews/` | Evidencia de validación externa (9 .resp.json) |
 | `docs/specs/CROSS-SPEC-REVIEW.md` | Revisión de consistencia entre specs EPIC-001 |
