@@ -35,3 +35,7 @@ task_plan.md
 docs/.cdad-state.json
 docs/P1-aprobacion.md
 docs/specs/external-reviews/
+
+# Python (scripts/)
+__pycache__/
+*.pyc
