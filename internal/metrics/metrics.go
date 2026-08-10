@@ -36,6 +36,14 @@ type Metrics struct {
 	dedupedMu sync.Mutex
 	deduped   map[string]int64 // "client" -> count
 
+	// respCache: hits/misses/stores del cache exact-match de respuestas
+	// (010-002 P1) — un HIT responde sin tocar la cadena de providers.
+	// Cardinalidad acotada por clientes configurados.
+	respCacheMu  sync.Mutex
+	respCacheHit map[string]int64 // "client" -> hits
+	respCacheMiss map[string]int64 // "client" -> misses (elegibles, no en cache)
+	respCacheStore map[string]int64 // "client" -> stores
+
 	// tokens: contadores de tokens con labels (provider, model) —
 	// 003-001-provider-cache (P3). Cardinalidad acotada por providers
 	// configurados x modelos servidos.
@@ -104,6 +112,9 @@ func New() *Metrics {
 	m := &Metrics{
 		rejected:            make(map[string]int64),
 		deduped:             make(map[string]int64),
+		respCacheHit:        make(map[string]int64),
+		respCacheMiss:       make(map[string]int64),
+		respCacheStore:      make(map[string]int64),
 		cacheHit:            make(map[string]int64),
 		cacheMiss:           make(map[string]int64),
 		reasoning:           make(map[string]int64),
@@ -143,6 +154,33 @@ func (m *Metrics) IncDeduped(client string) {
 	m.dedupedMu.Lock()
 	m.deduped[client]++
 	m.dedupedMu.Unlock()
+}
+
+// IncRespCacheHit incrementa el contador de hits del cache exact-match
+// de respuestas (010-002 P1): el request se respondió desde el cache,
+// sin llamada upstream.
+func (m *Metrics) IncRespCacheHit(client string) {
+	m.respCacheMu.Lock()
+	m.respCacheHit[client]++
+	m.respCacheMu.Unlock()
+}
+
+// IncRespCacheMiss incrementa el contador de misses del cache
+// exact-match (010-002 P1): el request era elegible pero no estaba en
+// cache → fluyó al router/chain.
+func (m *Metrics) IncRespCacheMiss(client string) {
+	m.respCacheMu.Lock()
+	m.respCacheMiss[client]++
+	m.respCacheMu.Unlock()
+}
+
+// IncRespCacheStore incrementa el contador de respuestas almacenadas en
+// el cache exact-match (010-002 P1): un request elegible completó con
+// éxito y su respuesta quedó disponible para hits futuros.
+func (m *Metrics) IncRespCacheStore(client string) {
+	m.respCacheMu.Lock()
+	m.respCacheStore[client]++
+	m.respCacheMu.Unlock()
 }
 
 // IncCacheTokens acumula tokens de cache/reasoning de un request
@@ -465,6 +503,41 @@ func (m *Metrics) Render() string {
 		b.WriteString(k)
 		b.WriteString("\"} ")
 		b.WriteString(fmt.Sprint(dedupedVals[k]))
+		b.WriteString("\n")
+	}
+	// resp cache: una línea por client por métrica (010-002 P1).
+	m.respCacheMu.Lock()
+	respClients := make([]string, 0, len(m.respCacheHit))
+	respHits := make(map[string]int64, len(m.respCacheHit))
+	respMisses := make(map[string]int64, len(m.respCacheMiss))
+	respStores := make(map[string]int64, len(m.respCacheStore))
+	for k, v := range m.respCacheHit {
+		respClients = append(respClients, k)
+		respHits[k] = v
+	}
+	for k, v := range m.respCacheMiss {
+		respMisses[k] = v
+	}
+	for k, v := range m.respCacheStore {
+		respStores[k] = v
+	}
+	m.respCacheMu.Unlock()
+	sort.Strings(respClients)
+	for _, k := range respClients {
+		b.WriteString("mofgw_response_cache_hits_total{client=\"")
+		b.WriteString(k)
+		b.WriteString("\"} ")
+		b.WriteString(fmt.Sprint(respHits[k]))
+		b.WriteString("\n")
+		b.WriteString("mofgw_response_cache_misses_total{client=\"")
+		b.WriteString(k)
+		b.WriteString("\"} ")
+		b.WriteString(fmt.Sprint(respMisses[k]))
+		b.WriteString("\n")
+		b.WriteString("mofgw_response_cache_stored_total{client=\"")
+		b.WriteString(k)
+		b.WriteString("\"} ")
+		b.WriteString(fmt.Sprint(respStores[k]))
 		b.WriteString("\n")
 	}
 	// tokens: totales sin labels (siempre presentes, 0 si no hubo datos)

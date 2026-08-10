@@ -213,6 +213,24 @@ type EfficiencyConfig struct {
 	// SingleFlight: coalescing de requests idénticos CONCURRENTES
 	// (010-001 P0). Off por default (cambio de semántica opt-in).
 	SingleFlight SingleFlightConfig `yaml:"single_flight"`
+
+	// ResponseCache: cache exact-match de respuestas (010-002 P1).
+	// Off por default (cambio de semántica opt-in).
+	ResponseCache ResponseCacheConfig `yaml:"response_cache"`
+}
+
+// ResponseCacheConfig configura el cache exact-match de respuestas
+// (010-002 P1): sirve solo requests byte-idénticos (canonical) no-stream
+// determinísticos, con LRU + TTL. Opt-in — OFF por default.
+type ResponseCacheConfig struct {
+	// Enabled: activa el cache para requests elegibles (no-stream,
+	// temperature == 0 o seed presente).
+	Enabled bool `yaml:"enabled"`
+	// MaxEntries: tope de entradas LRU; 0 = default 512 (respeta la
+	// huella de RAM ~12MB del gateway).
+	MaxEntries int `yaml:"max_entries"`
+	// TTL: vida de cada entrada; 0 = default 5m.
+	TTL time.Duration `yaml:"ttl"`
 }
 
 // SingleFlightConfig configura el dedupe en vuelo de requests idénticos.
@@ -277,6 +295,11 @@ func defaults() Config {
 			SingleFlight: SingleFlightConfig{
 				Enabled:    false,
 				MaxFlights: 512,
+			},
+			ResponseCache: ResponseCacheConfig{
+				Enabled:    false,
+				MaxEntries: 512,
+				TTL:        5 * time.Minute,
 			},
 		},
 	}
@@ -372,6 +395,12 @@ func (c *Config) validate() error {
 	}
 	if c.Fallback.Retry.MaxAttempts < 0 || c.Fallback.Retry.BackoffBase < 0 || c.Fallback.Retry.BackoffMax < 0 {
 		return fmt.Errorf("config: fallback.retry con valores negativos")
+	}
+	if c.Efficiency.ResponseCache.MaxEntries < 0 {
+		return fmt.Errorf("config: efficiency.response_cache.max_entries no puede ser negativo")
+	}
+	if c.Efficiency.ResponseCache.TTL < 0 {
+		return fmt.Errorf("config: efficiency.response_cache.ttl no puede ser negativo")
 	}
 	if c.Fallback.Health.Interval <= 0 || c.Fallback.Health.Timeout <= 0 {
 		return fmt.Errorf("config: fallback.health.interval/timeout deben ser > 0")

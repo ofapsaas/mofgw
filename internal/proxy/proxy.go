@@ -33,6 +33,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/metrics"
 	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/respcache"
 	"github.com/ofapsaas/mofgw/internal/router"
 	"github.com/ofapsaas/mofgw/internal/singleflight"
 	"github.com/ofapsaas/mofgw/internal/stream"
@@ -97,6 +98,12 @@ type Server struct {
 	singleFlightEnabled bool
 	flights             *singleflight.Group
 
+	// responseCacheEnabled: cache exact-match de respuestas (010-002 P1).
+	// Inmutable tras SetResponseCache (antes del tráfico); false (default)
+	// → flujo legacy intacto (cero cambio observable).
+	responseCacheEnabled bool
+	responseCache        *respcache.Cache
+
 	// Concurrencia (004-001/004-002): global + keyed por cliente/agente.
 	globalLimiter       *limiter.Limiter
 	keyedLimiter        *limiter.Keyed
@@ -126,6 +133,37 @@ func (s *Server) SetSingleFlight(enabled bool, maxFlights int) {
 	s.flights = singleflight.New(maxFlights)
 }
 
+// SetResponseCache configura el cache exact-match de respuestas
+// (010-002 P1). Debe llamarse antes del tráfico (patrón SetStickyRouting).
+// enabled=false (default) → flujo legacy intacto. maxEntries <= 0 → 512;
+// ttl <= 0 → 5m (defaults del paquete respcache).
+func (s *Server) SetResponseCache(enabled bool, maxEntries int, ttl time.Duration) {
+	s.responseCacheEnabled = enabled
+	s.responseCache = respcache.New(maxEntries, ttl)
+}
+
+// responseCacheKey arma la key del cache exact-match (010-002 P1):
+// sha256 de clientID + JSON canónico del body (mapa re-marshalado con
+// claves ordenadas — json.Marshal de map ordena claves, canónico
+// independiente del orden de llegada del cliente). clientID en la key =
+// partición por cliente: cero fuga entre clientes aunque los prompts
+// sean idénticos. Un body no-JSON no puede cachearse (error → miss).
+func responseCacheKey(clientID string, body []byte) (string, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return "", err
+	}
+	canonical, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	h.Write([]byte(clientID))
+	h.Write([]byte{0})
+	h.Write(canonical)
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // singleFlightKey arma la key de coalescing (010-001 P0): sha256 de
 // método + path + body crudo (canónico). Body idéntico al mismo endpoint
 // → misma key. Sin clientID: la respuesta de un request determinístico es
@@ -139,6 +177,23 @@ func singleFlightKey(method, path string, body []byte) string {
 	h.Write([]byte("|"))
 	h.Write(body)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// storeResponseCache guarda la respuesta en el cache exact-match
+// (010-002 P1). No-op si el cache está deshabilitado o la key es ""
+// (request no elegible o body no-JSON). La entrada replica el body
+// completo (incl. usage) y el createdAt para X-Mofgw-Cache-Age.
+func (s *Server) storeResponseCache(key, clientID string, status int, contentType string, body []byte) {
+	if !s.responseCacheEnabled || key == "" {
+		return
+	}
+	s.responseCache.Set(key, &respcache.Entry{
+		StatusCode:  status,
+		ContentType: contentType,
+		Body:        body,
+		CreatedAt:   time.Now(),
+	})
+	s.metrics.IncRespCacheStore(clientID)
 }
 
 // telemetryHeaderAllowlist: únicos headers capturados en el evento
@@ -436,6 +491,51 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 2.5 Determinismo (010-001 P0 / 010-002 P1): un request es
+	// determinístico si NO es streaming y tiene temperature == 0 o seed
+	// presente. Se computa UNA sola vez acá y lo consumen single-flight
+	// (coalescing concurrente) y el response cache (exact-match). Con las
+	// features off por default, isDeterministic queda false y los flujos
+	// legacy intactos.
+	isDeterministic := false
+	if !req.Stream {
+		var sampling struct {
+			Temperature *float64 `json:"temperature"`
+			Seed        *int64   `json:"seed"`
+		}
+		if json.Unmarshal(body, &sampling) == nil {
+			isDeterministic = (sampling.Temperature != nil && *sampling.Temperature == 0) ||
+				(sampling.Seed != nil && *sampling.Seed != 0)
+		}
+	}
+
+	// 2.6 Response cache exact-match (010-002 P1): chequeo ANTES de la
+	// ventana de contexto (008-001) — un HIT responde desde el cache y
+	// saltea el chequeo (la respuesta ya existe y fue generada
+	// válidamente). Un HIT no consume provider ni toca cooldowns (el
+	// cache vive antes de la cadena). Transparencia: headers
+	// X-Mofgw-Cache: HIT|MISS + X-Mofgw-Cache-Age — el cliente SIEMPRE
+	// puede ver que vino del cache. Streaming nunca se cachea (§4.3).
+	var respCacheKey string
+	if s.responseCacheEnabled && isDeterministic {
+		if k, err := responseCacheKey(clientID, body); err == nil {
+			respCacheKey = k
+			if entry, ok := s.responseCache.Get(k); ok {
+				s.metrics.IncRespCacheHit(clientID)
+				age := time.Since(entry.CreatedAt).Seconds()
+				w.Header().Set("Content-Type", entry.ContentType)
+				w.Header().Set("X-Mofgw-Cache", "HIT")
+				w.Header().Set("X-Mofgw-Cache-Age", strconv.Itoa(int(age)))
+				w.WriteHeader(entry.StatusCode)
+				_, _ = w.Write(entry.Body)
+				logger.Debug("response_cache_hit", "model", req.Model)
+				return
+			}
+			s.metrics.IncRespCacheMiss(clientID)
+			w.Header().Set("X-Mofgw-Cache", "MISS")
+		}
+	}
+
 	// 3. Contar tools del body crudo (nunca loguear contenido)
 	var rawTools struct {
 		Tools []json.RawMessage `json:"tools"`
@@ -489,24 +589,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		stickyKey = clientID + "|" + sessionID
 	}
 
-	// 4.7 Single-flight (010-001 P0): elegibilidad de dedupe — solo
-	// requests NO-stream determinísticos (temperature == 0 o seed
-	// presente). Determinístico → misma entrada produce la misma salida,
-	// compartible entre clientes concurrentes. ChatRequest no transporta
-	// sampling params (vista de ruteo) → se leen del body crudo. Off por
-	// default → isDeterministic se queda false y el flujo legacy intacto.
-	isDeterministic := false
-	if s.singleFlightEnabled && !req.Stream {
-		var sampling struct {
-			Temperature *float64 `json:"temperature"`
-			Seed        *int64   `json:"seed"`
-		}
-		if json.Unmarshal(body, &sampling) == nil {
-			isDeterministic = (sampling.Temperature != nil && *sampling.Temperature == 0) ||
-				(sampling.Seed != nil && *sampling.Seed != 0)
-		}
-	}
-
 	// 5. Streaming o no-stream
 	if req.Stream {
 		s.metrics.IncStreams()
@@ -548,6 +630,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			lastUsage = &cres.Response.Usage
 			// headers de usage (007-003 P1): el cliente ve su consumo por request
 			s.setUsageHeaders(w.Header(), cres.ProviderID, req.Model, &cres.Response.Usage)
+			// 010-002 P1: almacenar la respuesta en el cache exact-match
+			// (no-op si cache off o request no elegible). El líder guarda;
+			// los followers reescriben el blob compartido sin re-guardar.
+			s.storeResponseCache(respCacheKey, clientID, http.StatusOK, "application/json", rewriteResponseModel(cres.Raw, req.Model))
 			// reescribir model → el que pidió el cliente (no el alias interno)
 			return &singleflight.Result{
 				StatusCode:  http.StatusOK,
@@ -597,6 +683,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.setUsageHeaders(w.Header(), res.ProviderID, req.Model, &res.Response.Usage)
 	// reescribir model → el que pidió el cliente (no el alias interno)
 	out := rewriteResponseModel(res.Raw, req.Model)
+	// 010-002 P1: almacenar la respuesta en el cache exact-match (no-op
+	// si cache off o request no elegible).
+	s.storeResponseCache(respCacheKey, clientID, http.StatusOK, "application/json", out)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)

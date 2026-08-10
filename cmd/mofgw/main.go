@@ -227,6 +227,11 @@ func run() error {
 	// pre-tráfico (patrón SetStickyRouting). enabled=false (default) →
 	// flujo legacy intacto (cambio de semántica opt-in).
 	srv.SetSingleFlight(cfg.Efficiency.SingleFlight.Enabled, cfg.Efficiency.SingleFlight.MaxFlights)
+	// Cache exact-match de respuestas (010-002 P1): setter pre-tráfico
+	// (patrón SetStickyRouting). enabled=false (default) → flujo legacy
+	// intacto (cambio de semántica opt-in). max_entries/ttl <= 0 →
+	// defaults del paquete respcache (512 / 5m).
+	srv.SetResponseCache(cfg.Efficiency.ResponseCache.Enabled, cfg.Efficiency.ResponseCache.MaxEntries, cfg.Efficiency.ResponseCache.TTL)
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 
