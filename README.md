@@ -3,7 +3,7 @@
 
 # mofgw — MOF Gateway
 
-**Status:** ✅ Programa completo implementado y desplegado — 9 features de eficiencia (cache providers, medición de tokens/costos, catálogo de capabilities, contexto) + hardening de seguridad (SEC-001). Suite **14 paquetes, 210+ tests verde con `-race`**, vet + gofmt limpios.
+**Status:** ✅ Programa completo implementado y desplegado — 10 epics (001-010) + hardening de seguridad (SEC-001). Suite **17 paquetes, 387 tests verde con `-race`**, vet + gofmt limpios.
 **Go module:** `github.com/ofapsaas/mofgw`
 **Puerto:** 3369 (default)
 **Guía de usuario:** [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) — instalación, configuración, endpoints y uso práctico
@@ -37,7 +37,7 @@ Proxy de IA self-hosted, minimalista y en Go que expone **un endpoint OpenAI-com
 
 ## Epics
 
-Ver [`docs/epics/plan.md`](docs/epics/plan.md) — 8 epics (5 originales + replanteo de eficiencia):
+Ver [`docs/epics/plan.md`](docs/epics/plan.md) — 10 epics (5 originales + replanteo de eficiencia + contexto-análisis + catálogo-fiel):
 
 1. **EPIC-001 mofgw-core** — MVP: endpoint único, fallback en cadena **circular** (`max_retries` = tope de intentos totales, cooldown entre requests), clamp max_tokens, streaming, timeouts, config → ✅ **implementado**
 2. **EPIC-002 mofgw-resiliencia** — Transparencia total: retry/backoff, health checks, absorción de errores, degradación controlada → ✅ **implementado**
@@ -47,6 +47,8 @@ Ver [`docs/epics/plan.md`](docs/epics/plan.md) — 8 epics (5 originales + repla
 6. **EPIC-006 mofgw-observabilidad** — Medición de tokens (prompt/completion/cache por cliente) + costos USD con tabla de precios configurable → ✅ **implementado**
 7. **EPIC-007 mofgw-catalogo** — Capabilities de modelos para clientes: `/v1/models` enriquecido (context window, max output, thinking levels, pricing) + headers `X-Usage-*` + endpoint `/v1/usage` → ✅ **implementado**
 8. **EPIC-008 mofgw-contexto** — Rechazo temprano por ventana de contexto, budget por cliente, stats por sesión → ✅ **implementado**
+9. **EPIC-009 mofgw-contexto-analisis** — Telemetría de descubrimiento, composición de contexto `/v1/context`, sticky routing por sesión → ✅ **implementado**
+10. **EPIC-010 mofgw-catalogo-fiel** — Catálogo `/v1/models` completo/veraz/prescriptivo (`supported_parameters`, `modality`/`architecture`, `top_provider`, `max_output_tokens`, `thinking_default` prescriptivo) + request path que respeta el `max_output` por modelo (clamp) e inyecta el `thinking_default` per-attempt (knob `providers[].thinking_path`) → ✅ **implementado + deployado**
 
 Más **SEC-001-security-hardening** (auditoría externa): SSE saneado, X-Agent-Id acotado, ReadHeaderTimeout, permisos de log → ✅ **implementado**
 
@@ -61,7 +63,8 @@ Más **SEC-001-security-hardening** (auditoría externa): SSE saneado, X-Agent-I
 
 - **Fallback transparente** en cadena circular con cooldown, retry con backoff, health checks y degradación controlada.
 - **Medición real:** contadores de tokens y costo estimado por cliente/provider/modelo en `/metrics`, expuestos al cliente vía headers `X-Usage-*` y endpoint `GET /v1/usage` (con stats por sesión via `X-Session-Id`).
-- **Catálogo de modelos enriquecido:** `/v1/models` devuelve `context_length`, `max_completion_tokens`, `capabilities.reasoning`, `thinking.levels` y `pricing` — para que los runtimes (opencode, openclaw) elijan modelo y optimicen reasoning effort.
+- **Catálogo de modelos enriquecido y fiel:** `/v1/models` devuelve `context_length`, `max_completion_tokens`, `max_output_tokens`, `capabilities.reasoning`, `thinking.levels/default` (prescriptivo), `supported_parameters` (tools/reasoning), `modality`/`architecture` (visión) y `pricing` — para que los runtimes (opencode, openclaw) elijan modelo y optimicen reasoning effort. **Fallback rule:** capability no verificada se OMITE del catálogo (nunca se adivina; ausente ≠ 0/[]/false).
+- **Request path fiel:** clamp de `max_tokens` al `max_output` real del modelo (elimina el 400→502 en modelos de salida acotada), window-check fiel (usa el `max_tokens` efectivo post-clamp), e **inyección del `thinking_default` prescriptivo** por-attempt y provider-aware vía knob `providers[].thinking_path` — providers con passthrough de `reasoning_effort` vs providers que requieren `enable_thinking`; modelos de thinking siempre-activo o con default nativo == prescriptivo nunca se inyectan.
 - **Cache de providers visible:** `mofgw_cache_hit_tokens_total` en `/metrics` (el cache de prompt es automático del lado del provider; mofgw lo instrumenta y expone — hit rates típicos 94-99%).
 - **Control de contexto:** rechazo temprano de prompts que exceden la ventana (ahorra intentos de la cadena), budget por cliente (429 al exceder), sesiones correlacionadas.
 - **Seguridad:** auth Bearer con hash SHA-256 + comparación constant-time, errores upstream absorbidos (nunca filtran detalles internos al cliente), keys fuera del YAML.

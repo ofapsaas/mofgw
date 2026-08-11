@@ -144,7 +144,8 @@ Cada provider:
 | `base_url` | ✅ | URL base del upstream OpenAI-compatible (ej: `https://api.openai.com/v1`). |
 | `api_key_env` | ✅ | **Nombre de la variable de entorno** con la key. **Las keys NUNCA van en el YAML** — se resuelven al cargar; si la env var no está seteada, el arranque falla. |
 | `models` | ✅ | Lista de modelos que sirve este provider (al menos 1). |
-| `max_tokens` | — | Límite de `max_tokens` del provider. El proxy **clampea** el body por intento contra este límite. |
+| `max_tokens` | — | Límite de `max_tokens` del provider. El proxy **clampea** el body por intento contra este límite (efectivo = `min(max_output_modelo, max_tokens_provider)`). |
+| `thinking_path` | — | Path de inyección del `thinking_default` (010-002). Valores: `""` (default, sin inyección) \| `"zen"` \| `"bailian"`. `"zen"` = passthrough de `reasoning_effort`; `"bailian"` = `reasoning_effort` + `enable_thinking` (modelos de razonamiento) o `enable_thinking` solo (modelos tipo qwen). Modelos de thinking siempre-activo o con default nativo == prescriptivo nunca se inyectan. |
 | `cooldown` | — | Override del cooldown global (opcional). |
 | `timeout` | — | Override del timeout global (opcional). |
 
@@ -159,15 +160,17 @@ providers:
   - id: provider-a
     base_url: "https://api.provider-a.example.com/v1"
     api_key_env: MOFGW_PROVIDER_A_KEY
-    models: ["deepseek-v4-flash", "deepseek-v4-pro"]
+    models: ["model-a", "model-b"]
     max_tokens: 8192
+    # thinking_path: "zen"   # inyección del thinking_default (010-002)
     # cooldown: 90s    # override por provider (opcional)
     # timeout: 60s     # override por provider (opcional)
   - id: provider-b
     base_url: "https://api.provider-b.example.com/compatible-mode/v1"
     api_key_env: MOFGW_PROVIDER_B_KEY
-    models: ["qwen3.7-plus", "glm-5.2"]
-    max_tokens: 65536
+    models: ["vision-model"]
+    max_tokens: 131072
+    thinking_path: "bailian"
 ```
 
 > **Importante:** el orden de la lista define la cadena. Si quieres que `provider-b` se intente antes que `provider-a`, mueve su bloque arriba. Editar el orden **ES** la configuración del fallback.
@@ -211,13 +214,14 @@ providers:
   - id: provider-a
     base_url: "https://api.provider-a.example.com/v1"
     api_key_env: MOFGW_PROVIDER_A_KEY
-    models: ["deepseek-v4-flash", "deepseek-v4-pro"]
+    models: ["model-a"]
     max_tokens: 8192
   - id: provider-b
     base_url: "https://api.provider-b.example.com/compatible-mode/v1"
     api_key_env: MOFGW_PROVIDER_B_KEY
-    models: ["qwen3.7-plus", "glm-5.2"]
-    max_tokens: 65536
+    models: ["vision-model"]
+    max_tokens: 131072
+    thinking_path: "bailian"
 
 clients:
   - id: agent-main
@@ -232,37 +236,42 @@ Tabla de precios por **millón de tokens** (USD), keyed por modelo. Alimenta `mo
 
 ```yaml
 pricing:
-  deepseek-v4-flash:
+  model-a:
     input_usd_per_m: 0.14
     output_usd_per_m: 0.28
-    cache_hit_usd_per_m: 0.028
+    cache_hit_usd_per_m: 0.0028
 ```
 
 - Sin entrada para un modelo → costo 0 (no error, backward compatible).
 - Precios negativos → error al cargar.
-- **Nota:** la tabla es keyed por modelo y aplica a todos los providers que lo sirven. Si distintos providers cobran distinto por el mismo modelo, usa la tasa del provider por el que pasa la mayor parte del tráfico (ver `research-token-efficiency.md` §1 para las tasas verificadas).
+- **Nota:** la tabla es keyed por modelo y aplica a todos los providers que lo sirven. Si distintos providers cobran distinto por el mismo modelo, usa la tasa del provider por el que pasa la mayor parte del tráfico (la tasa real depende del endpoint de cada provider — verifica la del tuyo; `research-token-efficiency.md` §1 documenta cómo verificar).
 
-### `model_metadata` — capabilities por modelo (007-001)
+### `model_metadata` — capabilities por modelo (007-001 / 010-001)
 
-Metadata declarativa que alimenta `/v1/models` (context window, max output, niveles de thinking). Sin esto, los runtimes asumen defaults equivocados (opencode ve `reasoning:false, context:0`).
+Metadata declarativa que alimenta `/v1/models` (context window, max output, niveles de thinking, tools, modalidad, default prescriptivo de razonamiento). Sin esto, los runtimes asumen defaults equivocados (opencode ve `reasoning:false, context:0`).
 
 ```yaml
 model_metadata:
-  deepseek-v4-flash:
-    context_window: 1000000
+  model-a:                          # modelo de razonamiento con effort graduado
+    context_window: 1048576
     max_output: 384000
     thinking: ["low", "high", "max"]
-    thinking_default: "high"
-  kimi-k2.7-code:
-    context_window: 262144
-    max_output: 32768
-    thinking: ["always"]        # SIEMPRE ON, incontrolable
-    thinking_default: "always"
+    thinking_default: "low"         # PRESCRIPTIVO (ADR-003): effort que el agente DEBE enviar
+    supported_parameters: ["tools", "reasoning"]
+    modality: "text->text"
+  vision-model:                     # multimodal (texto + imagen + video)
+    context_window: 1048576
+    max_output: 131072
+    thinking: ["adaptive", "disabled"]
+    thinking_default: "adaptive"
+    supported_parameters: ["tools", "reasoning"]
+    modality: "text+image+video->text"
 ```
 
-- `thinking_default` debe estar en `thinking` (si no → error al cargar).
+- `thinking_default` es **prescriptivo** (ADR-003): documenta el effort de razonamiento que los agentes DEBEN enviar y puede diferir del default nativo del modelo. El gateway lo **inyecta** cuando el cliente no especifica (010-002), y debe estar en `thinking` (si no → error al cargar).
+- `supported_parameters` y `modality` son **declarativos**: si no se declaran, el campo se **omite** del catálogo (fallback rule — ausente ≠ 0/[]/{}). `modality` usa formato `"inputs->outputs"` (p. ej. `text+image->text`).
 - Valores negativos → error al cargar.
-- Niveles de thinking reales por modelo: ver `research-token-efficiency.md` §4.
+- La inyección del default por-attempt y provider-aware se configura con el knob `providers[].thinking_path` (ver abajo). Niveles de thinking reales por modelo: `research-token-efficiency.md` §4.
 
 ### `context` — rechazo por ventana (008-001)
 
@@ -311,20 +320,25 @@ Desde 007-002, cada modelo con `model_metadata`/`pricing` en config incluye camp
 
 ```json
 {
-  "id": "deepseek-v4-flash",
+  "id": "model-a",
   "object": "model",
-  "context_length": 1000000,
-  "context_window": 1000000,
-  "max_context_length": 1000000,
-  "loaded_context_length": 1000000,
+  "context_length": 1048576,
+  "context_window": 1048576,
+  "max_context_length": 1048576,
+  "loaded_context_length": 1048576,
   "max_completion_tokens": 384000,
+  "max_output_tokens": 384000,
   "capabilities": { "reasoning": true },
-  "thinking": { "levels": ["low", "high", "max"], "default": "high" },
-  "pricing": { "input_usd_per_m": 0.14, "output_usd_per_m": 0.28, "cache_hit_usd_per_m": 0.028 }
+  "thinking": { "levels": ["low", "high", "max"], "default": "low" },
+  "supported_parameters": ["tools", "reasoning"],
+  "modality": "text+image+video->text",
+  "architecture": { "modality": "text+image+video->text", "input_modalities": ["text", "image", "video"], "output_modalities": ["text"] },
+  "top_provider": { "context_length": 1048576, "max_completion_tokens": 384000 },
+  "pricing": { "input_usd_per_m": 0.14, "output_usd_per_m": 0.28, "cache_hit_usd_per_m": 0.0028 }
 }
 ```
 
-Campos que consumen opencode/openclaw (research §3): `context_length` (openclaw 1º), `max_context_length`/`loaded_context_length` (opencode Go), `max_completion_tokens`, `capabilities.reasoning`, `thinking.levels`. Modelos sin metadata conservan el formato mínimo.
+Campos que consumen opencode/openclaw (research §3): `context_length` (openclaw 1º), `top_provider.context_length`/`max_completion_tokens` (openclaw 1º), `max_context_length`/`loaded_context_length` (opencode Go), `max_output_tokens`, `max_completion_tokens`, `capabilities.reasoning`, `thinking.levels/default` (prescriptivo), `supported_parameters` (tools/reasoning), `modality`/`architecture` (visión). Modelos sin metadata conservan el formato mínimo.
 
 ### `GET /v1/usage` (auth)
 

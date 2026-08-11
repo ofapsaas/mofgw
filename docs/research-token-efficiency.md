@@ -35,7 +35,7 @@ Fuente: opencode.ai/docs/zen — accedido 06 Ago 2026.
 
 ### Hallazgos clave
 
-1. **DeepSeek V4 Pro: discrepancia 4×.** Zen cobra $1.74/$3.48 (list price); DeepSeek directo cobra $0.435/$0.87 (promo, "plans to raise pricing"). Para costos de provider-a/b/c/d → usar tasas Zen.
+1. **DeepSeek V4 Pro: discrepancia 4×.** Zen cobra $1.74/$3.48 (list price); DeepSeek directo cobra $0.435/$0.87 (promo, "plans to raise pricing"). **CORRECCIÓN 11 Ago 2026:** los providers go-* apuntan a `opencode.ai/zen/go/v1` = el **servicio GO de opencode** (no Zen), que cobra las tasas Go: deepseek-v4-pro **$0.435/$0.87** (cached $0.003625) y deepseek-v4-flash cache **$0.0028**. Verificado en models.dev opencode-go + opencode.ai/docs/go. Para costos de provider-a/b/c/d (go-*) → usar tasas **Go**, no Zen.
 2. **Alibaba cache explícito vs implícito:** implícito (automático) = 20% del input; explícito (con cache_control) = 10% read / 125% write. Los "Cached Read" de Zen matchean el explícito.
 3. **MiniMax M3 tiered:** 2× si input > 512K.
 4. **Qwen3.7-flash tiered por input:** ≤32K: $0.03/$0.13; 32-256K: $0.10/$0.40; 256K-1M: $0.20/$0.80. No aparece en Zen.
