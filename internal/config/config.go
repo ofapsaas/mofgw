@@ -183,6 +183,13 @@ type ModelMetadata struct {
 	MaxOutput       int      `yaml:"max_output"`
 	Thinking        []string `yaml:"thinking"`
 	ThinkingDefault string   `yaml:"thinking_default"`
+	// SupportedParameters: parámetros de request que el modelo soporta
+	// (010-001-catalogo-fiel P1/P3). Zero-value (nil) → campo omitido del
+	// catálogo (P2). Sin validación nueva (backward compatible 007-001).
+	SupportedParameters []string `yaml:"supported_parameters"`
+	// Modality: cadena declarativa "inputs->outputs" (010-001 P1/P4).
+	// Zero-value ("") → campo omitido; architecture derivada mecánicamente.
+	Modality string `yaml:"modality"`
 }
 
 // Config tipado resultante.

@@ -953,7 +953,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 // (backward compatible, P4). Los campos extra siguen las convenciones
 // que leen opencode/openclaw (research §3): context_length,
 // max_context_length, loaded_context_length, max_completion_tokens,
-// capabilities.reasoning, thinking.levels/default.
+// capabilities.reasoning, thinking.levels/default. La feature
+// 010-001-catalogo-fiel agrega supported_parameters, modality,
+// architecture (derivada), top_provider y max_output_tokens — siempre
+// bajo la fallback rule (P2): campo emitido solo si su fuente declarada
+// no es zero-value (ausente ≠ 0/[]/{}).
 func (s *Server) modelCatalogEntry(model string) map[string]any {
 	entry := map[string]any{
 		"id":       model,
@@ -980,6 +984,36 @@ func (s *Server) modelCatalogEntry(model string) map[string]any {
 			}
 			entry["thinking"] = think
 		}
+		// 010-001-catalogo-fiel: campos nuevos, todos con fallback rule
+		// (P2 — ausente ≠ 0/[]/{}).
+		if len(md.SupportedParameters) > 0 {
+			params := make([]string, len(md.SupportedParameters))
+			copy(params, md.SupportedParameters)
+			entry["supported_parameters"] = params
+		}
+		if md.Modality != "" {
+			entry["modality"] = md.Modality
+			if ins, outs, ok := splitModality(md.Modality); ok {
+				entry["architecture"] = map[string]any{
+					"modality":          md.Modality,
+					"input_modalities":  ins,
+					"output_modalities": outs,
+				}
+			}
+		}
+		if cw > 0 || md.MaxOutput > 0 {
+			tp := map[string]any{}
+			if cw > 0 {
+				tp["context_length"] = cw
+			}
+			if md.MaxOutput > 0 {
+				tp["max_completion_tokens"] = md.MaxOutput
+			}
+			entry["top_provider"] = tp
+		}
+		if md.MaxOutput > 0 {
+			entry["max_output_tokens"] = md.MaxOutput
+		}
 	}
 	if p, ok := s.pricing[model]; ok {
 		entry["pricing"] = map[string]any{
@@ -989,6 +1023,28 @@ func (s *Server) modelCatalogEntry(model string) map[string]any {
 		}
 	}
 	return entry
+}
+
+// splitModality deriva las modalidades de architecture desde la cadena
+// modality declarada (010-001 P4/P5). Mecánica pura: inputs = lado
+// izquierdo de "->", outputs = lado derecho; cada lado partido por "+"
+// descartando elementos vacíos. Sin "->" o con algún lado vacío (ej.
+// "text", "text->") → no parseable, architecture AUSENTE (P5).
+func splitModality(modality string) (inputs, outputs []string, ok bool) {
+	sides := strings.Split(modality, "->")
+	if len(sides) != 2 || sides[0] == "" || sides[1] == "" {
+		return nil, nil, false
+	}
+	split := func(side string) []string {
+		var parts []string
+		for _, p := range strings.Split(side, "+") {
+			if p != "" {
+				parts = append(parts, p)
+			}
+		}
+		return parts
+	}
+	return split(sides[0]), split(sides[1]), true
 }
 
 // handleUsage expone los agregados de consumo del cliente autenticado
