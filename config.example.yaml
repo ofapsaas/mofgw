@@ -75,17 +75,34 @@ pricing:
 
 # Metadata de capabilities por modelo (007-001). Alimenta /v1/models.
 # Datos verificados en research-token-efficiency.md §4.
+#
+# thinking_default es PRESCRIPTIVO (ADR-003): documenta el effort de
+# razonamiento que los agentes DEBEN enviar para este modelo; puede diferir
+# del default nativo del modelo (research-token-efficiency.md §4). El gateway
+# lo inyecta cuando el cliente no especifica (010-002).
+# supported_parameters y modality son DECLARATIVOS (fallback rule): si un
+# modelo no los declara, se OMITEN del catálogo /v1/models (zero-value →
+# ausente).
 model_metadata:
   deepseek-v4-flash:
     context_window: 1000000
     max_output: 384000
     thinking: ["low", "high", "max"]
-    thinking_default: "high"
+    thinking_default: "low"
+    supported_parameters: ["tools", "reasoning"]
+    modality: "text->text"
   kimi-k2.7-code:
     context_window: 262144
     max_output: 32768
     thinking: ["always"]
     thinking_default: "always"
+    supported_parameters: ["tools", "reasoning"]
+    modality: "text+image+video->text"
+  qwen3.7-plus:
+    max_output: 131072
+    thinking_default: "high"
+    supported_parameters: ["tools", "reasoning"]
+    modality: "text+image+video->text"
 
 # Rechazo temprano por ventana de contexto (008-001).
 # margin: fracción 0-1 sobre context_window (default 0.1).
