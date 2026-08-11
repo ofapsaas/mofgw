@@ -203,3 +203,75 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// ---- 010-001-catalogo-fiel: P1 — config extensible y backward compatible ----
+
+// metadata010001YAML: config con las claves NUEVAS (supported_parameters,
+// modality) además de las 007-001. El parser actual ignora claves
+// desconocidas → carga sin error y las claves 007-001 se leen igual (P1).
+const metadata010001YAML = `
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+providers:
+  - id: provider-a
+    base_url: "http://localhost:1/v1"
+    api_key_env: MOFGW_010001_TEST_KEY
+    models: ["m"]
+clients:
+  - id: agent-main
+    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+model_metadata:
+  m:
+    context_window: 1000000
+    max_output: 384000
+    thinking: ["low", "high", "max"]
+    thinking_default: "low"
+    supported_parameters: ["tools", "reasoning"]
+    modality: "text+image+video->text"
+`
+
+// Test010001_P1_CargaConClavesNuevas: YAML con las claves nuevas carga sin
+// error (P1) y las claves 007-001 se siguen leyendo igual. Guard verde hoy
+// (claves ignoradas); el acceso tipado a los campos nuevos queda cubierto
+// indirectamente por los E2E RED (P3/P4/P6) que manejan la metadata desde
+// este mismo loader.
+func Test010001_P1_CargaConClavesNuevas(t *testing.T) {
+	t.Setenv("MOFGW_010001_TEST_KEY", "k1")
+	cfg, err := LoadFile(writeTemp(t, metadata010001YAML))
+	if err != nil {
+		t.Fatalf("LoadFile con claves nuevas: %v", err)
+	}
+	md, ok := cfg.ModelMetadata["m"]
+	if !ok {
+		t.Fatal("metadata de m no cargada")
+	}
+	if md.ContextWindow != 1000000 {
+		t.Fatalf("ContextWindow = %d, want 1000000", md.ContextWindow)
+	}
+	if md.MaxOutput != 384000 {
+		t.Fatalf("MaxOutput = %d, want 384000", md.MaxOutput)
+	}
+	if md.ThinkingDefault != "low" {
+		t.Fatalf("ThinkingDefault = %q, want low", md.ThinkingDefault)
+	}
+}
+
+// Test010001_P1_BackwardCompat: config 007-001 (sin claves nuevas) carga
+// exactamente igual que antes (P1 — sin validaciones nuevas, sin romper
+// configs existentes).
+func Test010001_P1_BackwardCompat(t *testing.T) {
+	t.Setenv("MOFGW_TEST_A", "k1")
+	cfg, err := LoadFile(writeTemp(t, metadataYAML)) // 007-001, sin claves nuevas
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	md, ok := cfg.ModelMetadata["deepseek-v4-flash"]
+	if !ok {
+		t.Fatal("metadata 007-001 no cargada")
+	}
+	if md.ContextWindow != 1000000 || md.MaxOutput != 384000 || md.ThinkingDefault != "high" {
+		t.Fatalf("metadata 007-001 alterada: %+v", md)
+	}
+}
