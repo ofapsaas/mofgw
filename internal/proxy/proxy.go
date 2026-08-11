@@ -27,6 +27,7 @@ import (
 
 	"github.com/ofapsaas/mofgw/internal/absorb"
 	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/clamp"
 	"github.com/ofapsaas/mofgw/internal/composition"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/limiter"
@@ -297,9 +298,12 @@ func (s *Server) SetPricing(pricing map[string]ModelPricing) {
 
 // SetModelMetadata configura las capabilities por modelo
 // (007-001-model-metadata). Mismo contrato que SetPricing: una sola vez
-// antes del tráfico, mapa inmutable después.
+// antes del tráfico, mapa inmutable después. También propaga la metadata
+// al router (010-002 P4): la inyección per-attempt del thinking_default
+// vive en el router y necesita la misma fuente (un solo call-site).
 func (s *Server) SetModelMetadata(meta map[string]config.ModelMetadata) {
 	s.modelMeta = meta
+	s.router.SetModelMeta(meta)
 }
 
 // SetContextMargin configura el margen del rechazo por ventana
@@ -552,14 +556,39 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"num_tools", len(rawTools.Tools),
 	)
 
-	// 4.5 Rechazo temprano por ventana de contexto (008-001 P1): si el
-	// prompt estimado + max_tokens excede la ventana del modelo (con
-	// margen), 400 sin gastar intentos de la cadena. Sin metadata → sin
-	// rechazo (P4). max_tokens cuenta porque el upstream valida
-	// prompt+completion contra la ventana real (TECHDEBT #23).
+	// 4.4 Clamp por modelo pre-routing (010-002 P1/P2): si el modelo
+	// destino tiene metadata con max_output > 0, el body se clampea a ese
+	// techo ANTES del chequeo de ventana y del ruteo (mata el 400→502: un
+	// max_tokens mayor al techo real hace fallar al upstream no-retryable).
+	// El router aplica después su clamp por provider por intento (001-004)
+	// → el efectivo es min(max_output_modelo, MaxTokens_provider) (P2/I3).
+	// Sin metadata (o max_output == 0) → body intacto (P8). El response
+	// cache (2.6) ya keyeó sobre el body crudo del cliente — el cache
+	// exact-match no se ve afectado.
+	if md, ok := s.modelMeta[req.Model]; ok && md.MaxOutput > 0 {
+		clamped, err := clamp.Request(body, int64(md.MaxOutput))
+		if err != nil {
+			openAIError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_request_error")
+			return
+		}
+		body = clamped
+	}
+
+	// 4.5 Rechazo temprano por ventana de contexto (008-001 P1 + 010-002
+	// P3): si el prompt estimado + max_tokens excede la ventana del modelo
+	// (con margen), 400 sin gastar intentos de la cadena. Con la regla
+	// fiel, el max_tokens que cuenta es el EFECTIVO post-clamp por modelo:
+	// min(max_tokens del cliente, max_output del modelo) — el cuerpo ya fue
+	// clampeado en 4.4 pero ChatRequest.MaxTokens queda stale (solo parsea
+	// max_tokens, no max_completion_tokens), así que el efectivo se computa
+	// acá. Sin metadata (o max_output == 0) → crudo (008-001 actual,
+	// TECHDEBT #23 intacto: el upstream sigue siendo la autoridad final).
 	maxTokens := 0
 	if req.MaxTokens != nil {
 		maxTokens = int(*req.MaxTokens)
+	}
+	if md, ok := s.modelMeta[req.Model]; ok && md.MaxOutput > 0 && maxTokens > md.MaxOutput {
+		maxTokens = md.MaxOutput
 	}
 	if promptTokens := estimatePromptTokens(body); s.exceedsContextWindow(req.Model, promptTokens, maxTokens) {
 		s.metrics.IncRejected(clientID, "context_window")

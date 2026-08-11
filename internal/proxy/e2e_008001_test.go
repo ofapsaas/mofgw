@@ -96,10 +96,16 @@ func TestRED_SinMetadataSinRechazo(t *testing.T) {
 	}
 }
 
-// TestRED_MaxTokensCuentaEnVentana: prompt que cabe pero prompt+max_tokens
-// excede la ventana → 400 sin intentos upstream (cierra el gap del 502
-// upstream 04:49: prompt 1,016,660 + max_tokens 32,000 = 1,048,660 >
-// límite real 1,048,576; el chequeo viejo solo miraba el prompt).
+// TestRED_MaxTokensCuentaEnVentana: el max_tokens EFECTIVO (post-clamp por
+// modelo) cuenta contra la ventana — 010-002 P3 (window-check fiel) y
+// C8(a). Con metadata m {ContextWindow: 1000, MaxOutput: 100} y margin 0:
+// prompt ~750 tokens (3000/4) + max_tokens 400 → el efectivo es
+// min(400, max_output 100) = 100 → 750 + 100 = 850 ≤ 1000 → 200, y el
+// upstream recibe max_tokens == 100. Actualizado 2026-08-11 (POST-AUDIT
+// 010-002): bajo 008-001 el chequeo sumaba el max_tokens CRUDO
+// (750 + 400 = 1150 > 1000 → 400 sin intentos); esa premisa queda
+// reemplazada por la regla fiel (spec 010-002, Contexto — Impacto
+// cross-feature).
 func TestRED_MaxTokensCuentaEnVentana(t *testing.T) {
 	ups := upstreamOK("m", "x")
 	h := buildMultiClient(t, []*upstream{ups}, "k1")
@@ -112,12 +118,23 @@ func TestRED_MaxTokensCuentaEnVentana(t *testing.T) {
 	body := bigBody(3000) // estimado ~750 tokens ≤ 1000 → el prompt cabe
 	body["max_tokens"] = 400
 	resp := h.chatAs(t, "k1", body)
-	if resp.StatusCode != 400 {
-		t.Fatalf("status = %d, want 400 (750+400 > 1000)", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 (750+min(400,100) = 850 ≤ 1000)", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
-	if ups.gotBody != "" {
-		t.Fatalf("hubo intento upstream tras rechazo por ventana con max_tokens: %s", ups.gotBody)
+	if ups.gotBody == "" {
+		t.Fatal("request que cabe no llegó al upstream")
+	}
+	// El upstream recibe el max_tokens EFECTIVO post-clamp por modelo
+	// (010-002 P3 / C8a): 100, no el 400 crudo del cliente.
+	var reqBody struct {
+		MaxTokens int64 `json:"max_tokens"`
+	}
+	if err := json.Unmarshal([]byte(ups.gotBody), &reqBody); err != nil {
+		t.Fatalf("body upstream inválido: %v", err)
+	}
+	if reqBody.MaxTokens != 100 {
+		t.Fatalf("max_tokens upstream = %d, want 100 (efectivo = min(400, max_output 100))", reqBody.MaxTokens)
 	}
 }
 
@@ -130,15 +147,29 @@ func TestRED_MaxTokensQueCabe(t *testing.T) {
 		"m": {ContextWindow: 1000, MaxOutput: 100},
 	})
 
-	body := bigBody(3000) // estimado ~750 tokens
-	body["max_tokens"] = 200 // 750+200 = 950 ≤ 1000 → cabe
+	body := bigBody(3000)    // estimado ~750 tokens
+	body["max_tokens"] = 200 // efectivo min(200, 100) = 100 → 750+100 = 850 ≤ 1000 → cabe
 	resp := h.chatAs(t, "k1", body)
 	if resp.StatusCode != 200 {
-		t.Fatalf("status = %d, want 200 (750+200 ≤ 1000)", resp.StatusCode)
+		t.Fatalf("status = %d, want 200 (750+min(200,100) ≤ 1000)", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
 	if ups.gotBody == "" {
 		t.Fatal("request que cabe no llegó al upstream")
+	}
+	// OPTIONAL-BUT-RECOMMENDED (010-002 POST-AUDIT 2026-08-11): endurece el
+	// contrato al wire value — el upstream recibe max_tokens == 100 (efectivo
+	// = min(200, max_output 100)), no el 200 crudo del cliente (010-002 P3 /
+	// C8a; spec Contexto — Impacto cross-feature: "el upstream ahora recibe
+	// max_tokens: 100 en vez de 200").
+	var reqBody struct {
+		MaxTokens int64 `json:"max_tokens"`
+	}
+	if err := json.Unmarshal([]byte(ups.gotBody), &reqBody); err != nil {
+		t.Fatalf("body upstream inválido: %v", err)
+	}
+	if reqBody.MaxTokens != 100 {
+		t.Fatalf("max_tokens upstream = %d, want 100 (efectivo = min(200, max_output 100))", reqBody.MaxTokens)
 	}
 }
 

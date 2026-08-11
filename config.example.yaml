@@ -38,6 +38,12 @@ providers:
     api_key_env: MOFGW_PROVIDER_A_KEY
     models: ["deepseek-v4-flash", "deepseek-v4-pro"]
     max_tokens: 8192
+    # thinking_path: "zen"   # path de inyección del thinking_default (010-002).
+    #                        # Valores: "" (default, sin inyección) | "zen" | "bailian".
+    #                        # "zen" = reasoning_effort passthrough; "bailian" =
+    #                        # reasoning_effort + enable_thinking (deepseek/glm) o
+    #                        # enable_thinking solo (qwen). kimi/minimax nunca se
+    #                        # inyectan (thinking siempre-on / nativo == prescriptivo).
     # cooldown: 90s    # override por provider (opcional)
     # timeout: 60s     # override por provider (opcional)
   - id: provider-b
@@ -99,7 +105,9 @@ model_metadata:
     supported_parameters: ["tools", "reasoning"]
     modality: "text+image+video->text"
   qwen3.7-plus:
+    context_window: 1000000
     max_output: 131072
+    thinking: ["high"]
     thinking_default: "high"
     supported_parameters: ["tools", "reasoning"]
     modality: "text+image+video->text"

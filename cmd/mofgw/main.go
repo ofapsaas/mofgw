@@ -89,6 +89,10 @@ func run() error {
 			Provider: cl,
 			Cooldown: pc.Cooldown,
 			Timeout:  pc.Timeout,
+			// 010-002: path declarativo del provider para la inyección del
+			// thinking_default prescriptivo ("" | "zen" | "bailian"; "" =
+			// sin inyección, fallback al ID del provider en el router).
+			ThinkingPath: pc.ThinkingPath,
 		})
 	}
 

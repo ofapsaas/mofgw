@@ -111,6 +111,14 @@ type ProviderConfig struct {
 	Retry  *RetryConfig  `yaml:"retry"`
 	Health *HealthConfig `yaml:"health"`
 
+	// ThinkingPath: path declarativo del provider para la inyección del
+	// thinking_default prescriptivo (010-002-request-path-fiel). Valores:
+	// "" (default, sin inyección) | "zen" | "bailian". Un path no
+	// reconocido degrada a sin inyección (fallback rule §5.4: no se
+	// adivina). Consistente con I2: valores declarativos, nunca inferidos
+	// por patrón de ID (los IDs reales son acct1, go-1/2, qwen...).
+	ThinkingPath string `yaml:"thinking_path"`
+
 	// APIKey se puebla al resolver APIKeyEnv (nunca viene del YAML).
 	APIKey string `yaml:"-"`
 }

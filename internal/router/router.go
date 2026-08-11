@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/ofapsaas/mofgw/internal/clamp"
+	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/health"
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/timeouts"
@@ -105,6 +106,14 @@ type ProviderSpec struct {
 	Cooldown *time.Duration
 	Timeout  *time.Duration
 	Retry    *RetryConfig
+
+	// ThinkingPath: path declarativo del provider para la inyección del
+	// thinking_default prescriptivo (010-002-request-path-fiel). Valores:
+	// "" (default) | "zen" | "bailian". "" → se usa Provider.ID() como
+	// fallback (los tests fijan el path por construcción en el ID; en
+	// producción el knob providers[].thinking_path manda — un ID real
+	// como "acct1" no está en la tabla verificada → sin inyección).
+	ThinkingPath string
 }
 
 // CooldownStore guarda el estado de cooldown en memoria (map + mutex),
@@ -200,6 +209,13 @@ type Router struct {
 	logger      *slog.Logger
 	randSource  *rand.Rand // jitter determinista en tests
 
+	// modelMeta: capabilities por modelo (007-001/010-001), usadas para la
+	// inyección per-attempt del thinking_default (010-002 P4). Misma fuente
+	// que proxy.Server.modelMeta: el proxy la propaga vía SetModelMeta
+	// (un solo call-site en main.go). Inmutable tras SetModelMeta (antes
+	// del tráfico); nil = sin inyección (P8).
+	modelMeta map[string]config.ModelMetadata
+
 	degradedMu  sync.Mutex
 	degradedCnt int // requests servidos en degradación (002-004)
 }
@@ -244,6 +260,14 @@ func (r *Router) Cooldowns() *CooldownStore { return r.cooldowns }
 // Affinity expone el store de afinidad sticky (009-002 P3, patrón
 // Cooldowns) para observabilidad y tests.
 func (r *Router) Affinity() *AffinityStore { return r.affinity }
+
+// SetModelMeta configura las capabilities por modelo (007-001/010-001)
+// para la inyección per-attempt del thinking_default (010-002 P4). La
+// llama proxy.Server.SetModelMetadata (misma fuente, patrón setter
+// pre-tráfico: mapa inmutable después; nil → sin inyección, P8).
+func (r *Router) SetModelMeta(meta map[string]config.ModelMetadata) {
+	r.modelMeta = meta
+}
 
 // Health expone el store de salud (para /healthz del proxy).
 func (r *Router) Health() *health.Store { return r.health }
@@ -425,6 +449,141 @@ func ensureIncludeUsage(body []byte) ([]byte, error) {
 	return bytes.TrimSpace(buf.Bytes()), nil
 }
 
+// ---- 010-002-request-path-fiel: inyección del thinking_default (P4-P8) ----
+
+// thinkingInjection describe los parámetros de activación de thinking a
+// inyectar en un intento (§5.4). Ambos false → sin inyección.
+type thinkingInjection struct {
+	reasoningEffort bool // inyectar reasoning_effort = ThinkingDefault (string)
+	enableThinking  bool // inyectar enable_thinking = true (bool)
+}
+
+// thinkingProfile clasifica la familia de un modelo por su metadata
+// declarativa (research-token-efficiency.md §5.4, acceso 2026-08-10). La
+// metadata codifica la identidad del modelo:
+//
+//   - "always"   → kimi-k2.7-code: siempre-on, NUNCA inyectar (P6a;
+//     `disabled` → error upstream).
+//   - "adaptive" → minimax-m3: nativo adaptive == prescriptivo adaptive,
+//     sin corrección que aplicar (P6b, documentado).
+//   - "high"     → qwen3.7-plus: solo enable_thinking en bailian (P4c).
+//   - niveles de effort concretos (low/medium/max) → familia reasoning
+//     (deepseek-v4-flash/pro, glm-5.2): reasoning_effort (P4a/b/d).
+//
+// Cualquier otro perfil → "" (fallback rule P8: no se adivina).
+func thinkingProfile(md config.ModelMetadata) string {
+	for _, l := range md.Thinking {
+		switch l {
+		case "always":
+			return "" // kimi-k2.7-code
+		case "adaptive":
+			return "" // minimax-m3
+		case "low", "medium", "max":
+			return "reasoning" // deepseek-v4-flash/pro, glm-5.2
+		}
+	}
+	if len(md.Thinking) == 1 && md.Thinking[0] == "high" {
+		return "qwen" // qwen3.7-plus
+	}
+	return ""
+}
+
+// thinkingInjectionFor devuelve los parámetros de activación verificados
+// (§5.4) para un par (path, perfil de modelo). Cero = sin inyección
+// (fallback rule: un path o modelo sin parámetro verificado no se
+// adivina — P8). minimax/kimi ya cayeron en thinkingProfile ("") y los
+// paths no reconocidos caen acá.
+func thinkingInjectionFor(path, profile string) thinkingInjection {
+	switch profile {
+	case "reasoning":
+		switch path {
+		case "zen":
+			return thinkingInjection{reasoningEffort: true}
+		case "bailian":
+			return thinkingInjection{reasoningEffort: true, enableThinking: true}
+		}
+	case "qwen":
+		if path == "bailian" {
+			return thinkingInjection{enableThinking: true}
+		}
+	}
+	return thinkingInjection{}
+}
+
+// bodyHasExplicitEffort reporta si el body del CLIENTE declara algún
+// parámetro de thinking (P5): la presencia de cualquiera de
+// {reasoning_effort, thinking, enable_thinking} — con CUALQUIER valor,
+// incluido null — desactiva la inyección en TODOS los intentos. Un body
+// no-JSON → false (el parseo previo en el proxy ya lo rechazó).
+func bodyHasExplicitEffort(body []byte) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return false
+	}
+	for _, f := range []string{"reasoning_effort", "thinking", "enable_thinking"} {
+		if _, ok := m[f]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// injectThinking agrega los parámetros de activación al body de un
+// intento. reasoning_effort se inyecta con el valor EXACTO ThinkingDefault
+// (string); enable_thinking con true (bool). El resto del body se
+// preserva intacto (mismo patrón de re-encode que clamp/ensureIncludeUsage,
+// I6: JSON válido, SSE y stream_options.include_usage intactos).
+func injectThinking(body []byte, inj thinkingInjection, defaultEffort string) ([]byte, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("thinking: body inválido: %w", err)
+	}
+	if inj.reasoningEffort {
+		v, err := json.Marshal(defaultEffort)
+		if err != nil {
+			return nil, fmt.Errorf("thinking: marshal reasoning_effort: %w", err)
+		}
+		m["reasoning_effort"] = v
+	}
+	if inj.enableThinking {
+		m["enable_thinking"] = json.RawMessage(`true`)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, fmt.Errorf("thinking: re-encode: %w", err)
+	}
+	return bytes.TrimSpace(buf.Bytes()), nil
+}
+
+// injectThinkingForAttempt aplica la inyección del default prescriptivo
+// (010-002 P4) al body de UN intento, para el provider destino s. No-op
+// cuando: el modelo no tiene metadata (P8), thinking_default vacío (P8),
+// o el par (path, modelo) no tiene parámetro de activación verificado
+// (§5.4 fallback rule). El respeto al effort explícito (P5) se decide en
+// el call-site sobre el body ORIGINAL del cliente (una sola vez, no por
+// intento).
+func (r *Router) injectThinkingForAttempt(body []byte, model string, s *ProviderSpec) ([]byte, error) {
+	md, ok := r.modelMeta[model]
+	if !ok || md.ThinkingDefault == "" {
+		return body, nil
+	}
+	path := s.ThinkingPath
+	if path == "" {
+		// Fallback al ID del provider: los tests fijan el path por
+		// construcción (ID "zen"/"bailian"). En producción el knob
+		// declarativo providers[].thinking_path manda; un ID real no
+		// verificado cae en la fallback rule (sin inyección).
+		path = s.Provider.ID()
+	}
+	inj := thinkingInjectionFor(path, thinkingProfile(md))
+	if !inj.reasoningEffort && !inj.enableThinking {
+		return body, nil
+	}
+	return injectThinking(body, inj, md.ThinkingDefault)
+}
+
 // classify decide si un error de intento es retryable (se reintenta el
 // mismo provider o se prueba el siguiente) o no-retryable (se responde
 // al cliente ya).
@@ -563,6 +722,14 @@ func (r *Router) CompleteFor(ctx context.Context, req *provider.ChatRequest, bod
 // cadena para un request no-stream y devuelve la respuesta del primer
 // provider exitoso, o ChainError.
 func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body []byte, stickyKey string) (*provider.CompleteResult, error) {
+	// 010-002 P5: el effort explícito del cliente se decide UNA vez sobre
+	// el body original (el clamp del proxy solo toca max_tokens, nunca los
+	// campos de thinking). Solo se parsea si el modelo tiene metadata
+	// (sin metadata la inyección es no-op — P8).
+	explicitEffort := false
+	if _, ok := r.modelMeta[req.Model]; ok {
+		explicitEffort = bodyHasExplicitEffort(body)
+	}
 	ready, err := r.resolveReady(ctx, req.Model)
 	if err != nil {
 		return nil, err
@@ -602,6 +769,21 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 				lastChain = ce
 				r.recordFailure(s)
 				break
+			}
+			// 010-002 P4: inyección per-attempt del default prescriptivo
+			// (provider-aware). El body ya pasó el clamp por modelo en el
+			// proxy y el clamp por provider acá; la inyección del
+			// (path, modelo) verificado (§5.4) va sobre el body del intento.
+			// El effort explícito del cliente (P5) desactiva la inyección
+			// en TODOS los intentos (explicitEffort, decidido arriba).
+			if !explicitEffort {
+				attemptBody, err = r.injectThinkingForAttempt(attemptBody, req.Model, s)
+				if err != nil {
+					ce := &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
+					lastChain = ce
+					r.recordFailure(s)
+					break
+				}
 			}
 			actx, cancel := timeouts.Attempt(ctx, timeout)
 			res, err := s.Provider.Complete(actx, attemptBody)
@@ -678,6 +860,13 @@ func (r *Router) StreamFor(ctx context.Context, req *provider.ChatRequest, body 
 // primer evento y prueba los providers en el orden dado (reorder sticky
 // aplicado si corresponde).
 func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []byte, stickyKey string) (*StreamResult, error) {
+	// 010-002 P5: el effort explícito del cliente se decide UNA vez sobre
+	// el body original (ensureIncludeUsage solo toca stream_options, nunca
+	// los campos de thinking).
+	explicitEffort := false
+	if _, ok := r.modelMeta[req.Model]; ok {
+		explicitEffort = bodyHasExplicitEffort(body)
+	}
 	// 003-001 P2: garantizar include_usage en streaming para que el chunk
 	// final traiga usage (incluidos campos de cache). No aplica a no-stream.
 	body, err := ensureIncludeUsage(body)
@@ -722,6 +911,18 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 				r.recordFailure(s)
 				break
+			}
+			// 010-002 P4: inyección per-attempt del default prescriptivo
+			// (provider-aware) sobre el body del intento — que ya incluye
+			// stream_options.include_usage (003-001, I6). El effort
+			// explícito (P5) desactiva la inyección en todos los intentos.
+			if !explicitEffort {
+				attemptBody, err = r.injectThinkingForAttempt(attemptBody, req.Model, s)
+				if err != nil {
+					lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
+					r.recordFailure(s)
+					break
+				}
 			}
 			// ctx hijo SIN deadline de intento, SOLO cancelable (spec 001-006:
 			// el timeout de Stream mide TTFB, no la duración total — después
