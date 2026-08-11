@@ -218,6 +218,25 @@ Usado por: 001-003, 001-004, 001-005, 001-006.
 
 ---
 
+### EPIC-010: mofgw-catalogo-fiel — el catálogo informa completo, veraz y prescriptivo + el request path lo hace valer
+**Resumen:** Cierra los huecos de fidelidad del catálogo detectados en la auditoría del 10 Ago: openclaw lee campos que /v1/models no emite (`supported_parameters`, `modality`, `top_provider.*`, `max_output_tokens`), hay datos incorrectos (qwen3.7-plus max_output 64K vs 128K real), y el request path no respeta el max_output por modelo (kimi → 400→502) ni inyecta el default de esfuerzo prescriptivo (ADR-003). Discovery verificado con fuentes (10 Ago, refs brainy-white-narwhal + desirable-tan-seahorse).
+
+**In scope:** catálogo fiel (010-001: supported_parameters, modality/architecture, top_provider, max_output_tokens, thinking_default prescriptivo, flash-0731 metadata, qwen max_output 131072) + request path fiel (010-002: clamp por modelo, window-check fiel, inyección per-attempt provider-aware). **Out of scope:** config del cliente opencode (models.dev), cambios de context_window sin verificación empírica, enforcement de visión.
+
+**Decomposición:**
+| # | Feature ID | Descripción | Dependencias | Paralelizable |
+|---|-----------|------------------------|--------------|---------------|
+| 1 | 010-001-catalogo-fiel | Catálogo /v1/models completo/veraz/prescriptivo (supported_parameters, modality, top_provider, max_output_tokens, flash-0731, qwen 131072) | 007-001, 007-002 | No |
+| 2 | 010-002-request-path-fiel | Request path respeta max_output por modelo (clamp + window-check) e inyecta thinking_default per-attempt provider-aware | 010-001 (metadata) | No |
+
+**Criterios de aceptación del epic:**
+- [ ] /v1/models emite supported_parameters, modality/architecture, top_provider y max_output_tokens fieles a la metadata declarada (spec 010-001 C1-C8)
+- [ ] kimi-k2.7-code con max_tokens alto ya no produce 400→502 (clamp por modelo)
+- [ ] deepseek-v4-flash sin effort explícito recibe reasoning_effort=low (default prescriptivo inyectado; altera el nativo high)
+- [ ] Suite completa `go test ./... -race` verde; deploy a prod verificado (/v1/models + smoke)
+
+---
+
 ## Orden de ejecución
 
 ```

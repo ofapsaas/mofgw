@@ -1,0 +1,55 @@
+# Test Audit — 010-001-catalogo-fiel
+Status: Approved by Ofap (usuario delegado HITL — GVR) on 2026-08-11
+
+# 1. AUDIT REPORT — 010-001-catalogo-fiel (Stage 3.0)
+
+## Resumen del comportamiento que cambia
+
+La feature **agrega** campos al objeto JSON de `/v1/models` para modelos con metadata (007-001): `supported_parameters`, `modality`, `architecture` (derivada mecánica), `top_provider` y `max_output_tokens`. También declara la semántica prescriptiva de `thinking.default` (P7). **No cambia ni remueve ningún campo existente**: el envelope, los mínimos, pricing y auth permanecen intactos (P8). Por lo tanto **no hay tests existentes que validen comportamiento que cambia** → 0 tests a modificar. La estrategia de test es agregar tests nuevos (positivos RED + negativos guard), todos escritos contra el spec, sin mirar implementación.
+
+## Cobertura por postcondición (P1–P8)
+
+| Postcondición                                     | Cobertura                                | Test(s) existente(s)                                                                                                                                                                                                                                    | Decisión                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P1** — Config extensible + backward compatible      | **parcial**                                  | `config/metadata_red_test.go` → `TestRED_LoadMetadataValida` (carga `model_metadata` 007-001 + acceso tipado), `TestRED_LoadSinMetadataVacia` (sin metadata → vacío). Cubre solo las claves 007-001; **no** cubre `supported_parameters`/`modality` (campos no existen) | **Nuevos**: 2 tests en `config_test.go` (guard verdes: YAML con claves nuevas carga sin error; YAML 007-001 carga igual). El acceso tipado a los campos nuevos queda cubierto indirectamente por los E2E RED que manejan la metadata desde YAML (si el implementer no agrega los campos + parsing, P3/P4/P6 quedan rojos). |
+| **P2** — Zero-value → campo ausente                   | **parcial**                                  | `proxy/e2e_007002_test.go` → `TestRED_ModelsSinMetadataMinimo` cubre el caso *sin metadata* (ausencia de `context_length`/`capabilities`). **No** cubre "metadata SIN las claves nuevas → campos nuevos ausentes"                                                     | **Nuevo**: `TestE2E010001_P2_MetadataSinClavesNuevas` (guard verde hoy; fija la fallback rule para el implementer).                                                                                                                                                                                                        |
+| **P3** — supported_parameters fiel                    | **missing**                                  | — (ningún test emite ni valida `supported_parameters`)                                                                                                                                                                                                    | **Nuevo RED**: `TestE2E010001_P3_SupportedParameters`.                                                                                                                                                                                                                                                                     |
+| **P4** — modality + architecture derivada             | **missing**                                  | — (ningún test emite `modality`/`architecture`)                                                                                                                                                                                                             | **Nuevo RED**: `TestE2E010001_P4_ModalityYArchitecture` (caso multimodal + caso `text->text`).                                                                                                                                                                                                                               |
+| **P5** — modality no parseable → architecture omitida | **missing** (mitad negativa trivially verde) | La mitad "architecture ausente" ya es verde de facto (nada emite `architecture` hoy); la mitad positiva "modality passthrough" no existe                                                                                                                  | **Nuevo RED**: `TestE2E010001_P5_ModalityNoParseable` (cubre `"text"` y `"text->"`).                                                                                                                                                                                                                                           |
+| **P6** — top_provider + max_output_tokens             | **missing**                                  | — (ningún test emite `top_provider`/`max_output_tokens`; 007-002 emite `max_completion_tokens` top-level, no dentro de `top_provider`)                                                                                                                          | **Nuevo RED**: `TestE2E010001_P6_TopProviderYMaxOutput` (incluye caso `max_output: 0` → omisión).                                                                                                                                                                                                                            |
+| **P7** — thinking_default prescriptivo                | **cubierta (ya verde)**                      | `proxy/e2e_007002_test.go` → `TestRED_ModelsEnriquecido` (assert `thinking.default == "high"` con `ThinkingDefault: "high"`) y `TestRED_ModelsThinkingAlways` (`"always"`). **Verificado**: el passthrough del valor configurado ya lo emite 007-002                    | **Nuevo guard**: `TestE2E010001_P7_ThinkingDefaultPrescriptivo` (fija el caso "low" del spec; verde hoy, verde tras impl).                                                                                                                                                                                                 |
+| **P8** — Envelope, mínimos, pricing, auth             | **cubierta**                                 | Envelope/mínimos: `TestRED_ModelsSinMetadataMinimo` + helpers `findModel` (assert `object:"list"`). Pricing: `TestRED_ModelsPricing`. Auth: `e2e_test.go` `TestE2EAuthRequired` (401 chat) — **gap**: no hay 401 específico para `GET /v1/models`                         | **Nuevo guard**: `TestE2E010001_C6_EnvelopeYAuth` (envelope + 401 sin Bearer en `/v1/models`).                                                                                                                                                                                                                               |
+
+## Verificación de la nota del spec (P2/P5 negativas y P7 ya verdes; RED en P3/P4/P6)
+
+**CONFIRMADO** contra los tests existentes:
+- `TestRED_ModelsEnriquecido` (líneas 141-143) hace `if think["default"] != "high"` con `ThinkingDefault: "high"` → `thinking.default` YA es emitido desde el valor configurado → el caso "low" de P7 será verde hoy (mi guard lo verifica).
+- Ningún test/harness emite `supported_parameters`, `modality`, `architecture`, `top_provider` ni `max_output_tokens` → las aserciones negativas de P2/P5 son verdes hoy, y **las positivas de P3/P4/P6 fallan por campo ausente en el JSON** → ese es exactamente el RED de la feature.
+
+## Tests modificados
+
+**0 (cero).** Ningún test existente valida comportamiento que la feature cambia (la feature solo agrega campos; fallback rule preserva las ausencias que 007-002 ya verifica).
+
+## Tests untouched (lista explícita — deben seguir verdes)
+
+- `internal/proxy/e2e_007002_test.go`: `TestRED_ModelsEnriquecido`, `TestRED_ModelsSinMetadataMinimo`, `TestRED_ModelsPricing`, `TestRED_ModelsThinkingAlways` + helpers `modelsBody`/`findModel`/`buildWithModels`.
+- `internal/proxy/e2e_test.go`: `TestE2EModelsEndpoint`, `TestE2EAuthRequired`, harness `build`/`upstreamOK`/`harness` (reutilizados).
+- `internal/proxy/e2e_008001_test.go` (rechazo por ventana — usa `SetModelMetadata` con metadata; ruteo no cambia por 007-001 P5/I5).
+- `internal/proxy/e2e_010002_test.go`, `e2e_006001_test.go`, `e2e_006002_test.go`, `e2e_009*_test.go`, `e2e_008002/008003_test.go` (features no relacionadas).
+- `internal/config/config_test.go`, `metadata_red_test.go`, `external_review_fixes_test.go`, `telemetry_red_test.go`, `sticky_red_test.go` (validación 007-001 intacta — P1 sin validaciones nuevas).
+
+## Riesgos de regresión
+
+1. **Strict decoding (riesgo de contrato, a vigilar en el primer run RED):** la spec 001-002 (V2) documentaba `UnmarshalStrict` ("field not found"), pero la decisión de diseño #1 de 010-001 y el patrón histórico (claves top-level `pricing`/`model_metadata`/`context` agregadas después de 001-002 y funcionales) indican parser **no estricto** (claves desconocidas ignoradas). Los tests YAML-driven dependen de esto. **Si el primer run RED muestra `LoadFile: ... field supported_parameters not found`**, es una violación de la decisión #1 del spec (mismatch spec/implementación), NO un bug de test — escalar al orquestador.
+2. **Fallback rule (P2):** si el implementer emite `[]`/`{}`/`0`/`false` en vez de omitir, el guard `TestE2E010001_P2` lo detecta.
+3. **Cardinalidad/envelope (I5/I1):** `TestE2E010001_C6` + `findModel` detectan cambios en cardinalidad o envelope.
+4. **C7 (config.example.yaml + datos de deploy):** criterio de documentación/deploy — NO es asertable por la suite automática (el spec lo lista como criterio de la fase de deploy; se verifica en review/deploy, no en `go test`).
+
+## Gate checklist (AUDIT → RED)
+
+- [x] Test Audit producido y mapeo test↔postcondición registrado (tabla arriba).
+- [x] 0 tests modificados (nada que cambie); tests untouched listados explícitamente.
+- [x] Red de tests nuevos definida: 4 RED (P3/P4/P5/P6) + 5 guards verdes (P1×2 config, P2, P7, C2, C6).
+- [x] Riesgo de strict-decoding documentado y observable en el primer run.
+- [x] Ningún test depende de estructura interna; todos vía API pública `GET /v1/models` / `LoadFile` (contrato observable).
+- [x] Pendiente: **aprobación del usuario del audit antes de pasar a RED.**

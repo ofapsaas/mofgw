@@ -109,3 +109,62 @@ Fuente: opencode.ai/docs/zen — accedido 06 Ago 2026.
 
 ---
 *Actualizado: 2026-08-06T13:25-03:00 — §1 (precios), §2 (cache providers), §3 (consumo /v1/models), §4 (thinking) TODOS verificados con fuentes. Discovery del replanteo de eficiencia COMPLETO.*
+
+## 5. Verificación EPIC-010 — catálogo fiel (10 Ago 2026)
+
+> Consolidación de la auditoría del 10 Ago (delegaciones `ref:brainy-white-narwhal` D1-D5 y `ref:desirable-tan-seahorse` D6-D8, acceso 2026-08-10). Corrige §3/§4 donde quedaron desactualizados.
+
+### 5.1 Consumo de /v1/models por OpenClaw — detalle exacto (verificado en source, acceso 10 Ago)
+
+**Path OpenRouter** (`src/agents/embedded-agent-runner/openrouter-model-capabilities.ts`):
+
+| Campo | Prioridad | Default si ausente |
+|---|---|---|
+| `top_provider.context_length` | **1º** | 128,000 |
+| `context_length` | 2º | 128,000 |
+| `top_provider.max_completion_tokens` | **1º** | 8,192 |
+| `max_completion_tokens` | 2º | 8,192 |
+| `max_output_tokens` | 3º | 8,192 |
+| `supported_parameters` ([]string) | `includes("tools")` → supportsTools; `includes("reasoning")` → reasoning | `[]` |
+| `modality` (string `"inputs->outputs"`) | `split("->")[0].includes("image")` → input+image | `""` → text-only |
+
+**Path LM Studio** (self-hosted): `context_length` → `context_window` → `context_size` → `meta.n_ctx_train` (fallback 128k); max fallback 8,192; `capabilities.reasoning` boolean.
+
+**Implicación mofgw (EPIC-010):** emitir `top_provider` (context_length + max_completion_tokens), `max_output_tokens`, `supported_parameters` y `modality` (string) — ver spec 010-001 P1-P8.
+
+### 5.2 Capacidades por modelo — tools y visión (verificado 10 Ago)
+
+| Modelo | Tools | Visión | Fuente (acceso 10 Ago) |
+|---|---|---|---|
+| deepseek-v4-flash | ✅ (≤128 funciones, parallel, strict) | ❌ no documentado | api-docs.deepseek.com (function_calling, thinking_mode) |
+| deepseek-v4-pro | ✅ | ❌ no documentado | api-docs.deepseek.com |
+| deepseek-v4-flash-0731 | ✅ | ❌ no documentado | api-docs.deepseek.com + HF DeepSeek-V4-Flash-0731 |
+| minimax-m3 | ✅ (native tool use + interleaved thinking) | ✅ text+image+**video** (`image_url`/`video_url`) | platform.minimax.io/docs/guides/text-m3-function-call |
+| glm-5.2 | ✅ (tool calls + `tool_stream=true`) | ❌ text-only (la visión es GLM-5V-Turbo, modelo aparte) | docs.z.ai/guides/llm/glm-5.2 |
+| kimi-k2.7-code | ✅ (multi-step + `tool_choice`) | ✅ text+image+**video** (base64/upload; png/jpeg/webp/gif + mp4/mov) | platform.kimi.ai/docs (use-kimi-vision-model) |
+| qwen3.7-plus | ✅ (function calling + built-in tools) | ✅ text+image+**video** (≤2048 imgs, 64 videos, 2h) | alibabacloud.com/help/en/model-studio/vision-model |
+
+### 5.3 Correcciones de datos vs §4 (verificado 10 Ago)
+
+| Ítem | §4 (06 Ago) | Verificado 10 Ago | Fuente |
+|---|---|---|---|
+| qwen3.7-plus max_output | 64K | **131,072 (128K)** — la página del modelo dice max output 131072 con y sin thinking; el 64K era la tabla de vision-models (max `max_tokens` user-settable). CoT max 262,144. | help.aliyun.com/zh/model-studio/qwen3-7-plus + qwencloud.com/models/qwen3.7-plus |
+| deepseek en bailian: thinking default | "hybrid ON" | **OFF por default** (bailian requiere `enable_thinking: true`); directo DeepSeek API = ON. El default depende del endpoint. | help.aliyun.com/en/model-studio/deep-thinking (sección DeepSeek) |
+| context windows minimax/glm/qwen | 1M | Docs oficiales dicen **1,000,000** (no 1,048,576); deepseek 1,048,576 verificado por errores upstream (TECHDEBT #23). Verificación empírica del techo real pendiente (Phase 4, no cambiar sin evidencia). | docs de cada provider + TECHDEBT #23 |
+
+### 5.4 Mapa de activación de thinking por (modelo × provider-path) — base de la inyección 010-002 (verificado 10 Ago)
+
+| Modelo | Path | Parámetro a inyectar | Default nativo |
+|---|---|---|---|
+| deepseek-v4-flash/pro | zen/go (go-*) | `reasoning_effort` (pass-through) | high (directo) / **OFF (bailian)** |
+| deepseek-v4-flash/pro | bailian (qwen) | `reasoning_effort` + `enable_thinking: true` | OFF |
+| glm-5.2 | zen/go | `reasoning_effort` (pass-through) | max |
+| glm-5.2 | bailian | `reasoning_effort` (high/max only) + `enable_thinking: true` | ON (dynamic) |
+| minimax-m3 | zen/go (Anthropic-compat) | zen convierte; thinking type adaptive | adaptive |
+| kimi-k2.7-code | cualquier | **NUNCA inyectar** (`disabled` → ERROR) | always-on |
+| qwen3.7-plus | bailian | `enable_thinking: true` (thinking_budget opcional) | ON |
+
+Regla general: parámetros no soportados se ignoran silenciosamente (OpenAI-compat); única excepción kimi (`disabled` → error). → Decisión 1.3: inyección per-attempt (router, provider-aware).
+
+---
+*Actualizado: 2026-08-10 — §5 (catálogo fiel: consumo OpenClaw detallado, tools/visión por modelo, correcciones vs §4, mapa de activación) verificado con fuentes (ref:brainy-white-narwhal + ref:desirable-tan-seahorse). Discovery EPIC-010 COMPLETO.*
