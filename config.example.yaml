@@ -70,10 +70,12 @@ clients:
 # (research-token-efficiency.md §1 — las tasas dependen del provider
 # real: Zen vs Alibaba directo).
 pricing:
+  # Go service (opencode.ai/zen/go/v1): tasas del servicio GO de opencode
+  # (NO Zen — verificado 11 Ago). deepseek-v4-flash 0.14/0.28, cached 0.0028.
   deepseek-v4-flash:
     input_usd_per_m: 0.14
     output_usd_per_m: 0.28
-    cache_hit_usd_per_m: 0.028
+    cache_hit_usd_per_m: 0.0028
   qwen3.7-plus:
     input_usd_per_m: 0.40
     output_usd_per_m: 1.60
