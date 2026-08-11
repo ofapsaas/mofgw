@@ -47,6 +47,8 @@ Proxy self-hosted en Go que expone **un endpoint OpenAI-compatible único** y ha
 
 **✅ EPIC-009 (contexto-análisis): CERRADO 09 Ago 2026.** 3/3 features done (009-000-request-telemetry desplegada en prod; 009-001-context-composition `/v1/context`; 009-002-sticky-session) — spec→RED→GREEN→review→merge cada una, suite 332 tests `-race` verde, integración cross-feature (E3) sin bugs, closure (E4) completado (commit `307757a`). Decisiones arquitectónicas documentadas: **ADR-001** (dual-keying: opencode → `X-Session-Id`/sesión, openclaw/zot → `client|`; confirmado por captura ~103 eventos) y **ADR-002** (sticky como reordenamiento post-filtro, nunca fuerza cooldown/health/cadena). Operativo pendiente (default off): habilitar `context.analysis.enabled` + `fallback.sticky_routing.enabled` en config de prod. → `docs/epics/closure-009.md`, `docs/epics/integration-009.md`.
 
+**✅ EPIC-010 (catálogo-fiel): CERRADO + DEPLOYADO 11 Ago 2026.** 2/2 features done (010-001-catalogo-fiel, 010-002-request-path-fiel) — spec→RED→GREEN→review→merge cada una, deploy a prod verificado 11 Ago. Suite 387 tests `-race` verde, vet + gofmt limpios. Catálogo /v1/models completo/veraz/prescriptivo (supported_parameters, modality+architecture, top_provider, max_output_tokens, thinking_default prescriptivo — ADR-003); request path lo hace valer (clamp por modelo mata el 400→502 de kimi, window-check fiel, inyección per-attempt provider-aware via knob `providers[].thinking_path`). qwen3.7-plus max_output corregido 64K→128K (D8), verificado en deploy (bailian acepta 131072). C3 enmendado 11 Ago (P6 wins: top_provider/max_output_tokens son alias de context_window/max_output).
+
 ## Epics del programa
 
 ### EPIC-001: mofgw-core — MVP del proxy transparente
@@ -230,10 +232,10 @@ Usado por: 001-003, 001-004, 001-005, 001-006.
 | 2 | 010-002-request-path-fiel | Request path respeta max_output por modelo (clamp + window-check) e inyecta thinking_default per-attempt provider-aware | 010-001 (metadata) | No |
 
 **Criterios de aceptación del epic:**
-- [ ] /v1/models emite supported_parameters, modality/architecture, top_provider y max_output_tokens fieles a la metadata declarada (spec 010-001 C1-C8)
-- [ ] kimi-k2.7-code con max_tokens alto ya no produce 400→502 (clamp por modelo)
-- [ ] deepseek-v4-flash sin effort explícito recibe reasoning_effort=low (default prescriptivo inyectado; altera el nativo high)
-- [ ] Suite completa `go test ./... -race` verde; deploy a prod verificado (/v1/models + smoke)
+- [x] /v1/models emite supported_parameters, modality/architecture, top_provider y max_output_tokens fieles a la metadata declarada (spec 010-001 C1-C8) — ✅ verificado 11 Ago (deploy prod, 7 modelos).
+- [x] kimi-k2.7-code con max_tokens alto ya no produce 400→502 (clamp por modelo) — ✅ verificado 11 Ago (kimi max_tokens=100000 → 200).
+- [x] deepseek-v4-flash sin effort explícito recibe reasoning_effort=low (default prescriptivo inyectado; altera el nativo high) — ✅ verificado 11 Ago (smoke 200 con thinking activo).
+- [x] Suite completa `go test ./... -race` verde; deploy a prod verificado (/v1/models + smoke) — ✅ 387 tests `-race`, vet + gofmt limpios; deploy prod 11 Ago.
 
 ---
 
@@ -261,7 +263,7 @@ Racional: telemetría primero porque la investigación mostró que las suposicio
 
 ## Criterios de aceptación del programa completo
 
-- [x] Los 9 epics están done (001-009). — ✅ verificado 09 Ago 2026 (EPIC-009 cerrado: suite 332 tests `-race` verde, E2E cross-feature, closure-009.md).
+- [x] Los epics del programa están done (001-010). — ✅ verificado 11 Ago 2026 (EPIC-010 cerrado: 2/2 features deployadas + verificadas en prod, suite 387 tests `-race` verde).
 - [ ] E2E integral: OpenClaw (sesiones, crons, sesiones aisladas) corriendo contra mofgw en 3369, sin omniroute, sin fallbacks nativos de OpenClaw, durante 48h sin un solo error visible al cliente.
 - [ ] omniroute.service deshabilitado, ~1GB RAM liberada.
 - [ ] Métricas en Prometheus muestran fallbacks y cooldowns en acción.
@@ -282,3 +284,4 @@ Racional: telemetría primero porque la investigación mostró que las suposicio
 - 2026-08-06: EPIC-001/002/004/005 marcados DONE (verificado en README + suite). EPIC-003 replanteado: cache de providers (003-001) + nuevos EPIC-006 (medición), EPIC-007 (catálogo), EPIC-008 (contexto). Decisión Pablo: delegación total a Ofap (auto-aprobación GVR). Discovery en curso.
 - 2026-08-08: Replanteo 003-008 CERRADO (P4 done, Memory Bank aprobada, epic_closed). Nuevo **EPIC-009** (telemetría → composición de contexto → sticky routing) planificado y aprobado. Investigación: solo opencode manda X-Session-Id; openclaw/zot no. Pablo delega a Ofap el rol de dueño del proceso (reemplaza HITL).
 - 2026-08-09: **EPIC-009 CERRADO** — 3/3 features done (telemetría desplegada; composición `/v1/context`; sticky routing), integración cross-feature E3 sin bugs, closure E4 (commit `307757a`, `docs/epics/closure-009.md` + `integration-009.md`). ADR-001 (dual-keying) y ADR-002 (sticky post-filtro) creados. Suite 332 tests `-race`. Operativo pendiente: habilitar `context.analysis` + `sticky_routing` en prod. Programa: 9/9 epics done; restan los criterios E2E integral 48h del programa.
+- 2026-08-11: **EPIC-010 CERRADO + DEPLOYADO** — 2/2 features done (catálogo fiel + request path fiel), ambas desplegadas y verificadas en prod. ADR-003 (thinking_default prescriptivo) creado. Knob `providers[].thinking_path` adoptado (decisión del dueño 11 Ago). qwen max_output corregido 64K→128K (D8, verificado: bailian acepta 131072). C3 enmendado (P6 wins). Suite 387 tests `-race`. Programa: 10/10 epics done; restan los criterios E2E integral 48h del programa.

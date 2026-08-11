@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-09 (cdad-scribe, EPIC-009 cerrado — 3/3 features done + integración E3 + closure E4).
+> Última actualización: 2026-08-11 (cdad-scribe, EPIC-010 cerrado + deployado).
 
 ## Estado del programa
 
-**✅ Todos los epics del programa DONE — EPIC-009 (mofgw-contexto-analisis) CERRADO 09 Ago 2026: 3/3 features done, integración E3 verde, closure E4 completado. Resto: criterios de aceptación del programa completo (plan.md).**
+**✅ Todos los epics del programa DONE — EPIC-010 (mofgw-catalogo-fiel) CERRADO + DEPLOYADO 11 Ago 2026: 2/2 features done (catálogo fiel + request path fiel), ambas mergeadas, desplegadas y verificadas en prod. Resto: criterios de aceptación del programa completo (plan.md).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -19,14 +19,38 @@
 | EPIC-008 (contexto) | 3 features | ✅ DONE | (06 Ago) |
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
+| EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
 
-**Suite:** 14 paquetes, **332 tests verde con `-race`** (326 + 6 E2E cross-feature del epic 009). vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
+**Suite:** 17 paquetes, **387 tests verde con `-race`** (332 pre-EPIC-010 + 55 de 010-001/010-002). vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz + E2E cross-feature epic 009 verde.
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz.
 
 ## Decisiones recientes (cronología inversa)
+
+### 11 Ago 2026 — EPIC-010 mofgw-catalogo-fiel CERRADO + DEPLOYADO
+
+### Decisiones relevantes
+
+- **EPIC-010 (mofgw-catalogo-fiel) CERRADO — 2/2 features done, ambas mergeadas + desplegadas en prod + verificadas 11 Ago.** El epic cerró los huecos de fidelidad del catálogo detectados en la auditoría del 10 Ago: /v1/models ahora informa completo, veraz y prescriptivo (010-001), y el request path hace valer lo que el catálogo declara (010-002). Cadena entregada: catálogo fiel → clamp/inyección en el request path. Los 4 criterios de aceptación del epic (plan.md) verificados. Suite completa **387 tests `-race`** verde (332 → 387), vet + gofmt limpios, 17 paquetes.
+- **010-001-catalogo-fiel (MERGED, deployado):** `/v1/models` emite por modelo — `supported_parameters` [tools,reasoning], `modality` + `architecture` (input/output_modalities; `text+image+video->text` para minimax/kimi/qwen, `text->text` para deepseek/glm/flash-0731), `top_provider` {context_length, max_completion_tokens}, `max_output_tokens`, y `thinking_default` **prescriptivo** (ADR-003). Metadata de `deepseek-v4-flash-0731` agregada. `qwen3.7-plus max_output` corregido 65536 → **131072** (D8). Fallback rule: capability no declarada/verificada se OMITE, nunca se adivina (ausente ≠ 0/[]/false).
+- **C3 enmendado (P6 wins, 11 Ago):** la review del 010-001 detectó contradicción interna C3-vs-P6 — `top_provider`/`max_output_tokens` NO son capabilities nuevas sujetas a fallback rule, son **alias derivados** de `context_window`/`max_output` (007-002) y se emiten cuando sus fuentes son > 0. Enmendado en spec por decisión del dueño (GVR), tests respetan la enmienda.
+- **010-002-request-path-fiel (MERGED, deployado):** (1) **clamp por modelo pre-routing** en el proxy (`min(raw, modelMaxOutput)`, convive con el clamp por provider del router → efectivo `min(modelo, provider)`) — kimi-k2.7-code (max_output 32768) con max_tokens 384000 ya no produce el 400→502; (2) **window-check fiel**: usa el max_tokens EFECTIVO post-clamp (`promptTokens + min(raw, MaxOutput)` vs `window×(1+margin)`), preservando el fix TECHDEBT #23; (3) **inyección per-attempt provider-aware** del `thinking_default` via knob declarativo `providers[].thinking_path` (`""`|`zen`|`bailian`, default `""` = sin inyección): zen → `reasoning_effort`; bailian → `reasoning_effort` + `enable_thinking` (deepseek/glm) o `enable_thinking` (qwen); kimi/minimax **NUNCA** (always-on / adaptive nativo == prescriptivo). Nunca pisa effort explícito del cliente (P5). Ruteo/fallback/clasificación intactos (4xx sigue no-reintentable, P9).
+- **POST-AUDIT mandatorio aplicado:** `TestRED_MaxTokensCuentaEnVentana` (e2e_008001) cambió de contrato con la regla fiel — **flip 400 → 200** (750 + min(400,100) = 850 ≤ 1000). El test existente se actualizó ANTES del GREEN (premisa reemplazada: el max_tokens crudo ya no cuenta contra la ventana). Colisión de nombre de archivo resuelta: los tests de esta feature viven en `e2e_010002_requestpath_test.go` (el `e2e_010002_test.go` ya estaba ocupado por la feature response-cache, numeración previa del EPIC-010 de eficiencia).
+- **Decisiones de arquitectura:** ADR-003 (thinking_default **prescriptivo** — el configurado altera el nativo) creado en 010-001. Knob `providers[].thinking_path` adoptado por decisión del dueño 11 Ago (declarativo, consistente con I2 — valores de config, nunca inferidos por patrón de ID: los IDs reales acct1/acct2/qwen son frágiles para inferir path).
+- **Reviews (qwen3.7-plus, familia distinta al implementer):** 010-001 APPROVE WITH COMMENTS — bloqueante C7 (config.example.yaml) RESUELTO 11 Ago, 2 nits/FYI sin acción; 010-002 APPROVE WITH COMMENTS — 0 bloqueantes, Major #1 (qwen thinking) resuelto, Minor #2 → TECHDEBT #25, Minor #3 (thinking_path) resuelto, nits #4/#5 aceptados, FYI #6.
+- **Verificado en prod (11 Ago):** `/v1/models` responde los 7 modelos con metadata completa; **bailian ACEPTA `max_tokens=131072` para qwen3.7-plus** (200, sin 400 — verificación empírica pendiente del spec resuelta); kimi `max_tokens=100000` → **200** (clamp funciona, sin 400/502); deepseek smoke → 200 con thinking activo (inyección). healthz 6 providers OK. Suite 387 tests `-race` verde, vet + gofmt limpios.
+
+### Deuda técnica detectada
+
+- **Llevadas al índice consolidado (TECHDEBT, Cambios 11 Ago):** #25 (`thinkingProfile` frágil ante cambios de config — derivación por niveles de Thinking orden-dependiente, ACEPTADA sin cambio estructural, LOW; si el catálogo evoluciona → campo declarativo `ThinkingFamily` o unit test que fije la semántica), #26 (`qwen3.7-plus max_output` 64K→128K corregido y verificado empíricamente en deploy: bailian acepta 131072), #27 (`bodyHasExplicitEffort` re-parsea el body — optimización opcional, LOW). #4 cerrada completa (flash-0731 pricing + metadata en prod + example).
+- **Verificaciones empíricas pendientes (Phase 4, fuera del contrato):** glm-5.2 `reasoning_effort=medium` vía bailian (la tabla §5.4 dice high/max only — si bailian lo ignora silenciosamente, el wire value enviado es el configurado; discrepancia → TECHDEBT); context window real minimax/glm/qwen (1,000,000 vs 1,048,576 — verificación empírica del techo pendiente, NO cambiar valores). Nits de la review 010-001 sin registro (nit preexistente: `created: time.Now()` por respuesta; FYI: `top_provider` es eco del formato OpenRouter, sin concepto en mofgw).
+- **Dos decisiones del 010-001 a mantener en memoria:** fallback rule (capabilities no verificadas se omiten) y modality honesta negativa (`text->text` = "no documentada como soportada", no conjetura).
+
+### Próxima feature en cola
+
+- **Ninguna — el epic 010 está cerrado.** El programa mofgw queda con los **10 epics done (001-010)**. Restan los criterios de aceptación del programa completo (plan.md §Criterios del programa): E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes. Operativo residual: vigilar el anuncio de suba de precios de deepseek (TECHDEBT #4), monitorear cuota GO_2/GO_3 (#5), y la aceptación empírica de glm medium vía bailian cuando aplique.
 
 ### 09 Ago 2026 — Decisión: sticky_routing NO se habilita (póliza default-off)
 
