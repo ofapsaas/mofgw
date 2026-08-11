@@ -21,13 +21,20 @@
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
 
-**Suite:** 17 paquetes, **387 tests verde con `-race`** (332 pre-EPIC-010 + 55 de 010-001/010-002). vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
+**Suite:** 17 paquetes, **388 tests verde con `-race`** (387 + 1 test single-flight follower 11 Ago). vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz + E2E cross-feature epic 009 verde.
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 **Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz.
 
 ## Decisiones recientes (cronología inversa)
+
+### 11 Ago 2026 — fix: follower de single-flight factura su clientID + X-Usage-*
+
+- **Bug corregido (RED→GREEN granular, `6ace500` + `d4727bd`):** en el coalescing single-flight (010-001 P0), `recordCacheTokens` y `setUsageHeaders` corrían solo dentro de `fn()` (el líder). El follower reutilizaba el blob compartido pero no facturaba a SU `clientID` (006-001 P2) ni exponía `X-Usage-*` en SU response (007-003 P1) — sus headers quedaban en cero. Encontrado por auditoría de Claude en `proxy.go`, sin test que lo cubriera.
+- **Fix:** flag `leader` capturado en `fn()`; en la rama `shared==true`, para `!leader` se reconstruye `*provider.Usage` desde `sfRes.Usage` y se llama `recordCacheTokens(clientID)` + `setUsageHeaders(w.Header())` + `lastUsage`. El flag evita doble-facturar al líder. Nota menor: `singleflight.Usage` no lleva `ReasoningTokens` → el follower reporta reasoning 0 en `recordCacheTokens` (no afecta headers ni facturación por cliente; mejora separada si se quiere tracking exacto).
+- **Test nuevo `TestSF_FollowerFacturaYExponeUsage` (e2e_singleflight_test.go):** bloquea el upstream del líder para garantizar la superposición y aserta que el follower (a) fue deduplicado (`mofgw_single_flight_deduped_total{client="client-k2"} 1` — condición de validez), (b) factura a su clientID en /metrics, y (c) recibe `X-Usage-Total-Tokens: 1280`.
+- **Evidencia:** suite completa **388 tests `-race` verde en 17 paquetes** (387 → 388), build + vet + gofmt limpios. Bug era latente: `singleFlightEnabled` off por default — corregido de todos modos.
 
 ### 11 Ago 2026 — EPIC-010 mofgw-catalogo-fiel CERRADO + DEPLOYADO
 
