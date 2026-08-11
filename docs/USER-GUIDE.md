@@ -348,7 +348,7 @@ Consumo acumulado del cliente autenticado (007-003 + 008-003). Cada cliente ve *
 {
   "client": "agent-main",
   "totals": { "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "cache_hit_tokens": 100, "cost_usd": 0.0012 },
-  "by_model": [ { "model": "deepseek-v4-flash", "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "cost_usd": 0.0012 } ],
+  "by_model": [ { "model": "model-a", "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168, "cost_usd": 0.0012 } ],
   "sessions": [ { "id": "s1", "requests": 3, "total_tokens": 3840, "cost_usd": 0.003, "last_request_at": 1786 } ]
 }
 ```
@@ -451,7 +451,7 @@ curl -sS http://127.0.0.1:3369/v1/chat/completions \
   -H "Authorization: Bearer <client-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-v4-flash",
+    "model": "model-a",
     "messages": [{"role": "user", "content": "Hola, ¿quién eres?"}],
     "max_tokens": 512
   }'
@@ -464,7 +464,7 @@ curl -sSN http://127.0.0.1:3369/v1/chat/completions \
   -H "Authorization: Bearer <client-key>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-v4-flash",
+    "model": "model-a",
     "messages": [{"role": "user", "content": "Cuenta un chiste corto"}],
     "stream": true
   }'
