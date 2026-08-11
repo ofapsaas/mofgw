@@ -39,3 +39,7 @@ docs/specs/external-reviews/
 # Python (scripts/)
 __pycache__/
 *.pyc
+
+# Worker / lock state (local, not public)
+.worker/
+.project-lock
