@@ -645,7 +645,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// default (singleFlightEnabled=false) → el bloque no se ejecuta y el
 	// flujo legacy de abajo queda intacto.
 	if s.singleFlightEnabled && isDeterministic {
+		// leader distingue a quien ejecutó fn (el líder) de los followers
+		// que esperan el vuelo compartido: el líder ya factura y expone
+		// usage dentro de fn; el follower debe hacerlo en su propio
+		// request (010-001 P0 / 006-001 P2 / 007-003 P1).
+		leader := false
 		sfRes, shared := s.flights.Do(singleFlightKey(r.Method, r.URL.Path, body), func() *singleflight.Result {
+			leader = true
 			cres, cerr := complete()
 			if cerr != nil {
 				// Líder: responde su error como en el flujo legacy; el
@@ -689,6 +695,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		if shared {
 			s.metrics.IncDeduped(clientID)
+		}
+		// El follower reutiliza el blob compartido del líder pero es un
+		// request propio: factura el consumo a SU clientID y expone
+		// X-Usage-* en SU response. Sin esto, el dedupe eximía al
+		// follower de facturar y sus headers de usage quedaban en cero
+		// (bug: solo corrían dentro de fn, en el líder).
+		if !leader {
+			usage := &provider.Usage{
+				PromptTokens:     sfRes.Usage.PromptTokens,
+				CompletionTokens: sfRes.Usage.CompletionTokens,
+				TotalTokens:      sfRes.Usage.TotalTokens,
+				CachedTokens:     sfRes.Usage.CachedTokens,
+			}
+			lastUsage = usage
+			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, sfRes.ProviderID, req.Model, usage)
+			s.setUsageHeaders(w.Header(), sfRes.ProviderID, req.Model, usage)
 		}
 		// Líder y follower escriben el mismo blob compartido (status,
 		// content-type, body). El líder ya seteó usage headers y side
