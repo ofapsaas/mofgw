@@ -15,12 +15,12 @@
 
 set -euo pipefail
 
-CONFIG="${MOFGW_CONFIG:-/home/<user>/.config/mofgw/config.yaml}"
-TELEMETRY_FILE="${MOFGW_TELEMETRY:-/home/<user>/logs/mofgw-telemetry.jsonl}"
+CONFIG="${MOFGW_CONFIG:-$HOME/.config/mofgw/config.yaml}"
+TELEMETRY_FILE="${MOFGW_TELEMETRY:-$HOME/logs/mofgw-telemetry.jsonl}"
 START_REF="2026-08-08T22:08:00-03:00"   # inicio de la ventana de discovery
 FORCE="${1:-}"
 
-OFAP_HOME="${OFAP_HOME:-/home/<user>/clawd}"
+OFAP_HOME="${OFAP_HOME:-$HOME/clawd}"
 LOG_APPEND="$OFAP_HOME/hb/log-append.sh"
 
 log() { echo "[$(date '+%H:%M')] $*"; }
