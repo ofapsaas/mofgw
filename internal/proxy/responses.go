@@ -61,6 +61,21 @@ type responsesChatMessage struct {
 	Content string `json:"content"`
 }
 
+// wireResponseFormat tipa el response_format chat-completions (D1/D2):
+// Strict con omitempty resuelve el passthrough — ausente → el campo no se
+// emite en el wire. Schema sigue siendo json.RawMessage para preservar
+// byte-identidad.
+type wireResponseFormat struct {
+	Type       string         `json:"type"`
+	JSONSchema wireJSONSchema `json:"json_schema"`
+}
+
+type wireJSONSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict *bool           `json:"strict,omitempty"`
+}
+
 // responsesCacheKey arma la key del cache exact-match para /v1/responses
 // (P12): mismo esquema que responseCacheKey pero con namespace propio, de
 // modo que una responses-response jamás se sirve como chat-response ni a
@@ -143,7 +158,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// Structured output (011-002): text.format.json_schema → response_format
 	// (D1). Solo type == "json_schema" se traduce (D3); el resto de type o un
 	// format malformado conserva la rama de rechazo P8 (400).
-	var responseFormat map[string]any
+	var responseFormat *wireResponseFormat
 	if rb.Text != nil && rb.Text.Format != nil {
 		var format struct {
 			Type   string          `json:"type"`
@@ -155,11 +170,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			openAIError(w, http.StatusBadRequest, "structured output not yet supported", "invalid_request_error")
 			return
 		}
-		jsonSchema := map[string]any{"name": format.Name, "schema": format.Schema}
-		if format.Strict != nil {
-			jsonSchema["strict"] = *format.Strict // D2: passthrough; ausente → no se emite
-		}
-		responseFormat = map[string]any{"type": "json_schema", "json_schema": jsonSchema}
+		js := wireJSONSchema{Name: format.Name, Schema: format.Schema, Strict: format.Strict} // D2: strict nil → omitempty no emite
+		responseFormat = &wireResponseFormat{Type: "json_schema", JSONSchema: js}
 	}
 	for _, item := range rb.Input {
 		for _, p := range item.Content {
