@@ -137,15 +137,15 @@ Cada postcondición es de **comportamiento** observable (por el motor, los tests
 **Convenciones aplicables:** cuerpo crudo `[]byte` por la pipeline; el motor fabrica usage (P6/P7); errores siempre `ErrUpstream`; tests herméticos (D6); el adapter posee argv/traducción/parseo/refusal (I2).
 
 **Verificaciones pendientes / `VERIFICAR`:**
+- ~~`--include-partial-messages`~~ — **DECIDIDO por el owner (12 Ago): NO se incluye.** `--output-format stream-json` es suficiente; los `content_block_delta`/`text_delta` cubren el streaming de texto sin la complejidad de `message_partial`. Args incluye solo `--output-format stream-json` como flag de wire-format.
 - Formato de `--session-id` que acepta el CLI de claude (sha256 hex del motor vs UUID). (B-Q5)
 - Confirmar que `claude -p` lee el prompt de stdin sin prompt posicional. (B-Q6)
-- Comportamiento de `--include-partial-messages` (eventos `message_partial`): decidir si se adopta; si no, no incluir el flag. (B-Q1)
 - Set final de markers de `IsRefusal` ajustado con datos del smoke real. (B-Q7)
 
 ## Notas de implementación (no vinculantes)
 
 - `New(bin string)` con default `"claude"`; `bin` es campo del struct (como `scriptPath` en `stubBackend`).
-- `Args` arma `[bin, "-p", "--session-id", s.ID, "--model", model, "--output-format", "stream-json", ...flags]` (incluir `--include-partial-messages` solo si se adopta, ver B-Q1).
+- `Args` arma `[bin, "-p", "--session-id", s.ID, "--model", model, "--output-format", "stream-json", ...flags]` (sin `--include-partial-messages`, decisión owner 12 Ago — B-Q1 resuelto).
 - `TranslateReq`: unmarshal a `{Messages []{Role, Content json.RawMessage}}`; iterar del último al primero por `role=="user"`; si `Content` es string usar; si es array, concatenar `type=="text"`.
 - `TranslateOut`: escanear líneas del stdout, acumular texto de `content_block_delta.text_delta`, tomar `stop_reason` del `message_delta`, construir `ChatResponse`. Tolerante a líneas no-JSON.
 - `TranslateStreamOut`: `for ln := range lines`, unmarshal; solo `content_block_delta` con `delta.type=="text_delta"` → emitir chunk OpenAI. Devolver al cerrar `lines`.
