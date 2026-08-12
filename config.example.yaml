@@ -127,3 +127,14 @@ context:
   analysis:
     enabled: false
     history_per_session: 50
+
+# Web search server-side (011-005): grounded search emulado con DuckDuckGo.
+# Cuando Odoo manda {"type":"web_search_preview"} en tools, mofgw deriva la
+# query del último mensaje user, busca en DDG e inyecta los resultados como
+# un system message prependido (sin url_citation). enabled=false (default)
+# → `web_search_preview` conserva el 400 de D3 de 003 (sin regresión).
+# Fallo de DDG = best-effort (prosigue sin grounding, nunca 4xx/5xx).
+web_search:
+  enabled: false
+  max_results: 3        # tope de resultados inyectados (default 3)
+  # timeout: 10s        # tope por llamada a DDG (default 10s)

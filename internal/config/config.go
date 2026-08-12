@@ -183,6 +183,17 @@ type TelemetryConfig struct {
 	File       string  `yaml:"file"`
 }
 
+// WebSearchConfig es la configuración del grounded search server-side
+// (011-005 D5): Enabled=false (default) → `web_search_preview` conserva el
+// 400 de D3 de 003 (sin regresión); Enabled=true → mofgw emula el grounded
+// search con DDG. MaxResults: tope de resultados inyectados (default 3).
+// Timeout: tope por llamada a DDG (0 = default 10s).
+type WebSearchConfig struct {
+	Enabled    bool          `yaml:"enabled"`
+	MaxResults int           `yaml:"max_results"`
+	Timeout    time.Duration `yaml:"timeout"`
+}
+
 // ModelMetadata es la metadata declarativa de un modelo para el catálogo
 // (007-001-model-metadata). Alimenta /v1/models (007-002) y, en el futuro,
 // decisiones de ruteo. Datos verificados en research-token-efficiency.md §4.
@@ -218,6 +229,9 @@ type Config struct {
 
 	// Telemetry: telemetría de descubrimiento (009-000).
 	Telemetry TelemetryConfig `yaml:"telemetry"`
+
+	// WebSearch: grounded search server-side (011-005).
+	WebSearch WebSearchConfig `yaml:"web_search"`
 
 	// Efficiency: eficiencia de gateway (010-001).
 	Efficiency EfficiencyConfig `yaml:"efficiency"`
@@ -305,6 +319,11 @@ func defaults() Config {
 			Enabled:    false,
 			SampleRate: 1,
 			File:       "",
+		},
+		WebSearch: WebSearchConfig{
+			Enabled:    false,
+			MaxResults: 3,
+			Timeout:    0, // 0 = default 10s (lo resuelve el cliente DDG)
 		},
 		Efficiency: EfficiencyConfig{
 			SingleFlight: SingleFlightConfig{
@@ -506,6 +525,13 @@ func (c *Config) validate() error {
 	// validación de max_sessions_retained).
 	if c.Context.Analysis.HistoryPerSession < 0 {
 		return fmt.Errorf("config: context.analysis.history_per_session no puede ser negativo")
+	}
+	// web_search (011-005): max_results y timeout negativos no tienen sentido.
+	if c.WebSearch.MaxResults < 0 {
+		return fmt.Errorf("config: web_search.max_results no puede ser negativo")
+	}
+	if c.WebSearch.Timeout < 0 {
+		return fmt.Errorf("config: web_search.timeout no puede ser negativo")
 	}
 	return nil
 }

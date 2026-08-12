@@ -109,6 +109,15 @@ type Server struct {
 	globalLimiter       *limiter.Limiter
 	keyedLimiter        *limiter.Keyed
 	backpressureTimeout time.Duration
+
+	// webSearchEnabled + webSearchClient: grounded search server-side
+	// (011-005 P1/D5). Inmutables tras SetWebSearch (antes del tráfico);
+	// enabled=false (default) → `web_search_preview` conserva el 400 de D3
+	// de 003 (sin regresión). webSearchMaxResults: tope de resultados
+	// inyectados (P3/P4, web_search.max_results; 0 = default 3).
+	webSearchEnabled    bool
+	webSearchClient     any
+	webSearchMaxResults int
 }
 
 // New construye el Server. Los parámetros de concurrencia se pasan ya
@@ -122,7 +131,7 @@ func New(r *router.Router, providers []provider.Provider, a *auth.Authenticator,
 	if m == nil {
 		m = metrics.New()
 	}
-	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, telemetryLogger: telemetryLogger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1, flights: singleflight.New(512)}
+	return &Server{router: r, providers: providers, auth: a, metrics: m, logger: logger, telemetryLogger: telemetryLogger, maxBody: maxBodyBytes, globalLimiter: globalLimiter, keyedLimiter: keyedLimiter, backpressureTimeout: backpressureTimeout, contextMargin: 0.1, flights: singleflight.New(512), webSearchMaxResults: 3}
 }
 
 // SetSingleFlight configura el coalescing de requests idénticos
@@ -141,6 +150,34 @@ func (s *Server) SetSingleFlight(enabled bool, maxFlights int) {
 func (s *Server) SetResponseCache(enabled bool, maxEntries int, ttl time.Duration) {
 	s.responseCacheEnabled = enabled
 	s.responseCache = respcache.New(maxEntries, ttl)
+}
+
+// SetWebSearch configura el grounded search server-side (011-005 P1/D5).
+// Debe llamarse antes del tráfico (patrón SetResponseCache). enabled=false
+// (default) → `web_search_preview` conserva el 400 de D3 de 003 (sin
+// regresión); enabled=true + client → flujo web search activo.
+//
+// El parámetro client es `any` (no la interfaz tipada) por un detalle de
+// Go: el mock del test vive en `proxy_test` y su método Search devuelve un
+// tipo de resultado nominalmente distinto al del paquete de producción
+// (Go casa firmas de método por tipos idénticos, no por assignabilidad), así
+// que el mock no puede satisfacer una interfaz `webSearchClient` tipada del
+// paquete proxy. Se acepta `any` y el handler despacha: camino tipado
+// (websearch.Client, producción) + fallback reflectivo (mock de test). El
+// contrato observable del setter —aceptar el mock y activar el flujo— se
+// cumple.
+func (s *Server) SetWebSearch(enabled bool, client any) {
+	s.webSearchEnabled = enabled
+	s.webSearchClient = client
+}
+
+// SetWebSearchMaxResults configura el tope de resultados inyectados por
+// request web search (011-005 P3/P4, web_search.max_results). Debe llamarse
+// antes del tráfico. n <= 0 → default 3.
+func (s *Server) SetWebSearchMaxResults(n int) {
+	if n > 0 {
+		s.webSearchMaxResults = n
+	}
 }
 
 // responseCacheKey arma la key del cache exact-match (010-002 P1):

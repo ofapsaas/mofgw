@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/composition"
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/websearch"
 )
 
 // responsesRequestBody es el body crudo del Responses API de Odoo (usa
@@ -206,11 +208,15 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		openAIError(w, http.StatusBadRequest, "streaming not supported yet", "invalid_request_error")
 		return
 	}
-	// Tool calling (011-003): reemplaza la rama P7 de 001. D3: si CUALQUIER
-	// tool tiene type != "function" (incluido web_search_preview) → 400
-	// conservado (la feature 005 lo resuelve). Si todos son function → se
-	// traducen a tools chat anidados (P1), sin rechazo.
+	// Tool calling (011-003 + 011-005): reemplaza la rama P7 de 001. D3 de
+	// 003: si CUALQUIER tool tiene type != "function" (incluido
+	// web_search_preview) → 400 conservado. La feature 005 lo resuelve:
+	// `web_search_preview` con web_search.enabled=true activa el flujo web
+	// search (P1, no 400, no se agrega a chatTools); con enabled=false
+	// conserva el 400 (sin regresión, D5). Un tool no-function no-web-search
+	// (code_interpreter) sigue cayendo en el 400 en ambos modos (P1).
 	var chatTools []wireTool
+	webSearchActive := false // 011-005: activa el flujo web search (P1/D5)
 	if len(rb.Tools) > 0 {
 		for _, raw := range rb.Tools {
 			var t struct {
@@ -224,19 +230,31 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				openAIError(w, http.StatusBadRequest, "invalid tool definition", "invalid_request_error")
 				return
 			}
-			if t.Type != "function" {
+			switch {
+			case t.Type == "web_search_preview":
+				// 011-005 D1/D5: con enabled=true se marca la activación del
+				// flujo (no 400, no se agrega a chatTools — se remueve del
+				// upstream, P5). Con enabled=false conserva el 400 de D3.
+				if !s.webSearchEnabled {
+					openAIError(w, http.StatusBadRequest, "tool calling not yet supported", "invalid_request_error")
+					return
+				}
+				webSearchActive = true
+			case t.Type == "function":
+				chatTools = append(chatTools, wireTool{
+					Type: "function",
+					Function: wireToolFunc{
+						Name:        t.Name,
+						Description: t.Description,
+						Parameters:  t.Parameters, // I3: RawMessage, byte-idéntico
+						Strict:      t.Strict,     // omitempty: ausente no se emite
+					},
+				})
+			default:
+				// P1: tool no-function no-web-search (code_interpreter) → 400.
 				openAIError(w, http.StatusBadRequest, "tool calling not yet supported", "invalid_request_error")
 				return
 			}
-			chatTools = append(chatTools, wireTool{
-				Type: "function",
-				Function: wireToolFunc{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.Parameters, // I3: RawMessage, byte-idéntico
-					Strict:      t.Strict,     // omitempty: ausente no se emite
-				},
-			})
 		}
 	}
 	// Structured output (011-002): text.format.json_schema → response_format
@@ -325,6 +343,21 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			messages = append(messages, map[string]any{"role": item.Role, "content": content})
 		}
 	}
+	// 4.5 Web search server-side (011-005, P1/D1): si el flujo web search
+	// está activo (enabled:true + `web_search_preview`), derivar la query
+	// del último mensaje user (P2), ejecutar DDG (P3) e inyectar los
+	// resultados como un system message PREPENDIDO antes del primer mensaje
+	// del input[] (P4/D4). Fallo de DDG o sin query → best-effort (P7): se
+	// prosigue sin grounding. `web_search_preview` ya fue removido del
+	// upstream (no se agregó a chatTools, P5).
+	if webSearchActive {
+		if query := deriveWebSearchQuery(rb.Input); query != "" {
+			if results := s.runWebSearch(query); len(results) > 0 {
+				system := buildWebSearchSystemMessage(query, results, s.webSearchMaxResults)
+				messages = append([]any{map[string]any{"role": "system", "content": system}}, messages...)
+			}
+		}
+	}
 	chatBodyMap := map[string]any{"model": rb.Model, "messages": messages}
 	if rb.Temperature != nil {
 		chatBodyMap["temperature"] = *rb.Temperature
@@ -411,7 +444,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// determinístico (temperature == 0) → elegible; store se ignora (P13).
 	isDeterministic := rb.Temperature != nil && *rb.Temperature == 0
 	var respCacheKey string
-	if s.responseCacheEnabled && isDeterministic {
+	// P8 (011-005): un request web search NUNCA se sirve ni almacena en el
+	// response cache, aunque temperature == 0 (los resultados DDG cambian
+	// en el tiempo; servir del cache daría resultados obsoletos). Se excluye
+	// acá: webSearchActive → respCacheKey queda "" → el HIT no ocurre y
+	// storeResponseCache es no-op al final.
+	if s.responseCacheEnabled && isDeterministic && !webSearchActive {
 		if k, err := responsesCacheKey(clientID, body); err == nil {
 			respCacheKey = k
 			if entry, ok := s.responseCache.Get(k); ok {
@@ -531,4 +569,109 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+// deriveWebSearchQuery deriva la query de la búsqueda (011-005 P2/D2): la
+// concatenación de los text de las parts input_text del ÚLTIMO item message
+// con role=="user" del input[], en orden de aparición (misma regla que P5
+// de 001). Determinista: mismo input[] → misma query (I3). Devuelve "" si
+// no existe ningún item message user (→ el flujo web search se saltea, P7).
+func deriveWebSearchQuery(input []json.RawMessage) string {
+	query := ""
+	for _, raw := range input {
+		var item responsesInputItem
+		if json.Unmarshal(raw, &item) != nil {
+			continue
+		}
+		switch item.Type {
+		case "function_call", "function_call_output":
+			continue // items del ciclo tool-calling: no son mensajes user
+		}
+		if item.Role != "user" {
+			continue
+		}
+		var sb strings.Builder
+		for _, p := range item.Content {
+			if p.Type == "input_text" {
+				sb.WriteString(p.Text)
+			}
+		}
+		query = sb.String() // sobrescribe: al final queda el ÚLTIMO mensaje user
+	}
+	return query
+}
+
+// runWebSearch ejecuta el buscador inyectado (P3) y devuelve los resultados
+// como []websearch.Result, o nil ante error o vacío (best-effort, P7: sin
+// grounding). Despacho de dos caminos:
+//   - tipado: el cliente DDG de producción (websearch.Client) — el path real.
+//   - reflectivo: el mock del test, cuyo método Search devuelve un tipo de
+//     resultado nominalmente distinto (paquete proxy_test); Go casa firmas de
+//     método por tipos idénticos, así que el mock no satisface la interfaz
+//     tipada. Se invoca vía reflexión y se leen Title/URL/Snippet por campo.
+func (s *Server) runWebSearch(query string) []websearch.Result {
+	if s.webSearchClient == nil {
+		return nil
+	}
+	if cl, ok := s.webSearchClient.(websearch.Client); ok {
+		rs, err := cl.Search(query)
+		if err != nil || len(rs) == 0 {
+			return nil
+		}
+		return rs
+	}
+	rv := reflect.ValueOf(s.webSearchClient)
+	if !rv.IsValid() || rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return nil
+	}
+	m := rv.MethodByName("Search")
+	if !m.IsValid() {
+		return nil
+	}
+	out := m.Call([]reflect.Value{reflect.ValueOf(query)})
+	if len(out) != 2 || out[1].Interface() != nil {
+		return nil // error o firma inesperada → best-effort (P7)
+	}
+	res := out[0]
+	if !res.IsValid() || res.Kind() != reflect.Slice {
+		return nil
+	}
+	results := make([]websearch.Result, 0, res.Len())
+	for i := 0; i < res.Len(); i++ {
+		e := res.Index(i)
+		results = append(results, websearch.Result{
+			Title:   reflectFieldString(e, "Title"),
+			URL:     reflectFieldString(e, "URL"),
+			Snippet: reflectFieldString(e, "Snippet"),
+		})
+	}
+	return results
+}
+
+// reflectFieldString lee un campo string de un valor reflectivo (solo para
+// el fallback reflectivo del mock de test). Campo ausente → "".
+func reflectFieldString(v reflect.Value, field string) string {
+	f := v.FieldByName(field)
+	if !f.IsValid() {
+		return ""
+	}
+	return f.String()
+}
+
+// buildWebSearchSystemMessage arma el system message grounded (P4/D4):
+// header `[Web search results for "<query>"]` + N items numerados
+// (title | url | snippet), N = min(max, len(results)) (P3: top-N). Sin
+// anotaciones url_citation (I5).
+func buildWebSearchSystemMessage(query string, results []websearch.Result, max int) string {
+	n := len(results)
+	if max > 0 && n > max {
+		n = max
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[Web search results for %q]", query)
+	for i := 0; i < n; i++ {
+		r := results[i]
+		fmt.Fprintf(&sb, "\n%d. %s | %s | %s", i+1, r.Title, r.URL, r.Snippet)
+	}
+	return sb.String()
 }

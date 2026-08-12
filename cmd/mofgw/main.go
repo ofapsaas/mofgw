@@ -42,6 +42,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/proxy"
 	"github.com/ofapsaas/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/websearch"
 )
 
 func main() {
@@ -236,6 +237,17 @@ func run() error {
 	// intacto (cambio de semántica opt-in). max_entries/ttl <= 0 →
 	// defaults del paquete respcache (512 / 5m).
 	srv.SetResponseCache(cfg.Efficiency.ResponseCache.Enabled, cfg.Efficiency.ResponseCache.MaxEntries, cfg.Efficiency.ResponseCache.TTL)
+	// Web search server-side (011-005 P1/D5): grounded search emulado con
+	// DDG. enabled=false (default) → `web_search_preview` conserva el 400
+	// de D3 de 003 (sin regresión). enabled=true → se inyecta el cliente
+	// DDG (scrape html.duckduckgo.com + fallback Instant Answer) y el tope
+	// max_results (0 = default 3).
+	if cfg.WebSearch.Enabled {
+		srv.SetWebSearch(true, websearch.New(cfg.WebSearch.MaxResults, cfg.WebSearch.Timeout))
+	} else {
+		srv.SetWebSearch(false, nil)
+	}
+	srv.SetWebSearchMaxResults(cfg.WebSearch.MaxResults)
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 
