@@ -73,7 +73,14 @@ func (b *Backend) TranslateReq(body []byte) (string, error) {
 		if m.Role != "user" {
 			continue
 		}
-		return contentToText(m.Content)
+		text, err := contentToText(m.Content)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(text) == "" {
+			return "", errors.New("empty user message content")
+		}
+		return text, nil
 	}
 	return "", errors.New("no user message")
 }
@@ -146,6 +153,7 @@ func (b *Backend) TranslateOut(raw []byte, model string) (*provider.ChatResponse
 	stop := ""
 
 	sc := bufio.NewScanner(bytes.NewReader(raw))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // consistente con el motor (líneas largas)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
