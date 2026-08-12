@@ -140,9 +140,26 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		openAIError(w, http.StatusBadRequest, "tool calling not yet supported", "invalid_request_error")
 		return
 	}
+	// Structured output (011-002): text.format.json_schema → response_format
+	// (D1). Solo type == "json_schema" se traduce (D3); el resto de type o un
+	// format malformado conserva la rama de rechazo P8 (400).
+	var responseFormat map[string]any
 	if rb.Text != nil && rb.Text.Format != nil {
-		openAIError(w, http.StatusBadRequest, "structured output not yet supported", "invalid_request_error")
-		return
+		var format struct {
+			Type   string          `json:"type"`
+			Name   string          `json:"name"`
+			Schema json.RawMessage `json:"schema"`
+			Strict *bool           `json:"strict"`
+		}
+		if err := json.Unmarshal(*rb.Text.Format, &format); err != nil || format.Type != "json_schema" {
+			openAIError(w, http.StatusBadRequest, "structured output not yet supported", "invalid_request_error")
+			return
+		}
+		jsonSchema := map[string]any{"name": format.Name, "schema": format.Schema}
+		if format.Strict != nil {
+			jsonSchema["strict"] = *format.Strict // D2: passthrough; ausente → no se emite
+		}
+		responseFormat = map[string]any{"type": "json_schema", "json_schema": jsonSchema}
 	}
 	for _, item := range rb.Input {
 		for _, p := range item.Content {
@@ -173,6 +190,9 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	chatBodyMap := map[string]any{"model": rb.Model, "messages": messages}
 	if rb.Temperature != nil {
 		chatBodyMap["temperature"] = *rb.Temperature
+	}
+	if responseFormat != nil {
+		chatBodyMap["response_format"] = responseFormat // passthrough (I2)
 	}
 	chatBody, err := json.Marshal(chatBodyMap)
 	if err != nil {

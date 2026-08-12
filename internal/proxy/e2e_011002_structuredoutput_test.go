@@ -99,9 +99,11 @@ func TestE2E011002_P1_TraduccionJsonSchema(t *testing.T) {
 	if string(w.ResponseFormat.JSONSchema.Schema) != schemaRaw {
 		t.Fatalf("schema wire no byte-idéntico al input (I3):\nwant %s\ngot  %s", schemaRaw, w.ResponseFormat.JSONSchema.Schema)
 	}
-	if w.ResponseFormat.JSONSchema.Strict == nil || !*w.ResponseFormat.JSONSchema.Strict {
-		t.Fatalf("json_schema.strict no emitido como true: %+v", w.ResponseFormat.JSONSchema)
-	}
+	// strict NO se aserta acá: structuredBody omite strict (no se manda en el
+	// input), y por D2 si strict está ausente no se emite en el wire (nil).
+	// El passthrough de strict lo cubre por separado
+	// TestE2E011002_P2_StrictPassthrough (strict_true/strict_false/
+	// strict_ausente). Asertar strict==true acá sería una contradicción con D2.
 }
 
 func TestE2E011002_P2_StrictPassthrough(t *testing.T) {
