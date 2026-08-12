@@ -38,6 +38,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/router"
 	"github.com/ofapsaas/mofgw/internal/singleflight"
 	"github.com/ofapsaas/mofgw/internal/stream"
+	"github.com/ofapsaas/mofgw/internal/websearch"
 )
 
 // ModelPricing es la tabla de precios por millón de tokens de un modelo
@@ -116,7 +117,7 @@ type Server struct {
 	// de 003 (sin regresión). webSearchMaxResults: tope de resultados
 	// inyectados (P3/P4, web_search.max_results; 0 = default 3).
 	webSearchEnabled    bool
-	webSearchClient     any
+	webSearchClient     websearch.Client
 	webSearchMaxResults int
 }
 
@@ -157,16 +158,11 @@ func (s *Server) SetResponseCache(enabled bool, maxEntries int, ttl time.Duratio
 // (default) → `web_search_preview` conserva el 400 de D3 de 003 (sin
 // regresión); enabled=true + client → flujo web search activo.
 //
-// El parámetro client es `any` (no la interfaz tipada) por un detalle de
-// Go: el mock del test vive en `proxy_test` y su método Search devuelve un
-// tipo de resultado nominalmente distinto al del paquete de producción
-// (Go casa firmas de método por tipos idénticos, no por assignabilidad), así
-// que el mock no puede satisfacer una interfaz `webSearchClient` tipada del
-// paquete proxy. Se acepta `any` y el handler despacha: camino tipado
-// (websearch.Client, producción) + fallback reflectivo (mock de test). El
-// contrato observable del setter —aceptar el mock y activar el flujo— se
-// cumple.
-func (s *Server) SetWebSearch(enabled bool, client any) {
+// client es la interfaz tipada `websearch.Client`: el mock del test
+// (proxy_test) devuelve `[]websearch.Result` — el tipo de producción — y así
+// la satisface estructuralmente. Sin `any` ni reflexión (Make Illegal States
+// Unrepresentable, Fail Loud).
+func (s *Server) SetWebSearch(enabled bool, client websearch.Client) {
 	s.webSearchEnabled = enabled
 	s.webSearchClient = client
 }

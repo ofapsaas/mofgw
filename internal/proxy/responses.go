@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -603,59 +602,18 @@ func deriveWebSearchQuery(input []json.RawMessage) string {
 
 // runWebSearch ejecuta el buscador inyectado (P3) y devuelve los resultados
 // como []websearch.Result, o nil ante error o vacío (best-effort, P7: sin
-// grounding). Despacho de dos caminos:
-//   - tipado: el cliente DDG de producción (websearch.Client) — el path real.
-//   - reflectivo: el mock del test, cuyo método Search devuelve un tipo de
-//     resultado nominalmente distinto (paquete proxy_test); Go casa firmas de
-//     método por tipos idénticos, así que el mock no satisface la interfaz
-//     tipada. Se invoca vía reflexión y se leen Title/URL/Snippet por campo.
+// grounding). El cliente es la interfaz tipada `websearch.Client` — el mock
+// del test y el DDG de producción la satisfacen estructuralmente, así que no
+// hay despacho reflectivo (Make Illegal States Unrepresentable).
 func (s *Server) runWebSearch(query string) []websearch.Result {
 	if s.webSearchClient == nil {
 		return nil
 	}
-	if cl, ok := s.webSearchClient.(websearch.Client); ok {
-		rs, err := cl.Search(query)
-		if err != nil || len(rs) == 0 {
-			return nil
-		}
-		return rs
-	}
-	rv := reflect.ValueOf(s.webSearchClient)
-	if !rv.IsValid() || rv.Kind() != reflect.Ptr || rv.IsNil() {
+	rs, err := s.webSearchClient.Search(query)
+	if err != nil || len(rs) == 0 {
 		return nil
 	}
-	m := rv.MethodByName("Search")
-	if !m.IsValid() {
-		return nil
-	}
-	out := m.Call([]reflect.Value{reflect.ValueOf(query)})
-	if len(out) != 2 || out[1].Interface() != nil {
-		return nil // error o firma inesperada → best-effort (P7)
-	}
-	res := out[0]
-	if !res.IsValid() || res.Kind() != reflect.Slice {
-		return nil
-	}
-	results := make([]websearch.Result, 0, res.Len())
-	for i := 0; i < res.Len(); i++ {
-		e := res.Index(i)
-		results = append(results, websearch.Result{
-			Title:   reflectFieldString(e, "Title"),
-			URL:     reflectFieldString(e, "URL"),
-			Snippet: reflectFieldString(e, "Snippet"),
-		})
-	}
-	return results
-}
-
-// reflectFieldString lee un campo string de un valor reflectivo (solo para
-// el fallback reflectivo del mock de test). Campo ausente → "".
-func reflectFieldString(v reflect.Value, field string) string {
-	f := v.FieldByName(field)
-	if !f.IsValid() {
-		return ""
-	}
-	return f.String()
+	return rs
 }
 
 // buildWebSearchSystemMessage arma el system message grounded (P4/D4):

@@ -23,13 +23,10 @@
 // contra la config default (`web_search.enabled:false`, P1/D5). Este archivo
 // solo agrega los tests del flujo enabled:true.
 //
-// RED especial: el flujo enabled:true requiere un cliente DDG inyectado que aún
-// no existe. Este archivo define la interfaz `webSearchClient` (el contrato del
-// cliente DDG que el implementer debe implementar en producción) y el helper
-// `buildWithWebSearch`, que inyecta el mock vía un setter `SetWebSearch` en el
-// Server. Como ese setter aún no existe, los tests del flujo enabled:true
-// fallan EN COMPILACIÓN (RED correcto: la feature no está implementada). El
-// contrato del setter está documentado en buildWithWebSearch para el implementer.
+// El contrato del cliente DDG es la interfaz tipada del paquete de producción
+// (`websearch.Client`, spec §251-259); este archivo define el mock que la
+// satisface estructuralmente y el helper `buildWithWebSearch`, que inyecta el
+// mock vía el setter `SetWebSearch(enabled bool, client websearch.Client)`.
 //
 // Mapeo audit (docs/specs/011-005-web-search/test-audit.md): 10 tests en 8
 // bloques — A=P1, B=P2, C=P3, D=P4, E=P5, F=P6, G=P7, H=P8. CA-9 (rechazos
@@ -53,28 +50,17 @@ import (
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/proxy"
 	"github.com/ofapsaas/mofgw/internal/router"
+	"github.com/ofapsaas/mofgw/internal/websearch"
 )
 
-// ---- contrato del cliente DDG (definido por el test-writer, D3/P3) ----
-
-// webSearchClient es la interfaz del buscador DDG que 011-005 inyecta en el
-// Server. La define el test-writer para permitir mock; el implementer la
-// implementa en el paquete de producción (spec §251-259). El método Search
-// recibe la query (P2) y devuelve top-N {title,url,snippet} (P3) o un error
-// (que degrada a best-effort, P7).
-type webSearchClient interface {
-	Search(query string) ([]webSearchResult, error)
-}
-
-// webSearchResult es el shape observable de un resultado DDG (P3/P4): cada item
-// inyectado en el system message lleva Title/URL/Snippet. El implementer debe
-// declarar en producción el MISMO shape (campos Title/URL/Snippet string) para
-// que el mock de este archivo satisfaga la interfaz estructuralmente.
-type webSearchResult struct {
-	Title   string
-	URL     string
-	Snippet string
-}
+// ---- contrato del cliente DDG (D3/P3) ----
+//
+// El contrato tipado del buscador lo declara el paquete de producción
+// `internal/websearch` (interface `websearch.Client` + `websearch.Result`,
+// spec §251-259). El mock de este archivo satisface esa interfaz
+// estructuralmente — su método Search devuelve `[]websearch.Result`, el tipo
+// de producción — así `*mockWebSearch` cumple `websearch.Client` y el setter
+// del Server recibe el tipo tipado (sin `any` ni reflexión).
 
 // ---- mock del cliente DDG ----
 
@@ -84,11 +70,11 @@ type webSearchResult struct {
 type mockWebSearch struct {
 	mu      sync.Mutex
 	queries []string
-	results []webSearchResult
+	results []websearch.Result
 	err     error
 }
 
-func (m *mockWebSearch) Search(query string) ([]webSearchResult, error) {
+func (m *mockWebSearch) Search(query string) ([]websearch.Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.queries = append(m.queries, query)
@@ -98,7 +84,7 @@ func (m *mockWebSearch) Search(query string) ([]webSearchResult, error) {
 	return m.results, nil
 }
 
-func (m *mockWebSearch) setResults(r []webSearchResult) {
+func (m *mockWebSearch) setResults(r []websearch.Result) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.results = r
@@ -121,20 +107,10 @@ func (m *mockWebSearch) gotQueries() []string {
 // buildWithWebSearch construye el Server con web_search.enabled:true y el
 // cliente DDG inyectado, para el flujo activado de 011-005 (P1).
 //
-// CONTRATO PARA EL IMPLEMENTER (011-005, GREEN):
-//   - El Server (internal/proxy) debe exponer un setter
-//         func (s *Server) SetWebSearch(enabled bool, client webSearchClient)
-//     siguiendo el patrón SetResponseCache/SetPricing/SetModelMetadata
-//     (proxy.go:141/296/305). Con enabled:true + `web_search_preview` se activa
-//     el flujo web search (P1/D5).
-//   - La interfaz `webSearchClient` y el tipo `webSearchResult` definidos arriba
-//     son el contrato observable del cliente DDG (D3, P3): el paquete de
-//     producción debe declarar la MISMA interfaz (Search(query) []result) y un
-//     result con los mismos campos (Title/URL/Snippet string) para que el mock
-//     la satisfaga estructuralmente.
-//   - En RED este setter NO existe → los tests del flujo enabled:true fallan en
-//     compilación (RED correcto: la feature no está implementada).
-func buildWithWebSearch(t *testing.T, ups []*upstream, clientKey string, client webSearchClient) *harness {
+// El setter del Server acepta la interfaz tipada del paquete de producción:
+// `func (s *Server) SetWebSearch(enabled bool, client websearch.Client)`.
+// Con enabled:true + `web_search_preview` se activa el flujo web search (P1/D5).
+func buildWithWebSearch(t *testing.T, ups []*upstream, clientKey string, client websearch.Client) *harness {
 	t.Helper()
 	h := buildMultiClient(t, ups, clientKey)
 	h.proxySrv.SetWebSearch(true, client)
@@ -190,7 +166,7 @@ func TestE2E011005_P1_GatingEnabledTrue(t *testing.T) {
 	t.Run("web_search_preview_no_400", func(t *testing.T) {
 		u := upstreamOK("m", "hola")
 		mock := &mockWebSearch{}
-		mock.setResults([]webSearchResult{{Title: "t", URL: "http://u", Snippet: "s"}})
+		mock.setResults([]websearch.Result{{Title: "t", URL: "http://u", Snippet: "s"}})
 		h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 		b := responsesBody("clima en París")
@@ -224,7 +200,7 @@ func TestE2E011005_P1_GatingEnabledTrue(t *testing.T) {
 func TestE2E011005_P2_QueryUltimoMensajeUser(t *testing.T) {
 	u := upstreamOK("m", "hola")
 	mock := &mockWebSearch{}
-	mock.setResults([]webSearchResult{{Title: "r1", URL: "http://u1", Snippet: "s1"}})
+	mock.setResults([]websearch.Result{{Title: "r1", URL: "http://u1", Snippet: "s1"}})
 	h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 	b := responsesBody("")
@@ -258,7 +234,7 @@ func TestE2E011005_P2_QueryUltimoMensajeUser(t *testing.T) {
 func TestE2E011005_P2_QueryDeterminista(t *testing.T) {
 	u := upstreamOK("m", "hola")
 	mock := &mockWebSearch{}
-	mock.setResults([]webSearchResult{{Title: "r1", URL: "http://u1", Snippet: "s1"}})
+	mock.setResults([]websearch.Result{{Title: "r1", URL: "http://u1", Snippet: "s1"}})
 	h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 	b := responsesBody("clima en París")
@@ -292,7 +268,7 @@ func TestE2E011005_P3_TopNConsumido(t *testing.T) {
 	t.Run("mock_5_resultados_top_3", func(t *testing.T) {
 		u := upstreamOK("m", "hola")
 		mock := &mockWebSearch{}
-		mock.setResults([]webSearchResult{
+		mock.setResults([]websearch.Result{
 			{Title: "a", URL: "http://a", Snippet: "sa"},
 			{Title: "b", URL: "http://b", Snippet: "sb"},
 			{Title: "c", URL: "http://c", Snippet: "sc"},
@@ -327,7 +303,7 @@ func TestE2E011005_P3_TopNConsumido(t *testing.T) {
 	t.Run("mock_1_resultado_menos_que_N", func(t *testing.T) {
 		u := upstreamOK("m", "hola")
 		mock := &mockWebSearch{}
-		mock.setResults([]webSearchResult{{Title: "solo", URL: "http://solo", Snippet: "snip"}})
+		mock.setResults([]websearch.Result{{Title: "solo", URL: "http://solo", Snippet: "snip"}})
 		h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 		b := responsesBody("clima")
@@ -355,7 +331,7 @@ func TestE2E011005_P3_TopNConsumido(t *testing.T) {
 func TestE2E011005_P4_InyeccionSystemMessage(t *testing.T) {
 	u := upstreamOK("m", "hola")
 	mock := &mockWebSearch{}
-	mock.setResults([]webSearchResult{
+	mock.setResults([]websearch.Result{
 		{Title: "Titulo Uno", URL: "https://u1", Snippet: "Snippet uno"},
 		{Title: "Titulo Dos", URL: "https://u2", Snippet: "Snippet dos"},
 	})
@@ -399,7 +375,7 @@ func TestE2E011005_P5_RemocionWebSearchPreview(t *testing.T) {
 	t.Run("function_se_traduce_web_search_se_remueve", func(t *testing.T) {
 		u := upstreamOK("m", "hola")
 		mock := &mockWebSearch{}
-		mock.setResults([]webSearchResult{{Title: "t", URL: "http://u", Snippet: "s"}})
+		mock.setResults([]websearch.Result{{Title: "t", URL: "http://u", Snippet: "s"}})
 		h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 		paramsRaw := `{"type":"object","properties":{"location":{"type":"string"}}}`
@@ -429,7 +405,7 @@ func TestE2E011005_P5_RemocionWebSearchPreview(t *testing.T) {
 	t.Run("solo_web_search_tools_ausente", func(t *testing.T) {
 		u := upstreamOK("m", "hola")
 		mock := &mockWebSearch{}
-		mock.setResults([]webSearchResult{{Title: "t", URL: "http://u", Snippet: "s"}})
+		mock.setResults([]websearch.Result{{Title: "t", URL: "http://u", Snippet: "s"}})
 		h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 		b := responsesBody("hola")
@@ -453,7 +429,7 @@ func TestE2E011005_P5_RemocionWebSearchPreview(t *testing.T) {
 func TestE2E011005_P6_SalidaItemMessage(t *testing.T) {
 	u := upstreamOK("m", "respuesta grounded")
 	mock := &mockWebSearch{}
-	mock.setResults([]webSearchResult{{Title: "t", URL: "http://u", Snippet: "s"}})
+	mock.setResults([]websearch.Result{{Title: "t", URL: "http://u", Snippet: "s"}})
 	h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 	b := responsesBody("clima")
@@ -520,7 +496,7 @@ func TestE2E011005_P7_DDGFallaBestEffort(t *testing.T) {
 func TestE2E011005_P7_SinMensajeUserSinGrounding(t *testing.T) {
 	u := upstreamOK("m", "x")
 	mock := &mockWebSearch{}
-	mock.setResults([]webSearchResult{{Title: "t", URL: "http://u", Snippet: "s"}})
+	mock.setResults([]websearch.Result{{Title: "t", URL: "http://u", Snippet: "s"}})
 	h := buildWithWebSearch(t, []*upstream{u}, "sk-test-1", mock)
 
 	b := responsesBody("hola")
@@ -607,14 +583,14 @@ func TestE2E011005_P8_CacheExcluidoParaWebSearch(t *testing.T) {
 	b["tools"] = []any{map[string]any{"type": "web_search_preview"}}
 
 	// request 1: mock DDG devuelve resultado A.
-	mock.setResults([]webSearchResult{{Title: "ResultadoA", URL: "http://a", Snippet: "snip-a"}})
+	mock.setResults([]websearch.Result{{Title: "ResultadoA", URL: "http://a", Snippet: "snip-a"}})
 	code1, raw1 := responsesAs(t, hsrv.URL, "sk-test-1", b)
 	if code1 != 200 {
 		t.Fatalf("request 1: status = %d, want 200; body=%s", code1, raw1)
 	}
 
 	// request 2 (MISMO body, temperature==0): mock DDG devuelve resultado B.
-	mock.setResults([]webSearchResult{{Title: "ResultadoB", URL: "http://b", Snippet: "snip-b"}})
+	mock.setResults([]websearch.Result{{Title: "ResultadoB", URL: "http://b", Snippet: "snip-b"}})
 	code2, raw2 := responsesAs(t, hsrv.URL, "sk-test-1", b)
 	if code2 != 200 {
 		t.Fatalf("request 2: status = %d, want 200; body=%s", code2, raw2)

@@ -20,6 +20,7 @@ package websearch
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -190,7 +191,7 @@ func parseHTMLResults(html string, max int) []Result {
 // cleanText quita tags HTML y decodifica entidades del texto de un nodo.
 func cleanText(s string) string {
 	s = htmlTagRe.ReplaceAllString(s, "")
-	return strings.TrimSpace(htmlUnescape(s))
+	return strings.TrimSpace(html.UnescapeString(s))
 }
 
 // cleanURL normaliza el href de un resultado: si es un redirect interno de
@@ -206,13 +207,4 @@ func cleanURL(href string) string {
 		}
 	}
 	return strings.TrimPrefix(href, "//")
-}
-
-// htmlUnescape decodifica las entidades HTML comunes (sin x/net/html).
-func htmlUnescape(s string) string {
-	r := strings.NewReplacer(
-		"&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'",
-		"&nbsp;", " ", "&rsquo;", "’", "&ldquo;", "“", "&rdquo;", "”",
-	)
-	return r.Replace(s)
 }
