@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-002-structured-output MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-003-tool-calling MERGED).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001-responses-endpoint y 011-002-structured-output MERGED 12 Ago (3/9 con 009).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001-responses-endpoint, 011-002-structured-output y 011-003-tool-calling MERGED 12 Ago (4/9 con 009).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,35 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 001/002 DONE; 003-008 queued; 009 DONE | 🔄 EN CURSO | 1a4b9ee (011-002) |
+| EPIC-011 (odoo) | 001/002/003 DONE; 004-008 queued; 009 DONE | 🔄 EN CURSO | fefb55c (011-003) |
 
-**Suite:** 17 paquetes, **426 tests verde con `-race`** (413 + 7 feature 011-002 + POST-AUDIT). vet limpio; gofmt limpio en archivos de la feature.
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (011-001 DONE), structured output (011-002 DONE), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (011-009 DONE).
+**Suite:** 17 paquetes, **452 tests verde con `-race`** (426 + feature 011-003 + POST-AUDIT). vet limpio; gofmt limpio en archivos de la feature.
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (011-001 DONE), structured output (011-002 DONE), tool-calling (011-003 DONE), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (011-009 DONE).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-003-tool-calling (epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-003-tool-calling DONE — traducción del ciclo tool-calling de Odoo (tools ↔ function_call ↔ function_call_output) en `/v1/responses`.** Reemplaza la rama de rechazo P7 de 001 (400 "tool calling not yet supported") por la traducción real bidireccional en las tres direcciones: (1) entrada `body["tools"]` (formato Responses plano) → `tools` chat-completions anidado bajo `function`; (2) salida `choices[0].message.tool_calls` → items `function_call` del `output[]`; (3) entrada item `function_call_output` → mensaje `role:"tool"`. **Quién maneja el ciclo: Odoo** ejecuta las tools por su cuenta y arma el siguiente request; mofgw solo traduce (stateless, sin estado de sesión — cada request es una traducción puntual del `input[]` completo). Suite completa **452 tests `-race`** verde en 17 paquetes (426 → 452), go vet limpio. Commits: `cea354e` RED, `fefb55c` GREEN.
+- **D1 — `call_id` = eco directo del id upstream (base del round-trip):** el `call_id` del item `function_call` de salida (P6) == `tool_calls[i].id` upstream; el `id` estable del item (P11 de 001, `responsesID`) va APARTE (no == call_id, P8). Solo así Odoo devuelve `function_call_output.call_id` == ese mismo id y mofgw lo mapea al `role:"tool"` con `tool_call_id` correcto (P4/I4). En entrada, el `tool_call.id` del assistant == `call_id` del item `function_call` (fallback al `id` si no trae `call_id`), cerrando el round-trip en ambas direcciones.
+- **D2 — solo items `function_call` cuando hay tool_calls (cero items message):** con `tool_calls` no vacío, `output[]` contiene EXACTAMENTE un item `function_call` por `tool_calls[i]` y NINGÚN item `message` (Odoo ignora el texto del message en esa rama, `elif not has_tool_calls`). Con `tool_calls` vacío/ausente → item `message` intacto (P7, P10 de 001). Shape verificado parseable por el snippet real `_request_llm_openai_helper` (lee `name`/`arguments`/`call_id` → `to_call == [(name, call_id, arguments)]`).
+- **D3 — `type != "function"` → 400 conservado (lo resuelve 005):** si `tools` contiene CUALQUIER tool de `type != "function"` (incluido `web_search_preview` y el caso mixto function+no-function), HTTP 400 "tool calling not yet supported" — el chequeo ocurre ANTES de traducir. 003 traduce solo los `type == "function"`. Rechazo de tool JSON malformado separado: **"invalid tool definition"** (opcional #3 de la review, APLICADO).
+- **Byte-identidad I3 e invariantes sostenidos:** `parameters` de cada tool viaja como `json.RawMessage` y se serializa verbatim (byte-idéntico al input, sin re-marshal); `arguments` del item de salida es el string JSON crudo parseable por `json.loads` (I2); `strict` con omitempty (ausente → no se emite, misma semántica que D2 de 002). `tools`/`parallel_tool_calls` viajan como passthrough en `chatBodyMap` (inyectados antes del `Marshal`) y sobreviven clamp e inyección de thinking (P9), con cache exact-match separada por endpoint que cambia de key con los tools.
+- **provider.go: solo type definitions (I1/ADR-004 sin romper):** `ChatToolCall` (id/type/function{name,arguments}) y `ToolCalls []ChatToolCall` en `ChatMessage` (`omitempty`). NO modifica `ParseChatRequest`, router ni providers; `responsesInputItem` discriminado por `type` (message / function_call / function_call_output) cubre los items mixtos del `input[]`. Todo el cambio de la feature vive en `internal/proxy/responses.go`.
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** **0 bloqueantes.** Opcional #3 **APLICADO** — unmarshal fallido de tool → "invalid tool definition" (rama separada del 400 "tool calling not yet supported" que queda solo para type!=function). Opcionales #1 (agrupar function_call adyacentes en un único assistant multi-tool_call) y #2 (subtest tool_calls_vacio no ejercita `[]`) **DESCARTADOS con motivo**. FYI #4/#5 sin acción. Auditoría test↔postcondición: P1-P10 todos con test (10/10), ninguno sobrante, cero dependencia interna (AP-14). POST-AUDIT en 001: subtest `tools` flip 400→200 (traducción verificada), `web_search_preview` conserva 400 (D3).
+
+### Deuda técnica detectada
+
+- **Agrupación de `function_call` adyacentes en un único mensaje assistant multi-tool_call** (hardening futuro): el contrato especifica 1:1 (un item function_call → un mensaje assistant con un tool_call), cubriendo el caso de un solo tool (el común en Odoo); con `parallel_tool_calls:true` y varios adyacentes, hoy se generan N mensajes assistant separados. Funcional para Odoo (parsea tool_calls uno a uno); documentado como out-of-scope en el spec, optimización de implementación a futuro.
+- **Verificación empírica pendiente (desviación no bloqueante):** aceptación de `strict` en tools por los providers reales upstream — el diseño pasa `strict` tal cual; si un provider lo rechaza, mofgw propaga el 4xx no-reintentable (patrón D5 de 002, sin degradación). Verificar con provider real.
+- **Deuda del epic vigente (sin cambio):** streaming SSE del Responses API (deuda del epic), y `web_search_preview`/tools no-function que hoy son 400 y los resuelve la feature 005.
+
+### Próxima feature en cola
+
+- **011-004-file-attachments** (epic 011-mofgw-odoo): habilita las parts `input_file`/`input_image` del `input[]` (hoy 400 "file attachments not yet supported", P9 de 001). Quedan 004-008 pendientes (001/002/003 done como troncos del epic; 009 staging-enterprise ya DONE). Coordinar vía `cdad-epic`.
 
 ### 12 Ago 2026 — Feature: 011-002-structured-output (epic 011-mofgw-odoo)
 
