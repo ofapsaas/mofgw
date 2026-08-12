@@ -44,9 +44,12 @@ func buildStubCLI(t *testing.T) string {
 	const body = `#!/bin/sh
 if [ -n "$STUB_LOCK_FILE" ]; then
   echo start >> "$STUB_LOCK_FILE"
+  trap 'echo end >> "$STUB_LOCK_FILE"' EXIT
 fi
 if [ -n "$STUB_STDIN_FILE" ]; then
   cat > "$STUB_STDIN_FILE"
+else
+  cat > /dev/null
 fi
 if [ -n "$STUB_SLEEP_MS" ]; then
   _sec=$(( (STUB_SLEEP_MS + 999) / 1000 ))

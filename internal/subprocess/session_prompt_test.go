@@ -97,6 +97,7 @@ func TestT_SingleLastUserPrompt(t *testing.T) {
 		map[string]any{"role": "user", "content": "PREVIOUS"},
 		map[string]any{"role": "user", "content": "HELLO"},
 	)
+	t.Setenv("STUB_STDIN_FILE", h.stdinFile)
 	_, _ = h.p.Complete(clientCtx("client-a"), body)
 	stdin, err := os.ReadFile(h.stdinFile)
 	if err != nil {
@@ -120,6 +121,7 @@ func TestT_PromptCleanNoTools(t *testing.T) {
 		},
 		"tools": []map[string]any{{"type": "function", "function": map[string]any{"name": "f", "parameters": map[string]any{}}}},
 	})
+	t.Setenv("STUB_STDIN_FILE", h.stdinFile)
 	_, _ = h.p.Complete(clientCtx("client-a"), raw)
 
 	stdin, err := os.ReadFile(h.stdinFile)
