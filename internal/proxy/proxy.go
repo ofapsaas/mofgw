@@ -280,6 +280,7 @@ func (s *Server) captureTelemetryHeaders(r *http.Request, logger *slog.Logger) m
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
+	mux.HandleFunc("POST /v1/responses", s.handleResponses) // 011-001
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /v1/context", s.handleContext)
