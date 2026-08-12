@@ -49,7 +49,7 @@ func responsesBody(text string) map[string]any {
 		"model": "m",
 		"input": []any{
 			map[string]any{
-				"role":    "user",
+				"role": "user",
 				"content": []any{
 					map[string]any{"type": "input_text", "text": text},
 				},
