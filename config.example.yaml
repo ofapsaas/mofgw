@@ -59,6 +59,20 @@ providers:
     api_key_env: MOFGW_PROVIDER_B_KEY
     models: ["qwen3.7-plus", "glm-5.2"]
     max_tokens: 65536
+  # Provider subprocess (013-003): ejecuta el CLI de un backend de IA como
+  # subproceso en vez de hablar HTTP. NO usa base_url/api_key_env (claude usa
+  # OAuth/suscripción). Los requests se serializan por sesión del cliente.
+  - id: provider-claude-cli
+    type: subprocess
+    backend: claude          # backend del motor ("claude" hoy; gemini/codex a futuro).
+                             # != "claude" → error de carga (unknown backend).
+    command: "claude"        # binario del CLI (default "claude").
+    # session_dir: "~/.config/mofgw/sessions"  # base de sesiones (default).
+    models: ["claude-sonnet-4"]
+    max_tokens: 8192
+    # backend_flags: ["--dangerously-skip-permissions"]  # flags opacos al argv.
+    # clients: ["agent-main"]  # allowlist de clientID con acceso (013-003 P8).
+    #                          # Vacío/ausente = SIN restricción (P9) + warning.
 
 # Clientes autorizados (agentes). keys_sha256 = `mofgw hash-key <key>`.
 clients:
@@ -125,6 +139,14 @@ model_metadata:
     thinking_default: "high"
     supported_parameters: ["tools", "reasoning"]
     modality: "text+image+video->text"
+  # Modelo subprocess (013-003 P6): NO declara "tools" en supported_parameters
+  # — el provider subprocess las omite en el request path (D4) y el catálogo
+  # lo marca no-tools. La metadata es declarativa (nunca se adivina).
+  claude-sonnet-4:
+    context_window: 200000
+    max_output: 32000
+    supported_parameters: ["reasoning"]
+    modality: "text->text"
 
 # Rechazo temprano por ventana de contexto (008-001).
 # margin: fracción 0-1 sobre context_window (default 0.1).

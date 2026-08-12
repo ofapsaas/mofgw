@@ -124,6 +124,12 @@ Cambio: `type: claude` → `type: subprocess` + `backend` con interfaz `Backend`
 Motivo: gemini ya no soporta OAuth de suscripción (solo API key) → no aplica al patrón subprocess; codex no está disponible en el entorno para testear ahora.
 Cambio: se eliminan 013-004-adapter-gemini y 013-005-adapter-codex de la decomposición. El epic queda con 4 features (core, claude, config, resilience-ops). La interfaz `Backend` queda lista para sumarlos a futuro sin tocar el motor.
 
+### 2026-08-12 — Multi-modelo por backend (decisión de diseño para 013-001/013-002)
+Motivo: claude no es un solo modelo — el provider debe servir varios (claude-haiku, claude-sonnet, claude-opus, etc.) y el cliente debe poder elegir.
+Cambio: un provider subprocess sirve TODOS los modelos listados en `models:` (el router rutea por nombre vía `Serves`); el modelo se pasa al CLI por request (`Backend.Args(s, model, flags)` → `claude --model <alias|full>`). Impactos a resolver en el spec de 013-001 (y verificar empíricamente en 013-002 con el smoke test real):
+- **Key de sesión**: por cliente (conversación continua, el modelo varía por turno; posible thrash del prompt-cache al alternar modelos) vs por (cliente, modelo) (conversaciones aisladas por modelo, cache estable). El architect debe recomendar con justificación.
+- Catálogo/pricing: cada modelo listado con su metadata (`/v1/models`) — la tabla `pricing` ya es per-modelo; `MaxTokens()` del provider queda como tope de fallback.
+
 ---
 
 Status: Approved by Ofap (agent-delegated HITL, pedido explícito de Pablo) on 2026-08-12

@@ -39,6 +39,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ofapsaas/mofgw/internal/auth"
 	"github.com/ofapsaas/mofgw/internal/clamp"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/health"
@@ -288,26 +289,44 @@ func (r *Router) SetModelMeta(meta map[string]config.ModelMetadata) {
 // Health expone el store de salud (para /healthz del proxy).
 func (r *Router) Health() *health.Store { return r.health }
 
+// contains reporta si s contiene el elemento x.
+func contains(s []string, x string) bool {
+	for _, v := range s {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
 // candidates devuelve los índices de providers que sirven el modelo, en
-// orden de config, sin los que están en cooldown. Con health activo
+// orden de config, sin los que están en cooldown. 013-003 (D5/I5): un
+// provider con AllowedClients no vacío se EXCLUYE de candidatos cuando el
+// clientID del request no está en la allowlist (sin 403, fallback
+// preservado; el spec excluido no marca serveAny → si ningún otro sirve el
+// modelo el cliente recibe 404 model_not_found, P8). Con health activo
 // (002-002): saltea providers unhealthy salvo que no haya ningún otro
 // disponible (marca SOFT — un provider unhealthy puede estar degradado
 // pero responder). serveAny distingue "ninguno sirve el modelo" de
 // "todos en cooldown/unhealthy".
-func (r *Router) candidates(model string) (ready []int, serveAny bool) {
+func (r *Router) candidates(model, clientID string) (ready []int, serveAny bool) {
 	var soft []int
 	for i := range r.specs {
-		if r.specs[i].Provider.Serves(model) {
-			serveAny = true
-			if r.cooldowns.IsCooling(r.specs[i].Provider.ID()) {
-				continue
-			}
-			if r.health != nil && !r.health.IsHealthy(r.specs[i].Provider.ID()) {
-				soft = append(soft, i)
-				continue
-			}
-			ready = append(ready, i)
+		if !r.specs[i].Provider.Serves(model) {
+			continue
 		}
+		if len(r.specs[i].AllowedClients) > 0 && !contains(r.specs[i].AllowedClients, clientID) {
+			continue // P8: cliente no autorizado → se excluye de candidatos
+		}
+		serveAny = true
+		if r.cooldowns.IsCooling(r.specs[i].Provider.ID()) {
+			continue
+		}
+		if r.health != nil && !r.health.IsHealthy(r.specs[i].Provider.ID()) {
+			soft = append(soft, i)
+			continue
+		}
+		ready = append(ready, i)
 	}
 	if len(ready) == 0 {
 		ready = soft // soft: sin otro disponible, intentar los unhealthy
@@ -687,7 +706,11 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // candidatos listos: grace de cooldown corto (002-004) y fast-fail.
 // Devuelve ready (posiblemente tras la espera) o un ChainError.
 func (r *Router) resolveReady(ctx context.Context, model string) ([]int, error) {
-	ready, serveAny := r.candidates(model)
+	// 013-003 (D5): el clientID autenticado participa en la selección de
+	// candidatos (exclusión de providers con allowlist). El catálogo
+	// /v1/models NO filtra por cliente (global, igual que hoy).
+	clientID := auth.ClientIDFrom(ctx)
+	ready, serveAny := r.candidates(model, clientID)
 	if len(ready) > 0 || !serveAny {
 		return ready, nil
 	}
@@ -696,7 +719,7 @@ func (r *Router) resolveReady(ctx context.Context, model string) ([]int, error) 
 		if wait := r.shortestCooldown(model); wait > 0 && wait <= r.degradCfg.CooldownGrace {
 			r.logger.Debug("degraded: waiting for cooldown expiry", "wait", wait.String())
 			if sleepCtx(ctx, wait) {
-				ready, _ = r.candidates(model)
+				ready, _ = r.candidates(model, clientID)
 				if len(ready) > 0 {
 					return ready, nil
 				}

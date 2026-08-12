@@ -1064,7 +1064,10 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	var models []map[string]any
 	for _, p := range s.providers {
-		if c, ok := p.(*provider.Client); ok {
+		// 013-003 (D3/P6): type-assert de interfaz para que los providers
+		// subprocess (que implementan Models()) también aparezcan en el
+		// catálogo, además de *provider.Client (HTTP).
+		if c, ok := p.(interface{ Models() []string }); ok {
 			for _, m := range c.Models() {
 				if !seen[m] {
 					seen[m] = true

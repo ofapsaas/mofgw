@@ -139,6 +139,11 @@ func (p *Provider) Serves(model string) bool {
 	return false
 }
 
+// Models devuelve los modelos configurados (013-003 P6): accessor aditivo
+// para el catálogo /v1/models. Copia defensiva para no exponer el slice
+// interno (I1: Provider intacto, sin cambios de interfaz).
+func (p *Provider) Models() []string { return append([]string(nil), p.models...) }
+
 // Complete ejecuta un chat no-stream (P2/P4/P6): resuelve la sesión,
 // adquiere el lock por sesión, spawnea el CLI con el prompt único,
 // captura stdout y normaliza el resultado/fallos.

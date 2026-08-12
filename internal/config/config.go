@@ -480,11 +480,34 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: provider id %q duplicado", p.ID)
 		}
 		seen[p.ID] = true
-		if p.BaseURL == "" {
-			return fmt.Errorf("config: provider %q: base_url es obligatorio", p.ID)
-		}
-		if p.APIKeyEnv == "" {
-			return fmt.Errorf("config: provider %q: api_key_env es obligatorio", p.ID)
+		// 013-003-config-wiring (P1-P4): el discriminador type condiciona la
+		// validación. "" o "http" = comportamiento HTTP actual (P4, cero
+		// cambio); "subprocess" = no exige base_url/api_key_env (P2),
+		// requiere backend (P1) y rechaza backend != "claude" al cargar
+		// (P3, owner 12 Ago); cualquier otro type → error descriptivo (P3).
+		switch p.Type {
+		case "", "http":
+			if p.BaseURL == "" {
+				return fmt.Errorf("config: provider %q: base_url es obligatorio", p.ID)
+			}
+			if p.APIKeyEnv == "" {
+				return fmt.Errorf("config: provider %q: api_key_env es obligatorio", p.ID)
+			}
+		case "subprocess":
+			if p.Backend == "" {
+				return fmt.Errorf("config: provider %q: backend es obligatorio (type: subprocess)", p.ID)
+			}
+			if p.Backend != "claude" {
+				return fmt.Errorf("config: provider %q: unknown backend %q", p.ID, p.Backend)
+			}
+			if p.Command == "" {
+				p.Command = "claude"
+			}
+			if p.SessionDir == "" {
+				p.SessionDir = DefaultSessionDir
+			}
+		default:
+			return fmt.Errorf("config: provider %q: unknown provider type %q", p.ID, p.Type)
 		}
 		if len(p.Models) == 0 {
 			return fmt.Errorf("config: provider %q: al menos un model es obligatorio", p.ID)
@@ -614,6 +637,11 @@ func (c *Config) validate() error {
 func (c *Config) resolveKeys() error {
 	for i := range c.Providers {
 		p := &c.Providers[i]
+		if p.Type == "subprocess" {
+			// 013-003 P2: el provider subprocess no usa API key (claude usa
+			// OAuth/suscripción); nunca se resuelve api_key_env para él.
+			continue
+		}
 		v, ok := os.LookupEnv(p.APIKeyEnv)
 		if !ok || strings.TrimSpace(v) == "" {
 			return fmt.Errorf("config: provider %q: env var %s no está seteada (las keys nunca van en el YAML)", p.ID, p.APIKeyEnv)

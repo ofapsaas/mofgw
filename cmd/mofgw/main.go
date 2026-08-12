@@ -40,6 +40,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/metrics"
 	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/providerfactory"
 	"github.com/ofapsaas/mofgw/internal/proxy"
 	"github.com/ofapsaas/mofgw/internal/router"
 	"github.com/ofapsaas/mofgw/internal/websearch"
@@ -79,15 +80,22 @@ func run() error {
 	logger.Info("config cargado", "path", usedPath, "providers", len(cfg.Providers), "clients", len(cfg.Clients))
 
 	// Providers en orden de config (el orden ES la cadena de fallback).
+	// 013-003 (D2): la construcción del provider (HTTP o subprocess) la hace
+	// el factory importable; main.go es solo el adapter fino.
 	specs := make([]router.ProviderSpec, 0, len(cfg.Providers))
 	providers := make([]provider.Provider, 0, len(cfg.Providers))
-	clients := make([]*provider.Client, 0, len(cfg.Providers)) // concretos: health.Checker
+	var healthCheckers []health.Checker // providers que implementan health.Checker
 	for _, pc := range cfg.Providers {
-		cl := provider.NewClient(pc.ID, pc.BaseURL, pc.APIKey, pc.Models, pc.MaxTokens, nil)
-		providers = append(providers, cl)
-		clients = append(clients, cl)
+		p, err := providerfactory.BuildProvider(pc, logger)
+		if err != nil {
+			return err
+		}
+		providers = append(providers, p)
+		if hc, ok := p.(health.Checker); ok {
+			healthCheckers = append(healthCheckers, hc)
+		}
 		specs = append(specs, router.ProviderSpec{
-			Provider: cl,
+			Provider: p,
 			Cooldown: pc.Cooldown,
 			Timeout:  pc.Timeout,
 			// 029-001 (TECHDEBT #29): override per-provider del tope TTFB
@@ -97,7 +105,15 @@ func run() error {
 			// thinking_default prescriptivo ("" | "zen" | "bailian"; "" =
 			// sin inyección, fallback al ID del provider en el router).
 			ThinkingPath: pc.ThinkingPath,
+			// 013-003 (D5): allowlist de clientID con acceso al provider
+			// subprocess; vacía = sin restricción (P9).
+			AllowedClients: pc.Clients,
 		})
+		// 013-003 P9: allowlist vacía en un provider subprocess = sin
+		// restricción (warning de arranque, C10).
+		if pc.Type == "subprocess" && len(pc.Clients) == 0 {
+			logger.Warn("provider subprocess sin restricción de clientes (clients vacío)", "provider", pc.ID)
+		}
 	}
 
 	// EPIC-002 wiring: health store, retry y degradación se activan
@@ -105,8 +121,8 @@ func run() error {
 	var hs *health.Store
 	if cfg.Fallback.Health.Interval > 0 {
 		hs = health.New(cfg.Fallback.Health.Interval, cfg.Fallback.Health.Timeout, logger)
-		for _, cl := range clients {
-			hs.Register(cl) // *provider.Client implementa health.Checker
+		for _, cl := range healthCheckers {
+			hs.Register(cl) // solo providers que implementan health.Checker (los subprocess no)
 		}
 		hctx, hcancel := context.WithCancel(context.Background())
 		defer hcancel()
