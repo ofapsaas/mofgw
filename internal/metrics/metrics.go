@@ -39,9 +39,9 @@ type Metrics struct {
 	// respCache: hits/misses/stores del cache exact-match de respuestas
 	// (010-002 P1) — un HIT responde sin tocar la cadena de providers.
 	// Cardinalidad acotada por clientes configurados.
-	respCacheMu  sync.Mutex
-	respCacheHit map[string]int64 // "client" -> hits
-	respCacheMiss map[string]int64 // "client" -> misses (elegibles, no en cache)
+	respCacheMu    sync.Mutex
+	respCacheHit   map[string]int64 // "client" -> hits
+	respCacheMiss  map[string]int64 // "client" -> misses (elegibles, no en cache)
 	respCacheStore map[string]int64 // "client" -> stores
 
 	// tokens: contadores de tokens con labels (provider, model) —
