@@ -1,7 +1,7 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (features 013-001 + 013-002 MERGED — epic 013).
+> Última actualización: 2026-08-12 (EPIC-013-mofgw-cli-subprocess CERRADO).
 
 ## Estado del programa
 
@@ -29,6 +29,15 @@
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Epic 013-mofgw-cli-subprocess CERRADO (provider subprocess para suscripciones de CLIs)
+
+### Decisiones relevantes
+
+- **EPIC-013 (mofgw-cli-subprocess) CERRADO — 4/4 features done + integración E3 verificada + closure E4.** Nuevo provider `subprocess` que ejecuta el CLI de un backend de IA como subproceso (usa la suscripción Claude Pro sin reverse-engineering de OAuth ni bridges HTTP). Suite **581 tests `-race` en 22 paquetes** verde, go vet + gofmt limpios, 0 bloqueantes de review en las 4 features. ADR-010 (provider subprocess + frontera Backend). Commits por feature: 001 (7d6737d→b9cbd33), 002 (d20c293→e5ec87d), 003 (5e14760→e21fa77), 004 (7ce359f→c2c3fd8), integración+closure (c4452cb→closure.md). `docs/epics/013-mofgw-claude-subprocess/{plan,integration,closure}.md`.
+- **Arquitectura (ADR-010):** motor genérico `internal/subprocess` (sesión por cliente, serialización, exec, usage, errores ErrUpstream) + interfaz `Backend` (argv/traducción/parseo/refusal en el adapter, motor sin strings backend-específicos) + adapter `claude` (013-002) + wiring config/factory/catálogo/restricción (013-003) + resiliencia TTL/ctx-guard/env allowlist (013-004).
+- **Decisiones clave del epic:** sesión por cliente (CLI sostiene historial, prompt único limpio, sin tools — D3/D4); restricción "solo agentes del usuario" a nivel router (allowlist, fallback preservado); tools OMIT (el CLI nunca las ve); `--output-format stream-json` como wire-format único (sin `--include-partial-messages`); env allowlist PATH+HOME+STUB_* (mitiga sombreado de ANTHROPIC_API_KEY); ctx-guard en `TranslateStreamOut(ctx,...)` (cambio de interfaz, fix del IMPORTANT de 013-002).
+- **Deuda llevada:** smoke test real con el CLI claude (pendiente manual: --session-id, prompt stdin, markers refusal B-Q7); health check subprocess, mapeo rate-limit/auth, allowlist env configurable (diferidos); passthrough de tools y structured output (deuda del epic); knob `session_key: client+model` (requiere tocar el motor); adapters gemini/codex futuros.
 
 ### 12 Ago 2026 — Feature: 013-002-adapter-claude (epic 013-mofgw-cli-subprocess)
 
