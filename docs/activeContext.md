@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-003-tool-calling MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-004-file-attachments MERGED).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001-responses-endpoint, 011-002-structured-output y 011-003-tool-calling MERGED 12 Ago (4/9 con 009).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004 MERGED 12 Ago (5/9 con 009).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,33 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 001/002/003 DONE; 004-008 queued; 009 DONE | 🔄 EN CURSO | fefb55c (011-003) |
+| EPIC-011 (odoo) | 001/002/003/004 DONE; 005-008 queued; 009 DONE | 🔄 EN CURSO | 69ddae1 (011-004) |
 
-**Suite:** 17 paquetes, **452 tests verde con `-race`** (426 + feature 011-003 + POST-AUDIT). vet limpio; gofmt limpio en archivos de la feature.
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (011-001 DONE), structured output (011-002 DONE), tool-calling (011-003 DONE), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (011-009 DONE).
+**Suite:** 17 paquetes, **465 tests verde con `-race`** (464 + test part desconocida fix review). vet limpio; gofmt limpio en archivos de la feature.
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (009 DONE).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-004-file-attachments (epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-004-file-attachments DONE — traducción de las parts de archivo de Odoo (`input_file`/`input_image`) en `/v1/responses`.** Reemplaza la rama de rechazo P9 de 001 (400 "file attachments not yet supported") por la traducción real de las parts del `input[]` Responses al formato chat-completions que hablan los providers upstream. Todo el cambio vive en `internal/proxy/responses.go` (ADR-004/I1: router, providers y `ParseChatRequest` intactos). Suite completa **465 tests `-race`** verde en 17 paquetes (452 → 465, 12 tests feature nuevos en 6 bloques + POST-AUDIT en 001 y 003 + 1 fix review), go vet limpio. Commits: `7fce35b` RED, `69ddae1` GREEN.
+- **D1 — decisión POR MENSAJE string-vs-array (P3):** un mensaje del `input[]` con SOLO parts `input_text` → `content` = **string** (concatenación de los `text`, exactamente como 001/003 — sin regresión en los caminos de texto plano); un mensaje con AL MENOS una part `input_image`/`input_file` → `content` = **array** con un item por part del input, en orden de aparición (I3). La decisión es por item, no por request: en un mismo `input[]` conviven mensajes string y array (verificado por `P3_MensajesMixtosPorMensaje`). El content-array se aplica SOLO a items `message`; los items `function_call`/`function_call_output` del ciclo tool-calling de 003 quedan intactos (P4).
+- **D2 — mapeo de parts:** `input_text` → `{"type":"text","text":T}`; `input_image` → `{"type":"image_url","image_url":{"url":U,"detail":D?}}` (detail passthrough con omitempty: ausente → el campo no se emite, misma semántica que `strict` de 002/003); `input_file` → `{"type":"file","file":{"file_data":D,"filename":F}}` (part estilo OpenAI, sin detail). Data-URIs viajan como strings tal cual, sin re-marshal (I2, byte-identidad). Parts de tipo desconocido se dropean conservando el orden de las conocidas (consistente con el string-content que ignora lo que no es `input_text`).
+- **D3 — sin gating por modality / PDF honesto (P6):** mofgw traduce y reenvía; NO conserva el 400 local, NO filtra por modality, NO convierte PDF. El `modality` es declarativo (solo catálogo `/v1/models`); el router elige por `req.Model`. Si el modelo elegido no soporta vision/archivos, el 4xx upstream se propaga **no-reintentable** (patrón D5 de 002). Verificación empírica del soporte PDF del provider real queda como **desviación no bloqueante**.
+- **Sin cambio en salida ni en contexto (P8/P9):** la traducción de salida queda intacta (item `message`/`function_call` de 001/003); `estimatePromptTokens = len(body)/4` no se toca — las data-URI base64 inflan `len(body)` pero la ventana descuenta automáticamente los tokens sobreestimados (P8, sin cambio de código).
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** **0 bloqueantes.** Opcionales **#1 APLICADO** (eliminar dead code `inputPart` de 001 sin callers tras POST-AUDIT) y **#3 APLICADO** (subtest `P3_PartTipoDesconocidoDropeada`: part `input_unknown` en mensaje content-array → 2 items en orden, la desconocida dropeada). #4/#5 **DESCARTADOS con motivo**, FYI #6 sin acción. Auditoría test↔postcondición: **9/9 postcondiciones con test** (P7/P9 por tests untouched de 001/003), ninguno sobrante, cero dependencia interna (AP-14).
+
+### Deuda técnica detectada
+
+- **Verificación empírica pendiente (desviación no bloqueante):** soporte real de las parts `file` (PDF) y `image_url` por los providers upstream — mofgw traduce y propaga el 4xx no-reintentable (D5 de 002) si el provider no las soporta. Verificar con provider real.
+- **Riesgo del epic vigente (plan-011, sin cambio):** Odoo 19 usa Responses API en estado "preview"; el módulo Odoo (011-008) debe mantenerse alineado a lo que Odoo manda/espera (mitigado con tests contra `llm_api_service.py:283-304`, formato de parts verificado en el spec).
+
+### Próxima feature en cola
+
+- **011-005-web-search** (epic 011-mofgw-odoo): habilita `web_search_preview` / tools no-function (hoy 400 conservado como D3 de 003 y P7 de 004). Quedan 005-008 pendientes (001-004 done como troncos del epic; 009 staging-enterprise ya DONE — **5/9 done**). Coordinar vía `cdad-epic`.
 
 ### 12 Ago 2026 — Feature: 011-003-tool-calling (epic 011-mofgw-odoo)
 
