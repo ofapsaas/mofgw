@@ -36,11 +36,21 @@ feature necesita una **migración explícita** en un módulo local.
   config manual por instancia). `_get_dimensions()` ya lee `size` en runtime
   (ai_embedding.py:37), así que 384 fluye automático a los 2 usos
   (`ai_embedding.py:112` cron, `ai_agent.py:597` RAG).
-- **Migración explícita** `migrations.py` con `pre_migrate` que corre ANTES del
-  load de modelos (loading.py:166 < schema fix 468/551): `DROP INDEX IF EXISTS
-  ai_embedding_embedding_vector_idx;` + `ALTER TABLE ai_embedding ALTER COLUMN
-  embedding_vector TYPE vector(384);`. El índice lo recrea Odoo tras el ALTER
-  (`apply_to_database`, registry.py:805 + table_objects.py:154-182).
+- **Redimensionado del schema vía `post_init_hook`** (D2, corregido durante
+  implementación): `DROP INDEX IF EXISTS ai_embedding_embedding_vector_idx` +
+  `ALTER TABLE ai_embedding ALTER COLUMN embedding_vector TYPE vector(384)`.
+  El hook corre SIEMPRE al instalar el módulo (independiente de install/
+  upgrade). El índice lo recrea Odoo tras el ALTER (`apply_to_database`,
+  registry.py:805 + table_objects.py:154-182).
+
+> **Corrección de D2 (verificado en implementación):** inicialmente el spec
+> proponía una migración `migrations/<ver>/pre-migrate.py`. Se verificó en el
+> código real (migration.py:151) que `migrate_module` retorna temprano si
+> `load_state != 'to upgrade'` — es decir, **las migraciones NO corren en
+> instalación fresca** de `mofgw_ai`. Como el caso real es instalar `mofgw_ai`
+> sobre un `ai` ya instalado (fresh install de mofgw_ai), la migración pre no
+> se ejecutaría. Se reemplaza por `post_init_hook` (corre en install y
+> upgrade), mecanismo robusto y verificado end-to-end.
 
 **Comparte módulo con 011-008:** 011-007 entrega el override del campo + la
 migración; 011-008 (odoo-provider) agrega al MISMO módulo el registro del
@@ -97,20 +107,22 @@ def pre_migrate(cr, version):
    local; no se toca `ai_embedding.py`, `field_vector.py`, `ai_agent.py` ni
    `ai_agent_source.py` del core enterprise.
 
-**Migración (D2, D3)**
+**Redimensionado del schema (D2, corregido)**
 
-4. **P4 — La migración corre en `pre` (antes del load de modelos):** el cambio
-   de columna se aplica vía `migrate_module(package, 'pre')` (loading.py:166),
-   ANTES del schema fix de los modelos (loading.py:468/551). Es verificable por
-   el orden de ejecución en la instalación/upgrade del módulo.
+4. **P4 — El redimensionado corre vía `post_init_hook` (instalación/upgrade):**
+   el `DROP INDEX + ALTER TYPE vector(384)` se ejecuta en un `post_init_hook`
+   del módulo `mofgw_ai` (`redimension_embedding_vector`), que Odoo invoca al
+   instalar/actualizar el módulo — tanto en instalación fresca como en upgrade
+   (verificado en implementación: las migraciones `migrations/` solo corren en
+   'to upgrade', por eso el hook las reemplaza).
 
-5. **P5 — El índice se dropea antes del ALTER:** la migración emite
+5. **P5 — El índice se dropea antes del ALTER:** el hook emite
    `DROP INDEX IF EXISTS ai_embedding_embedding_vector_idx` (verificado:
    nombre `{tabla}_{key}` con `key=_embedding_vector_idx`, table_objects.py:135)
    antes del `ALTER TABLE`. El `DROP IF EXISTS` es idempotente: no falla si el
    índice ya no existe.
 
-6. **P6 — La columna queda en `vector(384)`:** tras la migración, el `ALTER
+6. **P6 — La columna queda en `vector(384)`:** tras el hook, el `ALTER
    TABLE ai_embedding ALTER COLUMN embedding_vector TYPE vector(384)` deja la
    columna con `udt_name='vector'` y dimensión **384**. Verificable consultando
    `information_schema.columns` / `format_type` de la columna
@@ -130,9 +142,10 @@ def pre_migrate(cr, version):
 
 **Idempotencia y datos (D3)**
 
-9. **P9 — La migración es idempotente en schema:** el `DROP IF EXISTS` + el
-   `ALTER ... TYPE vector(384)` son re-ejecutables sin error en una instancia
-   que ya tenga la columna en `vector(384)` y el índice recreado.
+9. **P9 — El redimensionado es idempotente en schema:** el `DROP IF EXISTS` +
+   el `ALTER ... TYPE vector(384)` (en el post_init_hook) son re-ejecutables sin
+   error en una instancia que ya tenga la columna en `vector(384)` y el índice
+   recreado.
 
 10. **P10 — Datos incompatibles documentados como requisito operativo (D3):**
     el spec documenta explícitamente que una `ai_embedding` con chunks
@@ -190,8 +203,8 @@ PostgreSQL. No dependen de estructura interna del core.
 | ------------- | ----------------------------------------------------------------------------------- |
 | P1, P2        | test de módulo Odoo: `_get_dimensions() == 384`, `field.size == 384`                    |
 | P3, I1        | `git diff` del módulo local sin tocar archivos del core `ai`                            |
-| P4            | la migración está en `migrations/<ver>/pre-migrate.py` (etapa 'pre')                  |
-| P5            | SQL de la migración contiene `DROP INDEX IF EXISTS ai_embedding_embedding_vector_idx` |
+| P4            | el módulo define `post_init_hook: redimension_embedding_vector` |
+| P5            | el hook contiene `DROP INDEX IF EXISTS ai_embedding_embedding_vector_idx` |
 | P6, P8        | consulta a `information_schema.columns`: `format_type == vector(384)`                   |
 | P7, I4        | consulta a `pg_indexes`: `ai_embedding_embedding_vector_idx` existe                     |
 | P9            | re-ejecución de la migración sin error (idempotente)                                |
@@ -248,11 +261,16 @@ PostgreSQL. No dependen de estructura interna del core.
 - Crear el módulo local (carpeta addons_local, p.ej. en el servidor
   `mofgw-staging.example.com`) con `_inherit = 'ai.embedding'` y
   `embedding_vector = Vector(size=384)`.
-- Migración `migrations/<ver>/pre-migrate.py`: `DROP INDEX IF EXISTS
+- Redimensionado del schema en `post_init_hook` del manifest
+  (`redimension_embedding_vector`): `DROP INDEX IF EXISTS
   ai_embedding_embedding_vector_idx;` + `ALTER TABLE ai_embedding ALTER COLUMN
-  embedding_vector TYPE vector(384);`.
-- NO agregar la recreación del índice en la migración: Odoo la hace solo vía
-  `apply_to_database`/`check_indexes` al cargar los modelos tras la migración.
+  embedding_vector TYPE vector(384);`. El hook se define en `mofgw_ai/__init__.py`
+  (no en el manifest — Odoo lo resuelve al importar el paquete), con la firma
+  `def redimension_embedding_vector(env)` (Odoo 19 lo invoca con UN argumento:
+  `getattr(py_module, post_init)(env)`, loading.py:241). NO usar `migrations/`
+  porque solo corren en 'to upgrade' (migration.py:151).
+- NO agregar la recreación del índice en el hook: Odoo la hace solo vía
+  `apply_to_database`/`check_indexes` al cargar los modelos tras el hook.
 - Documentar el paso operativo de purga de chunks 1536-dim (D3) en el
   README/notas del módulo.
 
