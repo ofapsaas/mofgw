@@ -494,21 +494,52 @@ func TestE2E011001_G_CacheSeparadaPorEndpoint(t *testing.T) {
 	// P12: las keys de /v1/responses deben ser distintas de /v1/chat/completions
 	// (jamás una chat-response servida como responses-response ni a la inversa).
 	// Observable: un HIT no llama upstream; un MISS sí.
+	//
+	// La cache de un endpoint solo opera para requests determinísticos
+	// (temperature presente y == 0): sin temperature, isDeterministic=false y el
+	// endpoint salta la cache por completo → ambos requests serían MISS obligados
+	// y el test pasaría vacíamente (revisión review). Por eso los bodies llevan
+	// `temperature: 0` para ser cache-eligibles y ejercitar el camino de cache.
+	//
+	// Estrategia por subtest:
+	//   1. request idéntico DOS veces → 1ra MISS (calls=1), 2da HIT (calls NO
+	//      crece). Demuestra que la cache del endpoint opera.
+	//   2. request equivalente al OTRO endpoint (determinístico) → MISS
+	//      cross-endpoint (calls++). Demuestra la separación (P12).
+
 	t.Run("responses_no_sirve_a_chat", func(t *testing.T) {
 		c := &countingUpstream011{inner: upstreamOK("m", "hola")}
 		h := buildCounting011(t, c, "sk-test-1")
 		h.proxySrv.SetResponseCache(true, 512, time.Hour)
 
-		if code, _ := responsesAs(t, h.srv.URL, h.key, responsesBody("hola")); code != 200 {
-			t.Fatalf("responses status = %d, want 200", code)
+		// Body Responses determinístico (temperature==0) → cache-eligible.
+		rb := cloneMap(responsesBody("hola"))
+		rb["temperature"] = 0
+
+		// 1er request /responses: MISS (cache vacía) → 1 llamada upstream.
+		if code, _ := responsesAs(t, h.srv.URL, h.key, rb); code != 200 {
+			t.Fatalf("responses (1ra) status = %d, want 200", code)
 		}
 		if got := c.callCount(); got != 1 {
-			t.Fatalf("responses: upstream calls = %d, want 1 (miss cache)", got)
+			t.Fatalf("responses (1ra): upstream calls = %d, want 1 (miss cache)", got)
 		}
 
-		// request equivalente a /chat/completions → NO se sirve de la cache
-		// de /responses → re-ejecuta (calls = 2).
-		chatBody := map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": "hola"}}}
+		// 2do request idéntico /responses: HIT de cache → NO re-ejecuta,
+		// calls se mantiene en 1 (la cache de /responses opera de verdad).
+		if code, _ := responsesAs(t, h.srv.URL, h.key, rb); code != 200 {
+			t.Fatalf("responses (2da) status = %d, want 200", code)
+		}
+		if got := c.callCount(); got != 1 {
+			t.Fatalf("responses (2da): upstream calls = %d, want 1 (hit de cache de /responses)", got)
+		}
+
+		// request equivalente a /chat/completions (determinístico, temp 0)
+		// → NO se sirve de la cache de /responses → re-ejecuta (calls = 2).
+		chatBody := map[string]any{
+			"model":       "m",
+			"temperature": 0,
+			"messages":    []map[string]string{{"role": "user", "content": "hola"}},
+		}
 		resp := h.chat(t, chatBody)
 		if resp.StatusCode != 200 {
 			t.Fatalf("chat status = %d, want 200", resp.StatusCode)
@@ -524,19 +555,39 @@ func TestE2E011001_G_CacheSeparadaPorEndpoint(t *testing.T) {
 		h := buildCounting011(t, c, "sk-test-1")
 		h.proxySrv.SetResponseCache(true, 512, time.Hour)
 
-		chatBody := map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": "hola"}}}
+		// Body chat determinístico (temperature==0) → cache-eligible.
+		chatBody := map[string]any{
+			"model":       "m",
+			"temperature": 0,
+			"messages":    []map[string]string{{"role": "user", "content": "hola"}},
+		}
+
+		// 1er request /chat: MISS (cache vacía) → 1 llamada upstream.
 		resp := h.chat(t, chatBody)
 		if resp.StatusCode != 200 {
-			t.Fatalf("chat status = %d, want 200", resp.StatusCode)
+			t.Fatalf("chat (1ro) status = %d, want 200", resp.StatusCode)
 		}
 		io.Copy(io.Discard, resp.Body)
 		if got := c.callCount(); got != 1 {
-			t.Fatalf("chat: upstream calls = %d, want 1 (miss cache)", got)
+			t.Fatalf("chat (1ro): upstream calls = %d, want 1 (miss cache)", got)
 		}
 
-		// request equivalente a /v1/responses → NO se sirve de la cache de
-		// chat → re-ejecuta (calls = 2).
-		if code, _ := responsesAs(t, h.srv.URL, h.key, responsesBody("hola")); code != 200 {
+		// 2do request idéntico /chat: HIT de cache → NO re-ejecuta, calls
+		// se mantiene en 1 (la cache de /chat opera de verdad).
+		resp = h.chat(t, chatBody)
+		if resp.StatusCode != 200 {
+			t.Fatalf("chat (2do) status = %d, want 200", resp.StatusCode)
+		}
+		io.Copy(io.Discard, resp.Body)
+		if got := c.callCount(); got != 1 {
+			t.Fatalf("chat (2do): upstream calls = %d, want 1 (hit de cache de /chat)", got)
+		}
+
+		// request equivalente a /v1/responses (determinístico, temp 0)
+		// → NO se sirve de la cache de /chat → re-ejecuta (calls = 2).
+		rb := cloneMap(responsesBody("hola"))
+		rb["temperature"] = 0
+		if code, _ := responsesAs(t, h.srv.URL, h.key, rb); code != 200 {
 			t.Fatalf("responses status = %d, want 200", code)
 		}
 		if got := c.callCount(); got != 2 {

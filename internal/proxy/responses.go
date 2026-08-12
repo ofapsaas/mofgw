@@ -24,6 +24,7 @@ import (
 
 	"github.com/ofapsaas/mofgw/internal/auth"
 	"github.com/ofapsaas/mofgw/internal/clamp"
+	"github.com/ofapsaas/mofgw/internal/composition"
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/provider"
 )
@@ -98,7 +99,19 @@ func responsesID(clientID string, body []byte) string {
 // handleResponses es el endpoint POST /v1/responses, paralelo a handleChat
 // pero operando sobre el body Responses (input) en lugar de messages.
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	logger := logging.WithRequest(s.logger, r.Context())
+	sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	w = sr
+
+	var providerID string
+	model := ""
+	var lastUsage *provider.Usage
+	defer func() {
+		s.emitRequestEnd(logger, start, sr.status, providerID, model, lastUsage)
+	}()
+
+	s.metrics.IncRequests()
 
 	// 1. Leer body con límite (413 si excede).
 	body, err := io.ReadAll(io.LimitReader(r.Body, s.maxBody+1))
@@ -167,8 +180,30 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req := &provider.ChatRequest{Model: rb.Model}
+	// req.Messages se puebla con los mensajes traducidos para que la
+	// telemetría (009-000) y el análisis de contexto (009-001) vean los
+	// mismos roles que vería chat (el router solo usa req.Model, no
+	// req.Messages, así que no altera el ruteo).
+	rawMessages := make([]json.RawMessage, 0, len(messages))
+	for _, m := range messages {
+		b, _ := json.Marshal(m)
+		rawMessages = append(rawMessages, b)
+	}
+	req := &provider.ChatRequest{Model: rb.Model, Messages: rawMessages}
 	clientID := auth.ClientIDFrom(r.Context())
+	sessionID := r.Header.Get("X-Session-Id")
+
+	// Telemetría de descubrimiento (009-000 P3): UN evento por request con
+	// body válido, emitido ANTES de los chequeos de limiter/budget/ventana/
+	// upstream (mismo gate que handleChat). Best-effort (I7).
+	s.emitRequestTelemetry(r, req, clientID, body, logger)
+	// Fase 1 del análisis de contexto (009-001 P4): mismo gate que la
+	// telemetría. Best-effort (I7/I2, P8).
+	if s.contextAnalysis {
+		if res, err := composition.Analyze(body, 10); err == nil {
+			s.metrics.RecordContext(clientID, sessionID, logging.RequestID(r.Context()), req.Model, res, time.Now().Unix())
+		}
+	}
 
 	// 5. Pipeline compartida (P4): limiter, cache, clamp, ventana, budget —
 	// replicado del camino no-stream de handleChat.
@@ -189,6 +224,19 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		if release, ok := s.keyedLimiter.AcquireClient(clientID); !ok {
 			s.metrics.IncRejected(clientID, "client_limit")
 			openAIError(w, http.StatusTooManyRequests, "client concurrency limit reached", "rate_limit_exceeded")
+			return
+		} else if release != nil {
+			defer release()
+		}
+		// Límite por agente (004-002): fast-fail, misma semántica que chat.
+		agentID := r.Header.Get("X-Agent-Id")
+		if release, ok := s.keyedLimiter.AcquireAgent(clientID, agentID); !ok {
+			rejectedLabel := clientID
+			if agentID != "" {
+				rejectedLabel = clientID + "/" + agentID
+			}
+			s.metrics.IncRejected(rejectedLabel, "agent_limit")
+			openAIError(w, http.StatusTooManyRequests, "agent concurrency limit reached", "rate_limit_exceeded")
 			return
 		} else if release != nil {
 			defer release()
@@ -254,9 +302,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		s.handleChainError(w, err, logger)
 		return
 	}
-	providerID := res.ProviderID
+	providerID = res.ProviderID
 	s.metrics.SetLastProvider(providerID)
-	sessionID := r.Header.Get("X-Session-Id")
+	lastUsage = &res.Response.Usage
+	model = rb.Model
 	s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, rb.Model, &res.Response.Usage)
 	s.setUsageHeaders(w.Header(), providerID, rb.Model, &res.Response.Usage)
 
