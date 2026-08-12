@@ -53,10 +53,11 @@ El epic mofgw-011 hizo de mofgw el **único proveedor de IA** de una instancia O
 ## Deuda técnica que se llevó
 
 - **`ir_actions_server.AI_PROVIDER` (D6):** el path de server actions (`state='ai'`) sigue apuntando a openai/gpt-4.1; requiere parchear `ir_actions_server.py:26-27`. Fuera de scope de 008.
-- **Embeddings reales sin verificación empírica contra Ollama desplegado:** el E2E de embeddings usó mock; falta verificar con un Ollama accesible desde el VPS.
 - **Reindexación de sources:** si una instancia tenía chunks 1536-dim, reindexar tras el redimensionado (paso operativo en README de mofgw_ai).
 - **Audio out (whisper/realtime):** fuera de scope del epic; Odoo con mofgw no tendrá voz hasta epic posterior.
 - **Gaps de "full parity" documentados en plan.md:** selección dinámica de dimensión por request y auto-sync de dimensión — fuera de scope, deuda operativa.
+
+> **Nota (resuelto tras closure):** "embeddings reales sin verificar contra Ollama desplegado" — **VERIFICADO 12 Ago**: se cargó `all-minilm` en Ollama local, se configuró `embeddings.base_url` + `clients[].embeddings.model` en mofgw, y el E2E de Odoo (`get_embedding`) devolvió un vector **384-dim real** vía `Odoo → mofgw → Ollama`. Log mofgw confirma `provider:"embeddings" model:"all-minilm" status 200`.
 
 ## Decisiones arquitectónicas tomadas
 
