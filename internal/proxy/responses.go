@@ -185,7 +185,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				Parameters  json.RawMessage `json:"parameters"`
 				Strict      *bool           `json:"strict"`
 			}
-			if err := json.Unmarshal(raw, &t); err != nil || t.Type != "function" {
+			if err := json.Unmarshal(raw, &t); err != nil {
+				openAIError(w, http.StatusBadRequest, "invalid tool definition", "invalid_request_error")
+				return
+			}
+			if t.Type != "function" {
 				openAIError(w, http.StatusBadRequest, "tool calling not yet supported", "invalid_request_error")
 				return
 			}
