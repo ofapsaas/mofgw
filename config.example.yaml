@@ -21,7 +21,13 @@ fallback:
   max_retries: 2               # intentos totales por request = max_retries + 1
   cooldown: 60s                # cooldown global por provider tras fallo retryable
   cooldown_jitter: 5s          # ± jitter anti thundering-herd
-  timeout: 120s                # timeout global por intento (TTFB)
+  timeout: 120s                # timeout global por intento (Complete; TTFB si no hay first_token_timeout)
+  # first_token_timeout: 90s   # tope TTFB de STREAMING por intento (029-001/TECHDEBT #29):
+                               # si un upstream no emite el primer token en N, aborta el intento
+                               # y rota al siguiente provider (cadena circular). 0 = sin tope
+                               # (el intento espera el primer byte indefinidamente). Default 90s.
+                               # NO aplica a Complete (ahí manda timeout: la respuesta completa
+                               # es el "primer byte").
   # Afinidad de provider por sesión/cliente (009-002): con enabled: true,
   # el provider que ganó el último request exitoso de una sesión se prueba
   # primero en el siguiente (maximiza cache hit del provider). Transparente:
@@ -46,6 +52,8 @@ providers:
     #                        # inyectan (thinking siempre-on / nativo == prescriptivo).
     # cooldown: 90s    # override por provider (opcional)
     # timeout: 60s     # override por provider (opcional)
+    # first_token_timeout: 45s  # override per-provider del tope TTFB de streaming
+    #                           # (029-001/TECHDEBT #29; nil = usa fallback.first_token_timeout)
   - id: provider-b
     base_url: "https://api.provider-b.example.com/compatible-mode/v1"
     api_key_env: MOFGW_PROVIDER_B_KEY

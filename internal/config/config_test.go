@@ -275,3 +275,123 @@ func Test010001_P1_BackwardCompat(t *testing.T) {
 		t.Fatalf("metadata 007-001 alterada: %+v", md)
 	}
 }
+
+// ---- 029-001 (TECHDEBT #29): first_token_timeout ----
+
+// validYAML029: config mínima con env keys seteables para los tests 029.
+const validYAML029 = `
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+  cooldown: 60s
+  timeout: 120s
+providers:
+  - id: provider-a
+    base_url: "https://api.example.com/v1"
+    api_key_env: "MOFGW_PROVIDER_A_KEY"
+    models: ["m"]
+clients:
+  - id: ofap-core
+    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+`
+
+func Test029001_DefaultFirstTokenTimeout(t *testing.T) {
+	t.Setenv("MOFGW_PROVIDER_A_KEY", "k1")
+	cfg, err := Parse([]byte(validYAML029))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Fallback.FirstTokenTimeout != 90*time.Second {
+		t.Fatalf("first_token_timeout default = %s, want 90s", cfg.Fallback.FirstTokenTimeout)
+	}
+}
+
+func Test029001_ExplicitFirstTokenTimeout(t *testing.T) {
+	t.Setenv("MOFGW_PROVIDER_A_KEY", "k1")
+	cfg, err := Parse([]byte(`
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+  cooldown: 60s
+  timeout: 120s
+  first_token_timeout: 75s
+providers:
+  - id: provider-a
+    base_url: "https://api.example.com/v1"
+    api_key_env: "MOFGW_PROVIDER_A_KEY"
+    models: ["m"]
+clients:
+  - id: ofap-core
+    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Fallback.FirstTokenTimeout != 75*time.Second {
+		t.Fatalf("first_token_timeout = %s, want 75s", cfg.Fallback.FirstTokenTimeout)
+	}
+}
+
+func Test029001_NegativeFirstTokenTimeoutRejected(t *testing.T) {
+	t.Setenv("MOFGW_PROVIDER_A_KEY", "k1")
+	_, err := Parse([]byte(`
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+  cooldown: 60s
+  timeout: 120s
+  first_token_timeout: -5s
+providers:
+  - id: provider-a
+    base_url: "https://api.example.com/v1"
+    api_key_env: "MOFGW_PROVIDER_A_KEY"
+    models: ["m"]
+clients:
+  - id: ofap-core
+    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+`))
+	if err == nil {
+		t.Fatal("first_token_timeout negativo debería fallar")
+	}
+}
+
+func Test029001_ProviderOverride(t *testing.T) {
+	t.Setenv("MOFGW_PROVIDER_A_KEY", "k1")
+	t.Setenv("MOFGW_PROVIDER_B_KEY", "k2")
+	cfg, err := Parse([]byte(`
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+  cooldown: 60s
+  timeout: 120s
+providers:
+  - id: provider-a
+    base_url: "https://api.example.com/v1"
+    api_key_env: "MOFGW_PROVIDER_A_KEY"
+    models: ["m"]
+  - id: provider-b
+    base_url: "https://api.example.com/v1"
+    api_key_env: "MOFGW_PROVIDER_B_KEY"
+    models: ["m"]
+    first_token_timeout: 45s
+clients:
+  - id: ofap-core
+    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	var found *time.Duration
+	for i := range cfg.Providers {
+		if cfg.Providers[i].ID == "provider-b" {
+			found = cfg.Providers[i].FirstTokenTimeout
+		}
+	}
+	if found == nil || *found != 45*time.Second {
+		t.Fatalf("provider override = %v, want 45s", found)
+	}
+}

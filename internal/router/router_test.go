@@ -1011,3 +1011,136 @@ func TestDegradationRecovers(t *testing.T) {
 		t.Fatalf("request 5: status/code = %d/%s, want 502/all_providers_down (contador reseteado)", ce.Status, ce.Code)
 	}
 }
+
+// ---- 029-001 (TECHDEBT #29): first-token timeout en streaming ----
+
+// hangFake: provider cuyo stream NUNCA emite el primer evento (upstream
+// colgado — incidente Obs-Radar 12 Ago 2026: go-5 sin primer token
+// durante 11+ min). La goroutine del canal se libera con la cancelación
+// del ctx (el router llama pcancel al disparar el TTFB) — sin leaks.
+type hangFake struct {
+	*fakeProvider
+	started chan struct{} // se cierra cuando Stream fue llamado
+}
+
+func newHangFake(id string, models ...string) *hangFake {
+	return &hangFake{fakeProvider: newFake(id, models...), started: make(chan struct{})}
+}
+
+func (f *hangFake) Stream(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
+	close(f.started)
+	ch := make(chan provider.StreamEvent)
+	go func() {
+		<-ctx.Done()
+	}()
+	return ch, nil
+}
+
+func TestSpecFirstTokenTimeoutResolution(t *testing.T) {
+	global := 30 * time.Second
+	zero := time.Duration(0)
+	ft := 90 * time.Second
+	ft2 := 45 * time.Second
+	cases := []struct {
+		name   string
+		router *time.Duration
+		prov   *time.Duration
+		want   time.Duration
+	}{
+		{"sin knobs → fallback al timeout global (histórico)", nil, nil, global},
+		{"router level solo", &ft, nil, ft},
+		{"provider override gana", &ft, &ft2, ft2},
+		{"provider 0 explícito → sin tope", &ft, &zero, 0},
+		{"router 0 explícito → sin tope", &zero, nil, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewWithOptions(nil, Options{GlobalTimeout: global, FirstTokenTimeout: tc.router})
+			s := &ProviderSpec{FirstTokenTimeout: tc.prov}
+			if got := r.specFirstTokenTimeout(s); got != tc.want {
+				t.Fatalf("specFirstTokenTimeout = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStreamFirstTokenTimeoutRotates: un upstream que no emite primer
+// token debe ser abortado al vencer el first-token timeout y la cadena
+// debe rotar al siguiente provider — en vez de quemar el GlobalTimeout
+// entero (30s) en el intento colgado.
+func TestStreamFirstTokenTimeoutRotates(t *testing.T) {
+	p1 := newHangFake("p1", "m")
+	p2 := &streamFake{fakeProvider: newFake("p2", "m").ok("x"), script: []provider.StreamEvent{
+		{Data: `{"choices":[{"delta":{"content":"hola"}}]}`},
+		{Data: "[DONE]"},
+	}}
+	ft := 150 * time.Millisecond
+	r := NewWithOptions([]ProviderSpec{{Provider: p1}, {Provider: p2}}, Options{
+		MaxRetries:        2,
+		Cooldown:          time.Minute,
+		GlobalTimeout:     30 * time.Second, // si el TTFB no aplicara, esto tardaría 30s
+		FirstTokenTimeout: &ft,
+	})
+
+	start := time.Now()
+	res, err := r.Stream(context.Background(), reqFor("m"), bodyFor("m", nil))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if res.Provider.ID() != "p2" {
+		t.Fatalf("provider = %s, want p2 (rotación post-TTFB)", res.Provider.ID())
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("rotación tardó %s — el first-token timeout no aplicó (esperado ~%s)", elapsed, ft)
+	}
+	select {
+	case <-p1.started:
+	default:
+		t.Fatal("p1 nunca fue intentado — la cadena no empezó por el primer provider")
+	}
+	var datas []string
+	for ev := range res.Events {
+		if ev.Err != nil {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		datas = append(datas, ev.Data)
+	}
+	if len(datas) != 2 || datas[1] != "[DONE]" {
+		t.Fatalf("datas = %v", datas)
+	}
+}
+
+// TestStreamFirstTokenTimeoutProviderOverride: el override per-provider
+// (más corto que el del router) manda sobre el nivel router.
+func TestStreamFirstTokenTimeoutProviderOverride(t *testing.T) {
+	p1 := newHangFake("p1", "m")
+	p2 := &streamFake{fakeProvider: newFake("p2", "m").ok("x"), script: []provider.StreamEvent{
+		{Data: `{"choices":[{"delta":{"content":"hola"}}]}`},
+		{Data: "[DONE]"},
+	}}
+	routerFT := 5 * time.Second // si el override no mandara, tardaría 5s
+	provFT := 150 * time.Millisecond
+	r := NewWithOptions([]ProviderSpec{
+		{Provider: p1, FirstTokenTimeout: &provFT},
+		{Provider: p2},
+	}, Options{
+		MaxRetries:        2,
+		Cooldown:          time.Minute,
+		GlobalTimeout:     30 * time.Second,
+		FirstTokenTimeout: &routerFT,
+	})
+
+	start := time.Now()
+	res, err := r.Stream(context.Background(), reqFor("m"), bodyFor("m", nil))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if res.Provider.ID() != "p2" {
+		t.Fatalf("provider = %s, want p2", res.Provider.ID())
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("rotación tardó %s — override per-provider no aplicó (esperado ~%s)", elapsed, provFT)
+	}
+}

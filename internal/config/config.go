@@ -84,14 +84,24 @@ type StickyRoutingConfig struct {
 
 // FallbackConfig: política global de la cadena de fallback.
 type FallbackConfig struct {
-	MaxRetries     int                 `yaml:"max_retries"`
-	Cooldown       time.Duration       `yaml:"cooldown"`
-	CooldownJitter time.Duration       `yaml:"cooldown_jitter"`
-	Timeout        time.Duration       `yaml:"timeout"`
-	Retry          RetryConfig         `yaml:"retry"`
-	Health         HealthConfig        `yaml:"health"`
-	Degradation    DegradationConfig   `yaml:"degradation"`
-	StickyRouting  StickyRoutingConfig `yaml:"sticky_routing"` // 009-002
+	MaxRetries     int           `yaml:"max_retries"`
+	Cooldown       time.Duration `yaml:"cooldown"`
+	CooldownJitter time.Duration `yaml:"cooldown_jitter"`
+	Timeout        time.Duration `yaml:"timeout"`
+	// FirstTokenTimeout: tope de TTFB (time-to-first-token) por intento de
+	// STREAM (TECHDEBT #29, incidente Obs-Radar 12 Ago 2026: un upstream
+	// colgado quemó 11+ min sin emitir primer token). Semántica de 3
+	// estados: ausente (0 en YAML) = sin tope de primer token (el intento
+	// puede esperar el primer byte indefinidamente, gobierna Timeout);
+	// N positivo = aborta el intento si no hay primer token en N y rota al
+	// siguiente provider de la cadena. NO aplica a requests no-stream
+	// (Complete): ahí el tope sigue siendo Timeout (la respuesta completa
+	// es el "primer byte"). Default 90s.
+	FirstTokenTimeout time.Duration       `yaml:"first_token_timeout"`
+	Retry             RetryConfig         `yaml:"retry"`
+	Health            HealthConfig        `yaml:"health"`
+	Degradation       DegradationConfig   `yaml:"degradation"`
+	StickyRouting     StickyRoutingConfig `yaml:"sticky_routing"` // 009-002
 }
 
 // ProviderConfig: un upstream OpenAI-compatible.
@@ -106,6 +116,12 @@ type ProviderConfig struct {
 	// nil = ausente (usa el global), 0 explícito = sin límite, N = N.
 	Cooldown *time.Duration `yaml:"cooldown"`
 	Timeout  *time.Duration `yaml:"timeout"`
+
+	// FirstTokenTimeout: override per-provider del tope TTFB de streaming
+	// (TECHDEBT #29). Misma semántica de 3 estados: nil = usa el global
+	// fallback.first_token_timeout, 0 explícito = sin tope de primer
+	// token para este provider, N = N.
+	FirstTokenTimeout *time.Duration `yaml:"first_token_timeout"`
 
 	// Overrides per-provider de 002-001/002-002 (nil = usar el global).
 	Retry  *RetryConfig  `yaml:"retry"`
@@ -315,10 +331,11 @@ func defaults() Config {
 			StateSaveInterval:     0,
 		},
 		Fallback: FallbackConfig{
-			MaxRetries:     2,
-			Cooldown:       60 * time.Second,
-			CooldownJitter: 5 * time.Second,
-			Timeout:        120 * time.Second,
+			MaxRetries:        2,
+			Cooldown:          60 * time.Second,
+			CooldownJitter:    5 * time.Second,
+			Timeout:           120 * time.Second,
+			FirstTokenTimeout: 90 * time.Second,
 			Retry: RetryConfig{
 				MaxAttempts: 2,
 				BackoffBase: 500 * time.Millisecond,
@@ -417,6 +434,9 @@ func (c *Config) validate() error {
 	if len(c.Providers) == 0 {
 		return fmt.Errorf("config: al menos un provider es obligatorio")
 	}
+	if c.Fallback.FirstTokenTimeout < 0 {
+		return fmt.Errorf("config: fallback.first_token_timeout no puede ser negativo")
+	}
 	if c.Server.MaxBodyBytes <= 0 {
 		return fmt.Errorf("config: server.max_body_bytes debe ser > 0")
 	}
@@ -447,6 +467,9 @@ func (c *Config) validate() error {
 		}
 		if p.MaxTokens < 0 {
 			return fmt.Errorf("config: provider %q: max_tokens no puede ser negativo", p.ID)
+		}
+		if p.FirstTokenTimeout != nil && *p.FirstTokenTimeout < 0 {
+			return fmt.Errorf("config: provider %q: first_token_timeout no puede ser negativo", p.ID)
 		}
 		if p.Retry != nil && (p.Retry.MaxAttempts < 0 || p.Retry.BackoffBase < 0 || p.Retry.BackoffMax < 0) {
 			return fmt.Errorf("config: provider %q: retry con valores negativos", p.ID)

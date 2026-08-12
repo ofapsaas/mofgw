@@ -89,10 +89,14 @@ type Options struct {
 	Cooldown       time.Duration
 	CooldownJitter time.Duration
 	GlobalTimeout  time.Duration
-	Retry          RetryConfig
-	Degradation    DegradationConfig
-	Health         *health.Store
-	Logger         *slog.Logger
+	// FirstTokenTimeout: tope TTFB de streaming (TECHDEBT #29).
+	// nil = sin knob (fallback al GlobalTimeout para TTFB, comportamiento
+	// histórico); &0 = sin tope de primer token; &N = N.
+	FirstTokenTimeout *time.Duration
+	Retry             RetryConfig
+	Degradation       DegradationConfig
+	Health            *health.Store
+	Logger            *slog.Logger
 
 	// StickyMaxEntries es el tope del AffinityStore (009-002 P3);
 	// 0 = default (100, == server.max_sessions_retained).
@@ -105,7 +109,11 @@ type ProviderSpec struct {
 	Provider provider.Provider
 	Cooldown *time.Duration
 	Timeout  *time.Duration
-	Retry    *RetryConfig
+	// FirstTokenTimeout: override per-provider del tope TTFB de streaming
+	// (TECHDEBT #29). nil = usa el del router (Options); &0 = sin tope
+	// para este provider; &N = N.
+	FirstTokenTimeout *time.Duration
+	Retry             *RetryConfig
 
 	// ThinkingPath: path declarativo del provider para la inyección del
 	// thinking_default prescriptivo (010-002-request-path-fiel). Valores:
@@ -196,18 +204,19 @@ func (c *CooldownStore) Len() int {
 
 // Router orquesta la cadena de fallback.
 type Router struct {
-	specs       []ProviderSpec
-	maxAttempts int // max_retries + 1
-	cooldown    time.Duration
-	jitter      time.Duration
-	globalTO    time.Duration
-	retryCfg    RetryConfig
-	degradCfg   DegradationConfig
-	cooldowns   *CooldownStore
-	affinity    *AffinityStore // afinidad sticky por sesión/cliente (009-002)
-	health      *health.Store
-	logger      *slog.Logger
-	randSource  *rand.Rand // jitter determinista en tests
+	specs        []ProviderSpec
+	maxAttempts  int // max_retries + 1
+	cooldown     time.Duration
+	firstTokenTO *time.Duration // nil = TTFB == GlobalTimeout (histórico)
+	jitter       time.Duration
+	globalTO     time.Duration
+	retryCfg     RetryConfig
+	degradCfg    DegradationConfig
+	cooldowns    *CooldownStore
+	affinity     *AffinityStore // afinidad sticky por sesión/cliente (009-002)
+	health       *health.Store
+	logger       *slog.Logger
+	randSource   *rand.Rand // jitter determinista en tests
 
 	// modelMeta: capabilities por modelo (007-001/010-001), usadas para la
 	// inyección per-attempt del thinking_default (010-002 P4). Misma fuente
@@ -239,18 +248,19 @@ func NewWithOptions(specs []ProviderSpec, o Options) *Router {
 		o.Logger = slog.Default()
 	}
 	return &Router{
-		specs:       specs,
-		maxAttempts: o.MaxRetries + 1,
-		cooldown:    o.Cooldown,
-		jitter:      o.CooldownJitter,
-		globalTO:    o.GlobalTimeout,
-		retryCfg:    o.Retry,
-		degradCfg:   o.Degradation,
-		cooldowns:   NewCooldownStore(nil, 30*time.Second),
-		affinity:    NewAffinityStore(nil, o.StickyMaxEntries),
-		health:      o.Health,
-		logger:      o.Logger,
-		randSource:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		specs:        specs,
+		maxAttempts:  o.MaxRetries + 1,
+		cooldown:     o.Cooldown,
+		jitter:       o.CooldownJitter,
+		globalTO:     o.GlobalTimeout,
+		firstTokenTO: o.FirstTokenTimeout,
+		retryCfg:     o.Retry,
+		degradCfg:    o.Degradation,
+		cooldowns:    NewCooldownStore(nil, 30*time.Second),
+		affinity:     NewAffinityStore(nil, o.StickyMaxEntries),
+		health:       o.Health,
+		logger:       o.Logger,
+		randSource:   rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -309,6 +319,22 @@ func (r *Router) specCooldown(s *ProviderSpec) time.Duration {
 func (r *Router) specTimeout(s *ProviderSpec) time.Duration {
 	if s.Timeout != nil {
 		return *s.Timeout
+	}
+	return r.globalTO
+}
+
+// specFirstTokenTimeout resuelve el tope TTFB de streaming para un
+// provider (TECHDEBT #29). Semántica de 3 estados en dos niveles:
+// provider (s.FirstTokenTimeout) > router (r.firstTokenTO) > global
+// (r.globalTO). nil en ambos niveles → TTFB == GlobalTimeout
+// (comportamiento histórico, todos los tests existentes). 0 explícito
+// en cualquier nivel → sin tope de primer token para ese intento.
+func (r *Router) specFirstTokenTimeout(s *ProviderSpec) time.Duration {
+	if s.FirstTokenTimeout != nil {
+		return *s.FirstTokenTimeout
+	}
+	if r.firstTokenTO != nil {
+		return *r.firstTokenTO
 	}
 	return r.globalTO
 }
@@ -898,12 +924,16 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 		}
 
 		for try := 1; try <= maxTries; try++ {
-			timeout := r.specTimeout(s)
+			// 029-001 (TECHDEBT #29): el tope del intento de stream es el
+			// FIRST-TOKEN timeout (TTFB), no el timeout global de Complete.
+			// Un upstream que no emite primer token en N aborta y rota;
+			// después del primer byte el stream lo gobierna write_timeout.
+			timeout := r.specFirstTokenTimeout(s)
 			r.logger.Debug("provider_attempt",
 				"provider", s.Provider.ID(),
 				"attempt", fmt.Sprintf("%d/%d", attempts, len(ready)),
 				"try", try,
-				"timeout", timeout.String(),
+				"ttfb_timeout", timeout.String(),
 			)
 
 			attemptBody, err := clampBody(body, int64(s.Provider.MaxTokens()))
@@ -973,6 +1003,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 
 			if timeout > 0 {
 				// TTFB: timer que compite contra el primer evento (M2, M4).
+				// timeout = first-token timeout (029-001 / TECHDEBT #29).
 				ttfb := time.NewTimer(timeout)
 				select {
 				case <-ttfb.C:
