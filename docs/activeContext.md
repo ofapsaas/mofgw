@@ -1,7 +1,7 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, EPIC-011-mofgw-odoo CERRADO).
+> Última actualización: 2026-08-12 (feature 013-001-subprocess-core MERGED — epic 013).
 
 ## Estado del programa
 
@@ -29,6 +29,27 @@
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 013-001-subprocess-core (epic 013-mofgw-cli-subprocess)
+
+### Decisiones relevantes
+
+- **Feature 013-001-subprocess-core MERGED — motor `subprocess` genérico para providers que ejecutan el CLI de un backend de IA como subproceso (primera feature del epic 013).** Nuevo paquete `internal/subprocess`: `subprocess.Provider` implementa `provider.Provider` intacto (I1) — en vez de HTTP, spawnea el binario del backend con el prompt traducido por el `Backend`. Suite completa **531 tests `-race` en 20 paquetes** (nuevo paquete + 19 tests feature), go vet + gofmt limpios. Commits: `7d6737d` RED, `d07de8c` GREEN, `b9cbd33` fixes bloqueantes review, `043bec1` review.md. **1er feature del epic 013** (sigue: adapter claude 013-002).
+- **Arquitectura D1 — motor genérico + interfaz `Backend` (→ ADR-010):** el motor posee exec, resolución de sesión por cliente, serialización, captura stdout/exit, fabricación de usage y normalización de errores; el `Backend` posee argv, traducción de formato, parseo y detección de negativa. **El motor NO conoce strings backend-específicos** (I2): no hay `"claude"`, no interpreta flags; `backend_flags` pasan opacos a `Args`.
+- **D2 — sesión por CLIENTE (default):** `Session.ID` = sha256(clientID) determinístico; el modelo se pasa por request (`Backend.Args` → `--model`), NO participa de la key en modo default (P3). Override `client+model` (ID = hash(clientID|model)) implementado y testeable en 001, expuesto por 003 (P2).
+- **D3/D4 — historial en la sesión, prompt único limpio:** mofgw envía SOLO el contenido del último mensaje `user` (extraído por `TranslateReq`) como un único prompt vía stdin; sin tools, sin tool_calls/resultados/marcadores internos; el CLI acumula la conversación en su sesión estable. El modelo se trata como sin-tools desde mofgw.
+- **D5 — sin fallback a nivel backend:** un único backend subprocess; negativa/falla del CLI NO se auto-rutea a otro backend subprocess. Todo fallo se normaliza a `provider.ErrUpstream`; el fallback cross-provider genérico de mofgw aplica si otro provider sirve el mismo modelo.
+- **D7/D8/D9 — usage fabricado + serialización + errores normalizados:** usage fabricado por el motor en Complete y Stream (chunk final compatible con `CaptureUsage`); a lo sumo un proceso CLI en vuelo por sesión (lock cap 1 sostenido durante todo el request incl. stream, espera ctx-cancelable); errores siempre vía `NewErrUpstream` sanitizado — spawn→`network`, exit no-cero→`upstream_error`, timeout/deadline→`timeout`, **refusal→`invalid_request_error`/400 NO retryable** (P11), clientID vacío→fail-closed (P13), nunca se filtra `ctx.Err()` crudo.
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** **2 bloqueantes RESUELTOS en `b9cbd33`** — (1) goroutine leak + inanición del lock por sesión en Stream (consumidor que abandona el canal → sends bloqueados, `release()` no corre): fix con sends con `select ctx.Done()` + kill/reap (`cmd.Wait()`) + release por defer en todos los outcomes + guard del scanner; (2) `isRefusal` en el engine violaba la frontera Backend (interpretaba stderr con keywords hardcodeadas): fix `IsRefusal(stderr string) bool` agregado a la interfaz `Backend`. 5 no-bloqueantes (3 deuda para 013-004, 2 FYI). Relevance audit **19/19 PASS**, cero dependencia interna (AP-14).
+
+### Deuda técnica detectada
+
+- **Llevadas a 013-004-resilience-ops (de la review):** preservar usage real del backend si no-cero; manejar `sc.Err()` del scanner stdout (línea >1MB); mensaje "invalid backend output" con status 0/network; allowlist de env (`cmd.Env = os.Environ()` hoy expone todo al hijo); limpieza del lock map y TTL de sesiones en disco.
+- **Riesgos del epic vigentes (plan-013, sin cambio):** cuota de suscripción (Claude Pro) se quema rápido — el CLI reporta rate-limit y mofgw lo absorbe/fallbackea (transparencia); spawn overhead ~1-2s (mitigado con `--bare` + sesión); `ANTHROPIC_API_KEY` puede sombrear OAuth → validar auth al arrancar. Passthrough de tools y structured output vía CLI quedan fuera (deuda del epic).
+
+### Próxima feature en cola
+
+- **013-002-adapter-claude** (epic 013-mofgw-cli-subprocess): implementa la interfaz `Backend` para el binario `claude` — argv (`-p --session-id`), traducción OpenAI↔claude (Complete + Stream). El motor 001 queda listo; 002 no toca el motor. Quedan 002-004 pendientes (001 done). Coordinar vía `cdad-epic`. Los adapters gemini/codex quedan a futuro (fuera del epic).
 
 ### 12 Ago 2026 — Epic 012-mofgw-odoo-component cerrado (módulo Odoo distribuible)
 
