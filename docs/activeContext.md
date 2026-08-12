@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-11 (cdad-scribe, EPIC-010 cerrado + deployado).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-001-responses-endpoint MERGED).
 
 ## Estado del programa
 
-**✅ Todos los epics del programa DONE — EPIC-010 (mofgw-catalogo-fiel) CERRADO + DEPLOYADO 11 Ago 2026: 2/2 features done (catálogo fiel + request path fiel), ambas mergeadas, desplegadas y verificadas en prod. Resto: criterios de aceptación del programa completo (plan.md).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Feature 011-001-responses-endpoint MERGED 12 Ago (1/9).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,14 +20,36 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
+| EPIC-011 (odoo) | 011-001 DONE; 002-008 queued; 009 DONE | 🔄 EN CURSO | 595e742 (011-001) |
 
-**Suite:** 17 paquetes, **388 tests verde con `-race`** (387 + 1 test single-flight follower 11 Ago). vet + gofmt limpios (salvo e2e_009000_test.go, TECHDEBT #20).
+**Suite:** 17 paquetes, **413 tests verde con `-race`** (388 + 25 feature 011-001). vet limpio; gofmt limpio en archivos de la feature (preexistentes: e2e_009000_test.go TECHDEBT #20).
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (011-001 DONE), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (011-009 DONE).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
-**Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz + E2E cross-feature epic 009 verde.
-**Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
-**Verificación E2E:** smoke test con config real + cliente zot → happy path, streaming, fallback, auth, /healthz.
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-001-responses-endpoint (tronco del epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-001-responses-endpoint DONE — `/v1/responses` en mofgw, tronco del epic 011-mofgw-odoo (reemplazo total de OpenAI en Odoo 19).** Implementa el Responses API (`POST /v1/responses`) que Odoo 19 enterprise usa en `_request_llm_openai_helper`, traduciendo Responses↔ChatCompletions no-stream. Se registra junto a `/v1/chat/completions` (proxy.go:283) bajo `s.auth.Wrap`. Suite completa **413 tests `-race`** verde en 17 paquetes (388 → 413, +25 tests feature), go vet limpio. Commits: `d2142f6` RED (24 fallan por 404 + 1 pasa 401 vía auth.Wrap), `3bec0b5` GREEN, `595e742` fixes review. Es el 1er feature del epic 011.
+- **Traducción vive SOLO en la capa del endpoint (I1) — decisión arquitectónica del epic → ADR-004:** `handleResponses` (responses.go) traduce `input`→`messages`, delega en la MISMA pipeline de chat (`router.Complete`) y traduce la salida a `output[]`. `ParseChatRequest`, router y providers intactos. El body Responses viaja crudo por la cadena (pattern mofgw de transparencia). Esta es la frontera que las features 002-005 van a extender.
+- **Modo solo NO-stream (D1) + rechazos explícitos de features futuras (P6-P9):** `stream:true` → 400 "streaming not supported yet"; `tools`/`web_search_preview` → 400 "tool calling not yet supported"; `text.format.json_schema` → 400 "structured output not yet supported"; part `input_file`/`input_image` → 400 "file attachments not yet supported". Features 002-005 reemplazan los rechazos; streaming SSE queda como deuda del epic.
+- **`output[]` alineado al parser real de Odoo (D2, P10):** item `{"type":"message","id":"<stable>","role":"assistant","status":"completed","content":[{"type":"output_text","text":...}]}` — parseable por `_request_llm_openai_helper` (lee `content[i]["text"]`). Verificado contra `llm_api_service.py:364-397`.
+- **IDs estables/determinísticas (P11):** sha256(clientID+body) con prefijo `resp_` → mismo input = mismo id de response y de item. Habilita que Odoo reutilice el id de item como `call_id` en el ciclo tool-calling de 003.
+- **Cache separada por endpoint (P12):** `responsesCacheKey` usa namespace propio (prefix `"responses"` + clientID + body canónico) → una responses-response jamás se sirve como chat-response ni a la inversa. Cache solo para requests determinísticos (`temperature == 0`). La separación cross-endpoint es invariante estructural garantizada por el body wire (input vs messages).
+- **Pipeline compartida con chat (P4):** limiter global + keyed + **por agente**, telemetría de descubrimiento (009-000), contextAnalysis (009-001), clamp por modelo, context-window check, budget, usage/cost accounting, `recordCacheTokens`, `setUsageHeaders`, `emitRequestTelemetry` + `emitRequestEnd`. `store` ignorado/stateless (P13); `max_output_tokens` no-op (Odoo no lo manda). Modelo forzado a nivel raíz con `rewriteResponseModel` (P5).
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** 1 bloqueante (test G P12 no ejercitaba la cache: bodies sin `temperature` → `isDeterministic=false` → MISS obligatorios y test vacío) **RESUELTO** agregando `temperature: 0` para ejercitar el camino HIT/MISS real. Opcionales #2 (telemetría/context/emitRequestEnd) y #3 (rate limit por agente) **APLICADOS**; #4 (singleflight) → deuda documentada, #5 (doble marshaling) y #7 (validación de role) descartados nits, #6 (model del envelope) no aplicado (FYI, patrón consistente con chat). Cero bloqueantes pendientes.
+
+### Deuda técnica detectada
+
+- **Llevadas a TECHDEBT consolidado:** streaming SSE del Responses API (fuera de alcance de 001, deuda del epic), singleflight/coalescing para `/v1/responses` (opcional #4 desestimado → feature futura), y el resto del scope cross-endpoint de 002-005 (structured output, tool calling, file attachments, web search) que hoy son 400.
+- **Nota P12 (de la review):** la separación de namespace por endpoint es un invariante estructural garantizado por el hash del body wire responses (nunca coincide con el body wire chat), no end-to-end demostrable por el test.
+- **Riesgo del epic vigente (plan-011):** Odoo 19 usa Responses API en estado "preview" para varias features; el módulo Odoo (011-008) debe mantenerse alineado a lo que Odoo manda/espera (mitigado con tests contra `llm_api_service.py` real).
+
+### Próxima feature en cola
+
+- **011-002-structured-output** (epic 011-mofgw-odoo): `text.format.json_schema` → `response_format` (AI Field Fill). Reemplaza el rechazo P8 (400 "structured output not yet supported"). Depende de 011-001. Coordinar vía `cdad-epic`. Quedan 002-008 pendientes (001 es el tronco; 009 staging-enterprise ya DONE).
 
 ### 11 Ago 2026 — fix: follower de single-flight factura su clientID + X-Usage-*
 
