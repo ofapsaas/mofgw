@@ -27,10 +27,11 @@ feature que hace el provider subprocess realmente usable por un cliente.
   + campos subprocess (`Backend, Command, SessionDir, BackendFlags, Clients`). `type` vacío o
   `"http"` = comportamiento actual (backward compatible, cero cambio). `type: subprocess`
   requiere `backend`; no requiere `base_url`/`api_key_env`.
-- **Factory con switch (D2):** `buildProvider` (extraída, testeable) construye
+- **Factory con switch (D2):** `buildProvider`/`buildBackend` en un nuevo paquete
+  `internal/providerfactory` (importable, testeable con `command` inyectable) construyen
   `provider.NewClient(...)` para HTTP o `subprocess.NewProvider(..., claude.New(command), ...)`
   para subprocess. `buildBackend(backend, command)` = switch sobre `backend` (claude hoy;
-  gemini/codex a futuro, motor intacto).
+  gemini/codex a futuro, motor intacto). `main.go` lo llama como adapter fino.
 - **Catálogo sin tools (D3):** `internal/subprocess.Provider` gana un accessor
   `Models() []string` (aditivo); `handleModels` usa una type-assert de interfaz
   `interface{ Models() []string }` en lugar de `*provider.Client`. La metadata de los modelos
@@ -191,8 +192,12 @@ catálogo HTTP, o el request path) e individualmente testeable.
   `SessionKeyClient` y `NewProvider` no recibe el modo ⇒ exponerlo requeriría tocar el motor.
   **DECISIÓN del owner (12 Ago):** fuera de scope para 013-003 — se cablea solo el modo default
   `client`; `client+model` queda como follow-up que tocaría el motor.
-- Ruta exacta donde vive `buildProvider` (package `main` vs `internal/providerfactory`) — el
-  implementer la decide; el spec solo exige que sea testeable con command inyectable.
+- **DECISIÓN del owner (12 Ago) — validación de backend en tiempo de carga:** `config.validate`
+  rechaza `backend != "claude"` con error descriptivo (`unknown backend`) al cargar, alineado con
+  C4/P3 ("de carga"); `buildBackend` conserva el error defensivo por si se construye directo.
+- **DECISIÓN del owner (12 Ago) — ubicación del factory:** `buildProvider`/`buildBackend` viven
+  en un nuevo paquete importable **`internal/providerfactory`** (los unit tests los importan);
+  `cmd/mofgw/main.go` llama al factory como adapter fino (patrón `buildTelemetryFromConfig`).
 
 ## Notas de implementación (no vinculantes)
 
