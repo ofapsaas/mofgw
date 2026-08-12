@@ -208,9 +208,9 @@ func mapStopReason(stop string) string {
 // con payload de chunk OpenAI. Los eventos de control (message_start,
 // content_block_start/stop, message_delta, message_stop) y los deltas de
 // thinking/tool_use no generan eventos. Nunca emite usage ni [DONE] (los
-// agrega el motor). Devuelve cuando `lines` se cierra.
-// RED (013-004): la firma gana ctx (D2) pero el send `ch <-` NO está
-// guardado → T_adapter_send_ctx_guarded queda RED.
+// agrega el motor). Devuelve cuando `lines` se cierra o el ctx se cancela.
+// P4 (D2): todo send a ch se guarda con select sobre ctx.Done(); ante
+// cancelación retorna sin bloquear ni colgar el lock.
 func (b *Backend) TranslateStreamOut(ctx context.Context, lines <-chan string, ch chan<- provider.StreamEvent, model string) {
 	for ln := range lines {
 		line := strings.TrimSpace(ln)
@@ -237,15 +237,23 @@ func (b *Backend) TranslateStreamOut(ctx context.Context, lines <-chan string, c
 		if err != nil {
 			continue
 		}
-		ch <- provider.StreamEvent{Data: string(payload)}
+		// P4 (D2): guard del send sobre ctx.Done(). El kill+reap del proceso
+		// lo hace el motor; el adapter solo deja de enviar y retorna.
+		select {
+		case ch <- provider.StreamEvent{Data: string(payload)}:
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
 // IsRefusal reporta si el stderr del CLI señala una negativa de policy (P9):
 // contiene algún marker del set (case-insensitive) sobre stderr solamente.
+// P8 (D5): se removió el marker ancho "cannot" para evitar el falso positivo
+// sobre errores de sistema genéricos; se conserva el vocabulario específico.
 func (b *Backend) IsRefusal(stderr string) bool {
 	lower := strings.ToLower(stderr)
-	for _, marker := range []string{"refus", "cannot", "not able to", "policy", "responsible use", "safety"} {
+	for _, marker := range []string{"refus", "not able to", "policy", "responsible use", "safety"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

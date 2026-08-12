@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -107,8 +108,9 @@ type Provider struct {
 	sessionTTL time.Duration
 	now        func() time.Time
 
-	mu    sync.Mutex
-	locks map[string]lockSlot // Session.ID -> slot (cap 1, D8) + última actividad (P6)
+	mu        sync.Mutex
+	locks     map[string]lockSlot // Session.ID -> slot (cap 1, D8) + última actividad (P6)
+	lastSweep time.Time           // última ejecución del sweep de TTL (P5/P6, throttle)
 }
 
 // lockSlot es una entrada del lock map: el canal de serialización por sesión
@@ -313,6 +315,7 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 	_ = stdin.Close()
 
 	lines := make(chan string, 8)
+	scanErr := make(chan error, 1) // P2: superficie el sc.Err() del scanner
 	var outLen atomic.Int64
 	go func() {
 		defer close(lines)
@@ -326,6 +329,15 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 			case lines <- sc.Text():
 			case <-ctx.Done():
 				return
+			}
+		}
+		// P2: si el scanner falló (p.ej. bufio.ErrTooLong por una línea que
+		// excede el límite de buffer), lo señalizamos al goroutine principal
+		// para que NO cierre el stream como limpio truncado.
+		if err := sc.Err(); err != nil {
+			select {
+			case scanErr <- err:
+			case <-ctx.Done():
 			}
 		}
 	}()
@@ -351,6 +363,18 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 		}
 
 		p.backend.TranslateStreamOut(ctx, lines, ch, model)
+
+		// P2: un error del scanner (p.ej. bufio.ErrTooLong por una línea >
+		// límite de buffer) NO termina el stream como limpio truncado: se
+		// normaliza a upstream_error y se cierra sin finish fabricado.
+		select {
+		case <-scanErr:
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait() // reap: sin hijos huérfanos
+			send(provider.StreamEvent{Err: provider.NewErrUpstream(500, "upstream_error", p.backend.Name()+" output read error")})
+			return
+		default:
+		}
 
 		// Si el ctx ya está cancelado al terminar la traducción, no
 		// seguimos: kill + reap y salir (release corre vía defer).
@@ -404,10 +428,13 @@ func (p *Provider) resolveSession(clientID string) (*Session, error) {
 	}
 	key := NewSessionKey(clientID, "", SessionKeyClient)
 	dir := filepath.Join(p.sessionDir, "clients", clientID)
+	// Sweep ANTES de crear el dir del request actual: así el barrido de TTL
+	// nunca elimina el dir recién creado del request en curso (el cwd del
+	// CLI debe existir para spawnear).
+	p.sweepStale()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, provider.NewErrUpstream(0, "network", "create session dir")
 	}
-	p.sweepStale()
 	return &Session{ID: key, Dir: dir, ClientID: clientID}, nil
 }
 
@@ -432,19 +459,95 @@ func (p *Provider) acquireLock(ctx context.Context, sessionID string) (func(), e
 	}
 }
 
-// sweepStale ejecuta el sweep de TTL (P5/P6): elimina dirs de cliente idle
-// más allá del TTL y evicta las entradas del lock map idle y libres. RED:
-// no-op — no implementado (T_ttl_stale_dir_removed / T_lock_map_bounded quedan
-// RED por aserción).
+// sweepStale ejecuta el sweep de TTL (P5/P6), throttled a sessionTTL/2:
+// elimina los dirs de cliente bajo sessionDir/clients/ cuya actividad más
+// reciente predata el TTL y cuyo lock está libre (no in-flight), y evicta
+// las entradas del lock map idle (lastUsed < now-TTL) y libres (slot no
+// sostenido). Las entradas con request en vuelo se conservan; una sesión
+// evictada se re-crea al volver a pedir (acquireLock).
 func (p *Provider) sweepStale() {
-	// RED: no implementado
+	now := p.now()
+	ttl := p.sessionTTL
+	if ttl <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if now.Sub(p.lastSweep) < ttl/2 {
+		return // throttled: a lo sumo un sweep por intervalo
+	}
+	p.lastSweep = now
+
+	// P6: evictar las entradas del lock map idle y libres. Una entrada en
+	// uso (slot sostenido, len>0) o reciente se conserva.
+	for id, slot := range p.locks {
+		if now.Sub(slot.lastUsed) >= ttl && len(slot.slot) == 0 {
+			delete(p.locks, id)
+		}
+	}
+
+	// P5: eliminar los dirs de cliente idle más allá del TTL. Un dir cuyo
+	// lock existe (entrada viva del map) está en uso o es reciente: se
+	// conserva aunque su mtime sea viejo.
+	clientsDir := filepath.Join(p.sessionDir, "clients")
+	entries, err := os.ReadDir(clientsDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		clientID := e.Name()
+		if _, inFlight := p.locks[NewSessionKey(clientID, "", SessionKeyClient)]; inFlight {
+			continue // request in-flight o reciente: no tocar
+		}
+		dir := filepath.Join(clientsDir, clientID)
+		mtime, err := dirMtime(dir)
+		if err != nil {
+			continue
+		}
+		if now.Sub(mtime) >= ttl {
+			_ = os.RemoveAll(dir)
+		}
+	}
+}
+
+// dirMtime devuelve el mtime más reciente dentro de dir (recursivo).
+func dirMtime(dir string) (time.Time, error) {
+	var latest time.Time
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		return nil
+	})
+	return latest, err
 }
 
 // childEnv construye el env del proceso CLI hijo (P3/D3): allowlist fija
-// PATH + HOME + variables STUB_*. RED: devuelve el env completo (os.Environ)
-// — la allowlist NO está implementada (T_child_env_allowlist queda RED).
+// PATH + HOME + variables STUB_* (hook de tests herméticos). En producción
+// el hijo recibe solo PATH+HOME; ninguna otra variable del entorno del
+// proceso mofgw se filtra al hijo (mitiga el sombreado de API keys).
 func (p *Provider) childEnv() []string {
-	return os.Environ()
+	var out []string
+	for _, kv := range os.Environ() {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if key == "PATH" || key == "HOME" || strings.HasPrefix(key, "STUB_") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // normalizeExit convierte un fallo de ejecución del CLI a *ErrUpstream
@@ -476,7 +579,11 @@ func (p *Provider) fillResponse(resp *provider.ChatResponse, sess *Session, mode
 	resp.Object = "chat.completion"
 	resp.Created = time.Now().Unix()
 	resp.Model = model
-	resp.Usage = fabricateUsage(promptBytes, completionBytes)
+	// P1 (D4): conservar el usage real que proveyó el backend; SOLO fabricar
+	// cuando el backend no entregó un TotalTokens no-cero (0 o ausente).
+	if resp.Usage.TotalTokens <= 0 {
+		resp.Usage = fabricateUsage(promptBytes, completionBytes)
+	}
 }
 
 // fabricateUsage estima un usage no degenerado (P6/P7): prompt ~

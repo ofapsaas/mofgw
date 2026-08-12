@@ -448,6 +448,21 @@ func Parse(raw []byte) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	// P7 (013-004): los defaults del provider subprocess se aplican en Parse,
+	// no como efecto secundario de validate(). validate() ya no muta estos
+	// campos; aquí se resuelven Command/SessionDir ausentes.
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if p.Type != "subprocess" {
+			continue
+		}
+		if p.Command == "" {
+			p.Command = "claude"
+		}
+		if p.SessionDir == "" {
+			p.SessionDir = DefaultSessionDir
+		}
+	}
 	if err := cfg.resolveKeys(); err != nil {
 		return nil, err
 	}
