@@ -61,8 +61,12 @@ type responsesInputItem struct {
 }
 
 type responsesPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string  `json:"type"`
+	Text     string  `json:"text"`
+	ImageURL string  `json:"image_url"`
+	Detail   *string `json:"detail,omitempty"`
+	FileData string  `json:"file_data"`
+	Filename string  `json:"filename"`
 }
 
 // wireTool tipa un tool chat-completions anidado (P1 de 003): type function
@@ -129,6 +133,37 @@ func responsesID(clientID string, body []byte) string {
 	h.Write([]byte{0})
 	h.Write(body)
 	return "resp_" + hex.EncodeToString(h.Sum(nil))[:24]
+}
+
+// responsesContentArray traduce las parts de un item message a parts chat para
+// el content-array (004 P3/D1): un item por part del input, en orden de
+// aparición (I3). Mapea input_text→text, input_image→image_url, input_file→file
+// (D2); las parts de tipo desconocido se dropean conservando el orden de las
+// conocidas (consistente con el string-content que ignora lo que no es
+// input_text).
+func responsesContentArray(parts []responsesPart) []any {
+	out := make([]any, 0, len(parts))
+	for _, p := range parts {
+		switch p.Type {
+		case "input_text":
+			out = append(out, map[string]any{"type": "text", "text": p.Text})
+		case "input_image":
+			iu := map[string]any{"url": p.ImageURL} // data-URI sin re-marshal (I2)
+			if p.Detail != nil {
+				iu["detail"] = *p.Detail // omitempty: ausente no se emite (D2)
+			}
+			out = append(out, map[string]any{"type": "image_url", "image_url": iu})
+		case "input_file":
+			out = append(out, map[string]any{
+				"type": "file",
+				"file": map[string]any{
+					"file_data": p.FileData,
+					"filename":  p.Filename,
+				},
+			})
+		}
+	}
+	return out
 }
 
 // handleResponses es el endpoint POST /v1/responses, paralelo a handleChat
@@ -264,20 +299,30 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 				"tool_call_id": item.CallID, // matchea el id del tool_call (I4)
 				"content":      item.Output,
 			})
-		default: // P5: item message, traducción como 001 (P3 de 001).
+		default: // P5: item message, traducción como 001 (P3 de 001). 004 (D1):
+			// decisión POR MENSAJE — todas las parts input_text → content string
+			// (camino de 001/003 sin regresión); si hay input_image/input_file →
+			// content-array con un item por part en orden (P3).
+			hasFilePart := false
 			for _, p := range item.Content {
 				if p.Type == "input_file" || p.Type == "input_image" {
-					openAIError(w, http.StatusBadRequest, "file attachments not yet supported", "invalid_request_error")
-					return
+					hasFilePart = true
+					break
 				}
 			}
-			var sb strings.Builder
-			for _, p := range item.Content {
-				if p.Type == "input_text" {
-					sb.WriteString(p.Text)
+			var content any
+			if hasFilePart {
+				content = responsesContentArray(item.Content)
+			} else {
+				var sb strings.Builder
+				for _, p := range item.Content {
+					if p.Type == "input_text" {
+						sb.WriteString(p.Text)
+					}
 				}
+				content = sb.String()
 			}
-			messages = append(messages, map[string]any{"role": item.Role, "content": sb.String()})
+			messages = append(messages, map[string]any{"role": item.Role, "content": content})
 		}
 	}
 	chatBodyMap := map[string]any{"model": rb.Model, "messages": messages}
