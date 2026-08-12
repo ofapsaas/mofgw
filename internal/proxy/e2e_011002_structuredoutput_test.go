@@ -35,7 +35,7 @@ import (
 // messages traducidos + response_format (mapeo D1). El schema viaja como
 // json.RawMessage para verificar la byte-identidad I3 sin re-marshal.
 type responsesWire struct {
-	Model       string  `json:"model"`
+	Model       string   `json:"model"`
 	Temperature *float64 `json:"temperature"`
 	Messages    []struct {
 		Role    string `json:"role"`
