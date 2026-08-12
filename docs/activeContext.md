@@ -21,8 +21,10 @@
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
 | EPIC-011 (odoo) | 001-009 DONE (9/9) | ✅ DONE + INTEGRACIÓN + CLOSURE | closure-011.md |
+| EPIC-012 (odoo-component) | versionar mofgw_ai en odoo/ | 🔄 EN CURSO | — |
 
 **Suite:** 19 paquetes, **499 tests verde con `-race`** (mofgw Go; el módulo Odoo mofgw_ai tiene 14 tests de módulo que pasan en VPS). vet limpio.
+**EPIC-012 (mofgw-odoo-component) EN CURSO — versionar `mofgw_ai` como componente Odoo distribuible:** el fuente del módulo Odoo `mofgw_ai` (epic 011) pasa a versionarse en el repo bajo `odoo/mofgw_ai/` (componente opcional para quien use Odoo 19 con mofgw como proxy de IA). Hoy era solo una copia instalada en staging sin versionar.
 **EPIC-011 (mofgw-odoo) CERRADO — 9/9 features + integración E2E verificada:** Odoo 19 enterprise usa mofgw como único proveedor de IA (reemplazo total de OpenAI). Lado Go: responses (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005), embeddings (006). Lado Odoo (módulo local mofgw_ai): embedding-vector (007), odoo-provider (008, monkeypatch in-place). staging-enterprise (009). **E2E real verificado:** Odoo (staging-instance) → provider mofgw → túnel → mofgw Go local → deepseek-v4-flash, /v1/responses 200 "PONG", 0 llamadas a api.openai.com.
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 

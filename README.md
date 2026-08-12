@@ -52,6 +52,15 @@ Ver [`docs/epics/plan.md`](docs/epics/plan.md) — 10 epics (5 originales + repl
 
 Más **SEC-001-security-hardening** (auditoría externa): SSE saneado, X-Agent-Id acotado, ReadHeaderTimeout, permisos de log → ✅ **implementado**
 
+## Componentes opcionales
+
+- **`odoo/mofgw_ai/`** — módulo Odoo 19 enterprise que hace de mofgw el único
+  proveedor de IA de una instancia Odoo (reemplazo total de OpenAI): alinea el
+  vector de embeddings a 384-dim y registra mofgw como provider nativo. Para
+  quien use Odoo 19 con mofgw como proxy de IA: copiar el addon al `addons_path`
+  de la instancia e instalar con `odoo-bin -i mofgw_ai`. Ver
+  [`odoo/mofgw_ai/README.md`](odoo/mofgw_ai/README.md). (Epic 011/012.)
+
 ## Estrategia
 
 1. ✅ Investigación (competidores, features, arquitectura, precios, capacidades)

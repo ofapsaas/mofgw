@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- 011-008-odoo-provider (D4): settings del operador para mofgw.
+         Hereda la view del core para exponer ai.mofgw_url + ai.mofgw_key. -->
+    <record id="res_config_settings_view_form_mofgw" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.mofgw</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//block[@name='integration']" position="inside">
+                <setting string="mofgw" help="mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI)">
+                    <div class="content-group">
+                        <div class="row mt16">
+                            <label for="mofgw_url" string="mofgw URL"/>
+                            <field name="mofgw_url" class="col-6"/>
+                        </div>
+                        <div class="row mt16">
+                            <label for="mofgw_key" string="mofgw API key"/>
+                            <field name="mofgw_key" widget="password" class="col-6"/>
+                        </div>
+                    </div>
+                </setting>
+            </xpath>
+        </field>
+    </record>
+</odoo>
