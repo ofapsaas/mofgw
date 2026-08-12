@@ -447,7 +447,12 @@ func TestE2E011003_P6_ToolCallsASoloFunctionCallItems(t *testing.T) {
 // intacto).
 func TestE2E011003_P7_SinToolCallsItemMessage(t *testing.T) {
 	t.Run("tool_calls_vacio", func(t *testing.T) {
-		u := upstreamToolCalls("m", []map[string]any{})
+		// upstreamToolCalls con [] arma content: nil (camino message-only),
+		// lo que rompe P7 stateless (text == choices[0].message.content → "").
+		// Usamos upstreamOK("m", "hola") para que choices[0].message.content
+		// traiga el texto y así verificar "tool_calls ausente → item message
+		// con content[0].text == 'hola'", igual que el subtest hermano.
+		u := upstreamOK("m", "hola")
 		h := build(t, []*upstream{u}, "sk-test-1")
 		code, raw := responsesAs(t, h.srv.URL, h.key, responsesBody("hola"))
 		if code != 200 {

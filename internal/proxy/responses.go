@@ -33,19 +33,31 @@ import (
 // `input`, no `messages`). Solo los campos necesarios para traducir y
 // rechazar (P6-P9); el resto (store, max_output_tokens) se ignora.
 type responsesRequestBody struct {
-	Model       string               `json:"model"`
-	Input       []responsesInputItem `json:"input"`
-	Temperature *float64             `json:"temperature"`
-	Stream      *bool                `json:"stream"`
-	Tools       []json.RawMessage    `json:"tools"`
-	Text        *struct {
+	Model             string            `json:"model"`
+	Input             []json.RawMessage `json:"input"`
+	Temperature       *float64          `json:"temperature"`
+	Stream            *bool             `json:"stream"`
+	Tools             []json.RawMessage `json:"tools"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls"`
+	Text              *struct {
 		Format *json.RawMessage `json:"format"`
 	} `json:"text"`
 }
 
+// responsesInputItem tipa un item del `input[]` Responses de forma
+// discriminada por `type` (011-003): items message (role+content de parts
+// input_text) y items del ciclo tool-calling (`function_call`,
+// `function_call_output`). Un solo struct cubre ambos shapes; la rama se
+// elige por `Type`.
 type responsesInputItem struct {
-	Role    string          `json:"role"`
-	Content []responsesPart `json:"content"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	ID        string          `json:"id"`
+	CallID    string          `json:"call_id"`
+	Name      string          `json:"name"`
+	Arguments string          `json:"arguments"`
+	Output    string          `json:"output"`
+	Content   []responsesPart `json:"content"`
 }
 
 type responsesPart struct {
@@ -53,12 +65,20 @@ type responsesPart struct {
 	Text string `json:"text"`
 }
 
-// responsesChatMessage es un mensaje chat-completions traducido de un
-// item de `input` (P3): role preservado, content = concatenación de los
-// text de las parts input_text.
-type responsesChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// wireTool tipa un tool chat-completions anidado (P1 de 003): type function
+// + function{name,description,parameters,strict}. Parameters viaja como
+// RawMessage para preservar byte-identidad (I3); Strict con omitempty →
+// ausente no se emite (D2 de 002).
+type wireTool struct {
+	Type     string       `json:"type"`
+	Function wireToolFunc `json:"function"`
+}
+
+type wireToolFunc struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 // wireResponseFormat tipa el response_format chat-completions (D1/D2):
@@ -151,9 +171,34 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		openAIError(w, http.StatusBadRequest, "streaming not supported yet", "invalid_request_error")
 		return
 	}
+	// Tool calling (011-003): reemplaza la rama P7 de 001. D3: si CUALQUIER
+	// tool tiene type != "function" (incluido web_search_preview) → 400
+	// conservado (la feature 005 lo resuelve). Si todos son function → se
+	// traducen a tools chat anidados (P1), sin rechazo.
+	var chatTools []wireTool
 	if len(rb.Tools) > 0 {
-		openAIError(w, http.StatusBadRequest, "tool calling not yet supported", "invalid_request_error")
-		return
+		for _, raw := range rb.Tools {
+			var t struct {
+				Type        string          `json:"type"`
+				Name        string          `json:"name"`
+				Description string          `json:"description"`
+				Parameters  json.RawMessage `json:"parameters"`
+				Strict      *bool           `json:"strict"`
+			}
+			if err := json.Unmarshal(raw, &t); err != nil || t.Type != "function" {
+				openAIError(w, http.StatusBadRequest, "tool calling not yet supported", "invalid_request_error")
+				return
+			}
+			chatTools = append(chatTools, wireTool{
+				Type: "function",
+				Function: wireToolFunc{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters, // I3: RawMessage, byte-idéntico
+					Strict:      t.Strict,     // omitempty: ausente no se emite
+				},
+			})
+		}
 	}
 	// Structured output (011-002): text.format.json_schema → response_format
 	// (D1). Solo type == "json_schema" se traduce (D3); el resto de type o un
@@ -173,35 +218,73 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		js := wireJSONSchema{Name: format.Name, Schema: format.Schema, Strict: format.Strict} // D2: strict nil → omitempty no emite
 		responseFormat = &wireResponseFormat{Type: "json_schema", JSONSchema: js}
 	}
-	for _, item := range rb.Input {
-		for _, p := range item.Content {
-			if p.Type == "input_file" || p.Type == "input_image" {
-				openAIError(w, http.StatusBadRequest, "file attachments not yet supported", "invalid_request_error")
-				return
-			}
-		}
-	}
-
 	// P2: input usable para traducir a messages.
 	if rb.Model == "" || len(rb.Input) == 0 {
 		openAIError(w, http.StatusBadRequest, "missing required field: model or input", "invalid_request_error")
 		return
 	}
 
-	// 4. Traducir input → messages (P3).
-	messages := make([]responsesChatMessage, 0, len(rb.Input))
-	for _, item := range rb.Input {
-		var sb strings.Builder
-		for _, p := range item.Content {
-			if p.Type == "input_text" {
-				sb.WriteString(p.Text)
-			}
+	// 4. Traducir input → messages (P3/P4/P5). Items del ciclo tool-calling
+	// (function_call, function_call_output) conviven con items message en el
+	// mismo input[]; los mensajes se emiten en orden de aparición.
+	messages := make([]any, 0, len(rb.Input))
+	for _, raw := range rb.Input {
+		var item responsesInputItem
+		if err := json.Unmarshal(raw, &item); err != nil {
+			openAIError(w, http.StatusBadRequest, "invalid request body", "invalid_request_error")
+			return
 		}
-		messages = append(messages, responsesChatMessage{Role: item.Role, Content: sb.String()})
+		switch item.Type {
+		case "function_call": // P3
+			callID := item.CallID
+			if callID == "" {
+				callID = item.ID // fallback al id del item (P3)
+			}
+			messages = append(messages, map[string]any{
+				"role":    "assistant",
+				"content": nil,
+				"tool_calls": []any{
+					map[string]any{
+						"id":   callID, // == call_id del item (round-trip D1)
+						"type": "function",
+						"function": map[string]any{
+							"name":      item.Name,
+							"arguments": item.Arguments, // string JSON sin re-marshal (P3)
+						},
+					},
+				},
+			})
+		case "function_call_output": // P4
+			messages = append(messages, map[string]any{
+				"role":         "tool",
+				"tool_call_id": item.CallID, // matchea el id del tool_call (I4)
+				"content":      item.Output,
+			})
+		default: // P5: item message, traducción como 001 (P3 de 001).
+			for _, p := range item.Content {
+				if p.Type == "input_file" || p.Type == "input_image" {
+					openAIError(w, http.StatusBadRequest, "file attachments not yet supported", "invalid_request_error")
+					return
+				}
+			}
+			var sb strings.Builder
+			for _, p := range item.Content {
+				if p.Type == "input_text" {
+					sb.WriteString(p.Text)
+				}
+			}
+			messages = append(messages, map[string]any{"role": item.Role, "content": sb.String()})
+		}
 	}
 	chatBodyMap := map[string]any{"model": rb.Model, "messages": messages}
 	if rb.Temperature != nil {
 		chatBodyMap["temperature"] = *rb.Temperature
+	}
+	if len(chatTools) > 0 {
+		chatBodyMap["tools"] = chatTools // P1: tools chat anidados (passthrough)
+	}
+	if rb.ParallelToolCalls != nil {
+		chatBodyMap["parallel_tool_calls"] = *rb.ParallelToolCalls // P1: passthrough
 	}
 	if responseFormat != nil {
 		chatBodyMap["response_format"] = responseFormat // passthrough (I2)
@@ -341,16 +424,33 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, rb.Model, &res.Response.Usage)
 	s.setUsageHeaders(w.Header(), providerID, rb.Model, &res.Response.Usage)
 
-	// 7. Traducir chat → output[] (P10) con id estable (P11).
-	content := ""
-	if len(res.Response.Choices) > 0 {
-		content = res.Response.Choices[0].Message.Content
-	}
+	// 7. Traducir chat → output[] (P10) con id estable (P11). Si el provider
+	// devuelve tool_calls → SOLO items function_call (P6, D2), call_id = eco
+	// directo del id upstream (D1), id estable aparte (P8). Sin tool_calls →
+	// item message intacto (P7 / P10 de 001).
 	stableID := responsesID(clientID, body)
-	envelope := map[string]any{
-		"id":     stableID,
-		"object": "response",
-		"output": []any{
+	var toolCalls []provider.ChatToolCall
+	if len(res.Response.Choices) > 0 {
+		toolCalls = res.Response.Choices[0].Message.ToolCalls
+	}
+	var output []any
+	if len(toolCalls) > 0 {
+		for _, tc := range toolCalls {
+			output = append(output, map[string]any{
+				"type":      "function_call",
+				"id":        stableID,              // P8: id estable, != call_id (D1)
+				"call_id":   tc.ID,                 // eco directo del id upstream (D1)
+				"name":      tc.Function.Name,      // leído por Odoo (P6)
+				"arguments": tc.Function.Arguments, // string JSON parseable (I2)
+				"status":    "completed",
+			})
+		}
+	} else {
+		content := ""
+		if len(res.Response.Choices) > 0 {
+			content = res.Response.Choices[0].Message.Content
+		}
+		output = []any{
 			map[string]any{
 				"type":   "message",
 				"id":     stableID,
@@ -360,7 +460,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 					map[string]any{"type": "output_text", "text": content},
 				},
 			},
-		},
+		}
+	}
+	envelope := map[string]any{
+		"id":     stableID,
+		"object": "response",
+		"output": output,
 	}
 	out, err := json.Marshal(envelope)
 	if err != nil {

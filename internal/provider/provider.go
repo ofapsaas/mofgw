@@ -66,10 +66,26 @@ func ParseChatRequest(body []byte) (*ChatRequest, error) {
 	return &req, nil
 }
 
+// ChatToolCall tipa un elemento de choices[0].message.tool_calls (salida
+// del ciclo tool-calling de 011-003): id/type/function{name,arguments}.
+type ChatToolCall struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	// Function agrupa name/arguments del tool_call upstream; arguments es el
+	// string JSON crudo (I2 de 003), no un objeto.
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
 // ChatMessage es un mensaje del array messages.
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls trae los tool_calls de un message assistant (choices[]);
+	// ausente cuando el provider no devuelve tool_calls (camino P7 message).
+	ToolCalls []ChatToolCall `json:"tool_calls,omitempty"`
 }
 
 // Choice es una opción de respuesta (chat.completion.choices[]).
