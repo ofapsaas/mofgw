@@ -80,4 +80,4 @@ _Se actualiza durante el loop de features si el plan cambia. Inicialmente vacío
 
 ---
 
-Status: Pending approval
+Status: Approved by Pablo (delegado HITL a Ofap, 2026-08-12)
