@@ -191,3 +191,69 @@ func TestSF_FollowerFacturaYExponeUsage(t *testing.T) {
 		t.Fatalf("facturación de follower o líder ausente:\n%s", s)
 	}
 }
+
+// TestSF_FollowerReplicaReasoningTokens: el follower de un vuelo
+// single-flight debe replicar TAMBIÉN los reasoning_tokens del líder
+// en su accounting (TECHDEBT #28). RED para el bug: singleflight.Usage
+// replicaba solo los 4 campos core → el follower reconstruía un
+// *provider.Usage con ReasoningTokens=0 → mofgw_reasoning_tokens_total
+// quedaba en 30 (solo líder) en vez de 60 (líder + follower).
+//
+// El upstream fake (upstreamUsageOK) reporta reasoning_tokens=30; con
+// un solo provider/model, reasoningTotal = 30×N_requests_facturados.
+// Condición de validez: la aserción de dedupe garantiza que el follower
+// se unió al vuelo (no hizo llamada upstream propia).
+func TestSF_FollowerReplicaReasoningTokens(t *testing.T) {
+	gate := &sfGate{arrived: make(chan struct{}), release: make(chan struct{})}
+	h := buildSF(t, gate, "k1", "k2")
+	body := map[string]any{
+		"model":       "m",
+		"temperature": 0, // determinístico → camino single-flight (010-001 P0)
+		"messages":    []map[string]string{{"role": "user", "content": "hi"}},
+	}
+
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	collect := func(key string, out chan<- result) {
+		r, err := chatRawNoT(h.srv.URL, key, body)
+		out <- result{r, err}
+	}
+
+	leaderCh := make(chan result, 1)
+	followerCh := make(chan result, 1)
+	go collect("k1", leaderCh)
+	gate.waitLeaderArrived(t) // vuelo en curso (líder en upstream)
+	go collect("k2", followerCh)
+
+	time.Sleep(200 * time.Millisecond) // deja que el follower se una al vuelo
+	close(gate.release)                // ambos completan con el blob compartido
+
+	for i, ch := range []chan result{leaderCh, followerCh} {
+		var r *http.Response
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				t.Fatalf("request %d: %v", i, res.err)
+			}
+			r = res.resp
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timeout esperando al request %d", i)
+		}
+		defer r.Body.Close()
+		if r.StatusCode != 200 {
+			t.Fatalf("request %d status = %d, want 200", i, r.StatusCode)
+		}
+	}
+
+	s := h.metricsBody(t)
+	// condición de validez: el follower fue coalescido (no upstream propio)
+	if !strings.Contains(s, `mofgw_single_flight_deduped_total{client="client-k2"} 1`) {
+		t.Fatalf("follower no se deduplicó (test inválido):\n%s", s)
+	}
+	// 30 (líder) + 30 (follower, bug: 0) = 60
+	if !strings.Contains(s, "mofgw_reasoning_tokens_total 60") {
+		t.Fatalf("reasoning_tokens_total = 30 (solo líder); want 60 (follower debe replicar reasoning — TECHDEBT #28):\n%s", s)
+	}
+}

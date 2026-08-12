@@ -757,6 +757,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 					CompletionTokens: cres.Response.Usage.CompletionTokens,
 					TotalTokens:      cres.Response.Usage.TotalTokens,
 					CachedTokens:     cres.Response.Usage.CachedTokens,
+					ReasoningTokens:  cres.Response.Usage.ReasoningTokens,
 				},
 			}
 		})
@@ -784,6 +785,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				CompletionTokens: sfRes.Usage.CompletionTokens,
 				TotalTokens:      sfRes.Usage.TotalTokens,
 				CachedTokens:     sfRes.Usage.CachedTokens,
+				ReasoningTokens:  sfRes.Usage.ReasoningTokens,
 			}
 			lastUsage = usage
 			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, sfRes.ProviderID, req.Model, usage)

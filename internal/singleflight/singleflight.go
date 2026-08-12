@@ -32,11 +32,15 @@ type Result struct {
 // Usage replica el mínimo de usage necesario para que un follower pueda
 // exponer headers X-Usage-* sin depender de los tipos del provider
 // (evita ciclos de import: proxy importa singleflight, no al revés).
+// ReasoningTokens replica completion_tokens_details.reasoning_tokens
+// para que el accounting de reasoning del follower sea exacto bajo
+// dedupe (TECHDEBT #28: sin este campo el follower reportaba 0).
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
 	CachedTokens     int
+	ReasoningTokens  int
 }
 
 type flight struct {
