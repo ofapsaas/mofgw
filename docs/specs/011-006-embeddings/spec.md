@@ -5,7 +5,7 @@ feature_id: 011-006-embeddings
 feature_name: embeddings
 epic: 011-mofgw-odoo
 status: draft
-approved_by: pendiente
+approved_by: "Ofap (agent-delegated)"
 created_at: 2026-08-12
 updated_at: 2026-08-12
 depends_on: 011-001-responses-endpoint

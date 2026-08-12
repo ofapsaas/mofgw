@@ -153,20 +153,16 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 // parseEmbeddingsUsage extrae el usage del body de respuesta OpenAI-compatible
 // (P6/P7): prompt_tokens/completion_tokens/total_tokens. Sin usage → usage
 // vacío (cero, no crashea — mismo espíritu que recordCacheTokens).
+// embeddingsUsageResponse tipa el envelope OpenAI-compatible y reutiliza
+// provider.Usage (UnmarshalJSON tolerante: campos ausentes/null → 0).
+type embeddingsUsageResponse struct {
+	Usage provider.Usage `json:"usage"`
+}
+
 func parseEmbeddingsUsage(raw []byte) *provider.Usage {
-	var resp struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
+	var resp embeddingsUsageResponse
 	if json.Unmarshal(raw, &resp) != nil {
 		return &provider.Usage{}
 	}
-	return &provider.Usage{
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-		TotalTokens:      resp.Usage.TotalTokens,
-	}
+	return &resp.Usage
 }
