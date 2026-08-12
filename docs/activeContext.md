@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-001-responses-endpoint MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-002-structured-output MERGED).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Feature 011-001-responses-endpoint MERGED 12 Ago (1/9).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001-responses-endpoint y 011-002-structured-output MERGED 12 Ago (3/9 con 009).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,33 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 011-001 DONE; 002-008 queued; 009 DONE | 🔄 EN CURSO | 595e742 (011-001) |
+| EPIC-011 (odoo) | 001/002 DONE; 003-008 queued; 009 DONE | 🔄 EN CURSO | 1a4b9ee (011-002) |
 
-**Suite:** 17 paquetes, **413 tests verde con `-race`** (388 + 25 feature 011-001). vet limpio; gofmt limpio en archivos de la feature (preexistentes: e2e_009000_test.go TECHDEBT #20).
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (011-001 DONE), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (011-009 DONE).
+**Suite:** 17 paquetes, **426 tests verde con `-race`** (413 + 7 feature 011-002 + POST-AUDIT). vet limpio; gofmt limpio en archivos de la feature.
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (011-001 DONE), structured output (011-002 DONE), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (011-009 DONE).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-002-structured-output (epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-002-structured-output DONE — `text.format.json_schema` → `response_format` en la ENTRADA de `/v1/responses` (structured output, AI Field Fill de Odoo).** Reemplaza el rechazo P8 de 001 (400 "structured output not yet supported") por la traducción real: cuando Odoo manda `text.format = {"type":"json_schema",...}`, mofgw inyecta `response_format = {"type":"json_schema","json_schema":{...}}` en el body chat-completions que delega al provider. **Alcance estricto: solo la entrada; la salida NO cambia** — sigue el shape P10 de 001 (`output[0]` item `message`, `content[0].text == choices[0].message.content`), el JSON estructurado viaja como texto normal del `content`, verificado contra `_request_llm_openai_helper`. Suite completa **426 tests `-race`** verde en 17 paquetes (413 → 426, 7 tests nuevos + POST-AUDIT), go vet limpio. Commits: `6223207` RED, `de162e1` GREEN.
+- **Mapeo D1 — `response_format` estructural (no plano):** `text.format` (4 campos planos de Odoo) → `response_format = {"type":"json_schema","json_schema":{"name","schema","strict"}}`. El `schema` viaja como `json.RawMessage` (responses.go:151,158) y se serializa verbatim → **byte-identidad I3** sostenida en toda la cadena (el clamp opera sobre `map[string]json.RawMessage`, `response_format` es passthrough opaco que no desarma). `strict` con `omitempty` (D2): presente → valor exacto; ausente → campo no se emite.
+- **D3/D4/D5 (decisiones del brainstorm mantenidas):** solo `type == "json_schema"` se traduce; el resto de `type` o un format malformado conserva la rama P8 (400 "structured output not yet supported") (D3). `temperature` tal cual, NO forzado a 0 por tener structured output (D4). Sin degradación a `json_object`: provider que no soporta `response_format` → mofgw propaga el 4xx upstream no-reintentable, sin fallback de menor capacidad (D5, `router.Complete` → `handleChainError` → `absorb.Respond`).
+- **Review APPROVE (qwen3.7-plus, familia distinta al implementer):** **0 bloqueantes.** Opcional #1 **APLICADO** — `wireResponseFormat`/`wireJSONSchema` tipados (structs locales no exportados con `omitempty` en `Strict`), dando type-safety de compilador (un typo de clave ya no compila) y resolviendo D2 sin `if` explícito. Opcionales #2 (guard local de `schema` ausente — el upstream propaga 4xx, funcionalmente correcto, P7) y #3 (POST-AUDIT dentro de función "Rechazos" — cosmético) **DESCARTADOS con motivo**. Auditoría test↔postcondición: P1-P8 todos con test, ninguno sobrante, cero dependencia interna (AP-14).
+- **Pipeline compartida sin regresión (P6):** `response_format` viaja como campo passthrough en `chatBodyMap` (inyectado antes del `Marshal`), preservado por clamp e inyección de thinking; atraviesa limiter/cache/clamp/ventana/budget/ruteo idéntico a 001. Cache exact-match con key separada por endpoint (P12 de 001): misma `schema` + mismo body → HIT; `schema` distinta → MISS (verificado por `TestE2E011002_P6_CachePorSchema`).
+
+### Deuda técnica detectada
+
+- **Ninguna deuda bloqueante.** Decisiones del brainstorm D1-D5 y fix #1 aplicados en su totalidad; #2/#3 de la review descartados con motivo documentado en `review.md`. La verificación empírica del soporte real de `response_format` por un provider (P7, desviación no bloqueante del spec) sigue pendiente — el diseño falla explícito con 4xx no-reintentable, sin degradación silenciosa.
+- **Nota de higiene de state file:** `.cdad-state.json` tenía la clave `postconditions_status` **duplicada** (JSON ambiguo donde el segundo `map` sobreescribe al primero). Deduplicada en el cierre de esta feature.
+- **Riesgo del epic vigente (plan-011, sin cambio):** Odoo 19 usa el Responses API en estado "preview"; el módulo Odoo (011-008) debe mantenerse alineado a lo que Odoo manda/espera (mitigado con tests contra `llm_api_service.py` real).
+
+### Próxima feature en cola
+
+- **011-003-tool-calling** (epic 011-mofgw-odoo): habilita el ciclo tool-calling de Odoo. Reemplaza el rechazo P7 de 001 (400 "tool calling not yet supported"). El `call_id`/item id estable de 001 (P11) ya está pensado para este ciclo (Odoo reutiliza el id de item). Quedan 003-008 pendientes (001 y 002 done como troncos del epic; 009 staging-enterprise ya DONE). Coordinar vía `cdad-epic`.
 
 ### 12 Ago 2026 — Feature: 011-001-responses-endpoint (tronco del epic 011-mofgw-odoo)
 
