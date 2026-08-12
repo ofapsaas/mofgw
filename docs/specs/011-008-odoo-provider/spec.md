@@ -151,8 +151,12 @@ class ResConfigSettings(models.TransientModel):
     _inherit = 'res.config.settings'
     mofgw_url = fields.Char(string="mofgw URL", config_parameter='ai.mofgw_url')
     mofgw_key = fields.Char(string="mofgw API key",
-                            config_parameter='ai.mofgw_key', password=True)
+                            config_parameter='ai.mofgw_key')
 ```
+Nota (revisión #2): el masking de la key se hace vía `widget="password"` en la
+view (mismo patrón que el core `openai_key`/`google_key`, res_config_settings.py
+del core NO usa `password=True` en el field). El field se declara sin
+`password=True`, consistente con el core.
 
 ### Postcondiciones
 
