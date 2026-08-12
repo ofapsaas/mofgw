@@ -426,11 +426,61 @@ func TestE2E011001_F_RechazosFeaturesFuturas(t *testing.T) {
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
 		assertReject(t, code, raw, "streaming not supported yet") // P6
 	})
+	// POST-AUDIT (011-003): el rechazo 400 de `tools` ya no existe para tools
+	// type=="function". 003 reemplaza la rama P7 de 001 por la traducción a
+	// tools chat anidado (spec 003 §P1, D3: el 400 queda solo para type!="function").
+	// Convertido de assert de rechazo a assert de traducción (200), mismo patrón
+	// que 002 aplicó a text_format_json_schema. El 400 de tools NO-function queda
+	// cubierto por P2/D3 de 003 en el subtest web_search_preview (intacto).
 	t.Run("tools", func(t *testing.T) {
+		paramsRaw := `{"type":"object","properties":{"location":{"type":"string"}}}`
 		b := cloneMap(body)
-		b["tools"] = []any{map[string]any{"type": "function", "name": "f"}}
+		b["tools"] = []any{map[string]any{
+			"type": "function", "name": "get_weather",
+			"description": "Obtiene el clima",
+			"parameters":  json.RawMessage(paramsRaw),
+			"strict":      true,
+		}}
+		b["parallel_tool_calls"] = true
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
-		assertReject(t, code, raw, "tool calling not yet supported") // P7
+		if code != 200 {
+			t.Fatalf("status = %d, want 200 (traducción a tools chat anidado, spec 003 §P1); body=%s", code, raw)
+		}
+		var wire struct {
+			Tools []struct {
+				Type     string `json:"type"`
+				Function struct {
+					Name        string          `json:"name"`
+					Description string          `json:"description"`
+					Parameters  json.RawMessage `json:"parameters"`
+					Strict      *bool           `json:"strict"`
+				} `json:"function"`
+			} `json:"tools"`
+			ParallelToolCalls *bool `json:"parallel_tool_calls"`
+		}
+		if err := json.Unmarshal([]byte(u.gotBody), &wire); err != nil {
+			t.Fatalf("body upstream no es JSON: %v\n%s", err, u.gotBody)
+		}
+		if len(wire.Tools) != 1 {
+			t.Fatalf("wire tools = %d, want 1: %s", len(wire.Tools), u.gotBody)
+		}
+		// mapeo estructural D1 (003): tool Responses plano → chat anidado bajo `function`.
+		if wire.Tools[0].Type != "function" {
+			t.Fatalf("tools[0].type = %q, want function", wire.Tools[0].Type)
+		}
+		if wire.Tools[0].Function.Name != "get_weather" || wire.Tools[0].Function.Description != "Obtiene el clima" {
+			t.Fatalf("tools[0].function = %+v, want name/description copiados (P1)", wire.Tools[0].Function)
+		}
+		// I3 (003): parameters byte-idénticos al input (no re-marshal).
+		if string(wire.Tools[0].Function.Parameters) != paramsRaw {
+			t.Fatalf("parameters wire no byte-idéntico al input (I3):\nwant %s\ngot  %s", paramsRaw, wire.Tools[0].Function.Parameters)
+		}
+		if wire.Tools[0].Function.Strict == nil || !*wire.Tools[0].Function.Strict {
+			t.Fatalf("tools[0].function.strict no emitido como true (P1): %+v", wire.Tools[0].Function)
+		}
+		if wire.ParallelToolCalls == nil || !*wire.ParallelToolCalls {
+			t.Fatalf("parallel_tool_calls no emitido como true (P1): %s", u.gotBody)
+		}
 	})
 	t.Run("web_search_preview", func(t *testing.T) {
 		b := cloneMap(body)
