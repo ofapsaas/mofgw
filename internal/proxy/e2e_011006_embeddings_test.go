@@ -142,7 +142,7 @@ func buildWithEmbeddings(t *testing.T, u *embeddingsUpstream, clientKey, model s
 	h := buildMultiClient(t, []*upstream{}, clientKey)
 	srv := httptest.NewServer(u.handler())
 	t.Cleanup(srv.Close)
-	h.proxySrv.SetEmbeddings(srv.URL, "")                     // base_url global (I2)
+	h.proxySrv.SetEmbeddings(srv.URL, "")                           // base_url global (I2)
 	h.proxySrv.SetClientEmbeddingsModel("client-"+clientKey, model) // modelo forzado (P3)
 	return h
 }
