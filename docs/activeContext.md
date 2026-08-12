@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-006-embeddings MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-007-embedding-vector MERGED).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004/005/006 MERGED 12 Ago (7/9 con 009).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004/005/006/007 MERGED 12 Ago (8/9 con 009). Queda SOLO 011-008.**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,34 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 001-006 DONE; 007-008 queued; 009 DONE | 🔄 EN CURSO | 7c3b5d7 (011-006) |
+| EPIC-011 (odoo) | 001-007 DONE; 008 queued; 009 DONE | 🔄 EN CURSO | f8a6a6b (011-007) |
 
-**Suite:** 19 paquetes, **499 tests verde con `-race`** (481 + 18 feature 011-006 + paquete nuevo internal/embeddings). vet limpio; gofmt limpio en archivos de la feature.
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005, llamada saliente DDG), embeddings (006, forward a Ollama con modelo forzado por cliente), staging enterprise en mofgw-staging.example.com (009 DONE).
+**Suite:** 19 paquetes, **499 tests verde con `-race`** (sin cambios en esta feature — es del lado Odoo). vet limpio.
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005), embeddings (006), embedding-vector (007, módulo Odoo local mofgw_ai), odoo-provider (008, pendiente). Staging enterprise en staging-vps (staging-instance) + mofgw-staging.example.com.
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-007-embedding-vector (epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-007-embedding-vector DONE — alineación de la dimensión del vector de embeddings en Odoo (módulo local `mofgw_ai`).** Overridea `ai.embedding.embedding_vector = Vector(size=384)` (reemplaza el `Vector(size=1536)` hardcodeado en ai_embedding.py:32) y redimensiona el schema en PostgreSQL. `_get_dimensions()` ya lee `size` en runtime (ai_embedding.py:37) → 384 fluye automático a los 2 usos (cron ai_embedding.py:112, RAG ai_agent.py:597) sin tocar el core. **Verificado end-to-end en VPS (staging-vps, instancia enterprise `staging-instance`):** columna `vector(384)` + índice ivfflat recreado automáticamente en install, 4 tests del módulo pasan. Sin cambios Go. Es la 7ma feature del epic (**8/9 done: 001-007 + 009**).
+- **Corrección de diseño mayor (verificada contra source Odoo 19) — redimensionado del schema vía `pre_init_hook` (install) + `migrations/1.0/pre-migrate.py` (upgrade), NO `post_init_hook` ni solo `migrations/`.** Razones verificadas: (a) `post_init_hook` corre DESPUÉS del schema sync (`init_models`, loading.py:186→235) → dropea el índice y nada lo recrea (I4 roto); (b) `post_init_hook` NO corre en upgrade (`update_operation != 'install'`, loading.py:231-238) → la columna PG queda 1536 (P6 roto); (c) `migrations/` solo corren en `'to upgrade'` (migration.py:151) → no corren en install fresco. `pre_init_hook` + `pre-migrate` corren ANTES de `init_models` → tras el DROP+ALTER, `apply_to_database`/`check_indexes` recrea el índice automáticamente. → **ADR-006**.
+- **Firma del hook:** `def redimension_embedding_vector(env)` — Odoo 19 invoca pre_init_hook con UN argumento (loading.py:177/235); el hook vive en `mofgw_ai/__init__.py`.
+- **Idempotencia explícita (P9, bloqueante #3 review):** guarda que consulta `format_type` y skip si ya es `vector(384)`. Bloqueantes #1/#2/#3 de la review **resueltos** (pre_init_hook, pre-migrate.py, guarda); opcionales #5 README / #6 migrations / #7 typo **aplicados**; #4 parcial (B6 idempotencia), #8 descartado.
+- **README documenta el prerequisito operativo (P10/D3/C5):** una `ai_embedding` con chunks 1536-dim hace fallar el `ALTER`; purgar antes de migrar. Paso operativo documentado.
+- **Infraestructura resuelta en VPS:** pgvector instalado en staging-vps (root); instancia Odoo enterprise `staging-instance` creada (db `staging_mofgw` UTF8 + vector). `ai` + `ai_app` + `mofgw_ai` instalados.
+
+### Deuda técnica detectada
+
+- **Verificación empírica pendiente (desviación no bloqueante, P10/D3):** comportamiento real del `ALTER ... TYPE vector(384)` en una instancia con chunks 1536-dim. Paso operativo de purga documentado; staging vacío sin impacto.
+- **Comparte módulo con 011-008 (D4):** `mofgw_ai` es el módulo compartido; 011-008 agrega el registro del provider mofgw/Ollama.
+- **Patrón reusable documentado (ADR-006):** redimensionar una columna `vector` en Odoo 19 requiere pre_init_hook (install) + pre-migrate (upgrade) ANTES de `init_models`, con guarda de idempotencia y DROP del índice ivfflat antes del ALTER.
+
+### Próxima feature en cola
+
+- **011-008-odoo-provider** (epic 011-mofgw-odoo): registrar mofgw en `PROVIDERS` + `base_url`/key en `LLMApiService`, config por instancia. Mismo módulo local `mofgw_ai` (D4 de 007). Queda SOLO 008 pendiente (001-007 done; 009 staging-enterprise ya DONE — **8/9 done**). Coordinar vía `cdad-epic`.
 
 ### 12 Ago 2026 — Feature: 011-006-embeddings (epic 011-mofgw-odoo)
 
