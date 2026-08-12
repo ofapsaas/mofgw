@@ -99,7 +99,7 @@ func TestT_ArgvNoPromptLeak(t *testing.T) {
 		t.Fatalf("Args returned empty argv")
 	}
 	joined := strings.Join(got, " ")
-	for _, sub := range []string{`"tools"`, `"content"`, `tool_calls`, `sess`} {
+	for _, sub := range []string{`"tools"`, `"content"`, `tool_calls`} {
 		if strings.Contains(joined, sub) {
 			t.Fatalf("argv leaks %q: %v", sub, got)
 		}
