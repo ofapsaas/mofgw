@@ -51,9 +51,16 @@ if [ -n "$STUB_STDIN_FILE" ]; then
 else
   cat > /dev/null
 fi
+if [ -n "$STUB_ENV_FILE" ]; then
+  env > "$STUB_ENV_FILE"
+fi
 if [ -n "$STUB_SLEEP_MS" ]; then
   _sec=$(( (STUB_SLEEP_MS + 999) / 1000 ))
   sleep "$_sec"
+fi
+if [ -n "$STUB_LONG_LINE" ]; then
+  dd if=/dev/zero bs=1048577 count=1 2>/dev/null | tr '\000' 'A'
+  printf '\n'
 fi
 if [ -n "$STUB_STDOUT" ]; then
   printf '%s' "$STUB_STDOUT"
@@ -118,10 +125,16 @@ func (b *stubBackend) TranslateOut(raw []byte, model string) (*provider.ChatResp
 	return &resp, nil
 }
 
-// TranslateStreamOut reenvía cada línea como evento Data.
-func (b *stubBackend) TranslateStreamOut(lines <-chan string, ch chan<- provider.StreamEvent, model string) {
+// TranslateStreamOut reenvía cada línea como evento Data, guardando el send
+// con select sobre ctx.Done() (D2). El stub SÍ guarda — el RED de ctx-guard
+// viene del adapter claude (claude.go), no del stub.
+func (b *stubBackend) TranslateStreamOut(ctx context.Context, lines <-chan string, ch chan<- provider.StreamEvent, model string) {
 	for ln := range lines {
-		ch <- provider.StreamEvent{Data: ln}
+		select {
+		case ch <- provider.StreamEvent{Data: ln}:
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -170,6 +183,7 @@ type testHarness struct {
 	scriptPath string
 	stdinFile  string
 	lockFile   string
+	sessionDir string // base de sesiones (para tests TTL P5/P6)
 }
 
 // newTestProvider construye el harness completo: stub CLI + stubBackend +
@@ -194,7 +208,7 @@ func newTestProvider(t *testing.T, opts ...providerOpt) *testHarness {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	p := subprocess.NewProvider(cfg.id, cfg.models, cfg.maxTokens, cfg.sessionDir, nil, backend, logger)
 
-	return &testHarness{p: p, backend: backend, scriptPath: scriptPath, stdinFile: stdinFile, lockFile: lockFile}
+	return &testHarness{p: p, backend: backend, scriptPath: scriptPath, stdinFile: stdinFile, lockFile: lockFile, sessionDir: cfg.sessionDir}
 }
 
 // clientCtx produce un context que transporta un clientID (vía auth.Wrap,

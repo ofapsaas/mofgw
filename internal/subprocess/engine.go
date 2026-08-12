@@ -80,8 +80,10 @@ type Backend interface {
 	TranslateReq(body []byte) (string, error)
 	// TranslateOut traduce stdout (modo no-stream) a ChatResponse OpenAI.
 	TranslateOut(raw []byte, model string) (*provider.ChatResponse, error)
-	// TranslateStreamOut traduce líneas del stdout (streaming) a eventos.
-	TranslateStreamOut(lines <-chan string, ch chan<- provider.StreamEvent, model string)
+	// TranslateStreamOut traduce líneas del stdout a eventos SSE. Recibe ctx
+	// (D2): todo send a ch debe guardarse con select sobre ctx.Done() y
+	// retornar si el ctx se cancela, para no bloquear ni colgar el lock.
+	TranslateStreamOut(ctx context.Context, lines <-chan string, ch chan<- provider.StreamEvent, model string)
 	// IsRefusal reporta si el stderr del CLI señala una negativa de
 	// policy/safety (P11). Es responsabilidad del Backend reconocer la
 	// señal concreta; el motor NO interpreta stderr backend-específico (I2).
@@ -99,16 +101,36 @@ type Provider struct {
 	backend      Backend
 	logger       *slog.Logger
 
+	// sessionTTL/now (P5/P6): vida de una sesión en disco y clock inyectable
+	// (precedente health.Store). now marca actividad y decide stale-ness en
+	// el sweep. Defaults aplicados en NewProvider.
+	sessionTTL time.Duration
+	now        func() time.Time
+
 	mu    sync.Mutex
-	locks map[string]chan struct{} // Session.ID -> slot de serialización (cap 1, D8)
+	locks map[string]lockSlot // Session.ID -> slot (cap 1, D8) + última actividad (P6)
 }
 
-// NewProvider construye el provider subprocess.
-func NewProvider(id string, models []string, maxTokens int64, sessionDir string, backendFlags []string, backend Backend, logger *slog.Logger) *Provider {
+// lockSlot es una entrada del lock map: el canal de serialización por sesión
+// (cap 1) y la última vez que fue usada (para la eviction idle, P6).
+type lockSlot struct {
+	slot     chan struct{}
+	lastUsed time.Time
+}
+
+// DefaultSessionTTL es la vida por defecto de una sesión en disco antes de
+// ser barrida por el TTL (P5, D1): 7 días (sesiones largas para prompt-cache;
+// limpieza acotada).
+const DefaultSessionTTL = 7 * 24 * time.Hour
+
+// NewProvider construye el provider subprocess. Acepta opciones funcionales
+// (ProviderOption) para inyectar sessionTTL/now en tests (P5/P6); los call
+// sites existentes siguen funcionando sin opciones.
+func NewProvider(id string, models []string, maxTokens int64, sessionDir string, backendFlags []string, backend Backend, logger *slog.Logger, opts ...ProviderOption) *Provider {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
-	return &Provider{
+	p := &Provider{
 		id:           id,
 		models:       models,
 		maxTokens:    maxTokens,
@@ -116,8 +138,41 @@ func NewProvider(id string, models []string, maxTokens int64, sessionDir string,
 		backendFlags: backendFlags,
 		backend:      backend,
 		logger:       logger,
-		locks:        make(map[string]chan struct{}),
+		sessionTTL:   DefaultSessionTTL,
+		now:          time.Now,
+		locks:        make(map[string]lockSlot),
 	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
+}
+
+// ProviderOption configura un Provider en NewProvider (P5/P6, test hooks).
+type ProviderOption func(*Provider)
+
+// WithSessionTTL inyecta la vida de sesión (P5, default DefaultSessionTTL).
+func WithSessionTTL(d time.Duration) ProviderOption {
+	return func(p *Provider) { p.sessionTTL = d }
+}
+
+// WithNow inyecta el clock (P5/P6, default time.Now; precedente health.Store).
+func WithNow(f func() time.Time) ProviderOption {
+	return func(p *Provider) { p.now = f }
+}
+
+// SetSessionTTL sobreescribe el TTL de sesión en runtime (test hook P5).
+func (p *Provider) SetSessionTTL(d time.Duration) { p.sessionTTL = d }
+
+// SetNow sobreescribe el clock inyectable en runtime (test hook P5/P6).
+func (p *Provider) SetNow(f func() time.Time) { p.now = f }
+
+// LockCount devuelve el número de entradas del lock map en memoria (test
+// hook P6; precedente health.Store.Len).
+func (p *Provider) LockCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.locks)
 }
 
 // var _ garantiza en tiempo de compilación que Provider cumple I1.
@@ -173,7 +228,7 @@ func (p *Provider) Complete(ctx context.Context, body []byte) (*provider.Complet
 	argv := p.backend.Args(sess, model, p.backendFlags)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = sess.Dir
-	cmd.Env = os.Environ()
+	cmd.Env = p.childEnv()
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -231,7 +286,7 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 	argv := p.backend.Args(sess, model, p.backendFlags)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = sess.Dir
-	cmd.Env = os.Environ()
+	cmd.Env = p.childEnv()
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -295,7 +350,7 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 			}
 		}
 
-		p.backend.TranslateStreamOut(lines, ch, model)
+		p.backend.TranslateStreamOut(ctx, lines, ch, model)
 
 		// Si el ctx ya está cancelado al terminar la traducción, no
 		// seguimos: kill + reap y salir (release corre vía defer).
@@ -352,6 +407,7 @@ func (p *Provider) resolveSession(clientID string) (*Session, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, provider.NewErrUpstream(0, "network", "create session dir")
 	}
+	p.sweepStale()
 	return &Session{ID: key, Dir: dir, ClientID: clientID}, nil
 }
 
@@ -361,17 +417,34 @@ func (p *Provider) acquireLock(ctx context.Context, sessionID string) (func(), e
 	p.mu.Lock()
 	slot, ok := p.locks[sessionID]
 	if !ok {
-		slot = make(chan struct{}, 1)
+		slot = lockSlot{slot: make(chan struct{}, 1), lastUsed: p.now()}
 		p.locks[sessionID] = slot
 	}
+	slot.lastUsed = p.now()
+	p.locks[sessionID] = slot
 	p.mu.Unlock()
 
 	select {
-	case slot <- struct{}{}:
-		return func() { <-slot }, nil
+	case slot.slot <- struct{}{}:
+		return func() { <-slot.slot }, nil
 	case <-ctx.Done():
 		return nil, provider.NewErrUpstream(0, "timeout", "request cancelled or timed out")
 	}
+}
+
+// sweepStale ejecuta el sweep de TTL (P5/P6): elimina dirs de cliente idle
+// más allá del TTL y evicta las entradas del lock map idle y libres. RED:
+// no-op — no implementado (T_ttl_stale_dir_removed / T_lock_map_bounded quedan
+// RED por aserción).
+func (p *Provider) sweepStale() {
+	// RED: no implementado
+}
+
+// childEnv construye el env del proceso CLI hijo (P3/D3): allowlist fija
+// PATH + HOME + variables STUB_*. RED: devuelve el env completo (os.Environ)
+// — la allowlist NO está implementada (T_child_env_allowlist queda RED).
+func (p *Provider) childEnv() []string {
+	return os.Environ()
 }
 
 // normalizeExit convierte un fallo de ejecución del CLI a *ErrUpstream

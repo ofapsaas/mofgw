@@ -11,10 +11,12 @@ package claude_test
 // devuelve ""/nil/false/error).
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/subprocess"
@@ -288,7 +290,7 @@ func TestT_TranslateStreamTextDeltas(t *testing.T) {
 	close(lines)
 
 	ch := make(chan provider.StreamEvent, 16)
-	adapter.TranslateStreamOut(lines, ch, "claude-sonnet-4-6")
+	adapter.TranslateStreamOut(context.Background(), lines, ch, "claude-sonnet-4-6")
 	close(ch)
 
 	var got []string
@@ -328,7 +330,7 @@ func TestT_TranslateStreamSkipControl(t *testing.T) {
 	close(lines)
 
 	ch := make(chan provider.StreamEvent, 16)
-	adapter.TranslateStreamOut(lines, ch, "m")
+	adapter.TranslateStreamOut(context.Background(), lines, ch, "m")
 	close(ch)
 
 	var got []string
@@ -355,7 +357,7 @@ func TestT_TranslateStreamNoUsageDone(t *testing.T) {
 	close(lines)
 
 	ch := make(chan provider.StreamEvent, 16)
-	adapter.TranslateStreamOut(lines, ch, "m")
+	adapter.TranslateStreamOut(context.Background(), lines, ch, "m")
 	close(ch)
 
 	var payloads []string
@@ -388,7 +390,7 @@ func TestT_TranslateStreamEmpty(t *testing.T) {
 	lines := make(chan string)
 	close(lines)
 	ch := make(chan provider.StreamEvent, 4)
-	adapter.TranslateStreamOut(lines, ch, "m")
+	adapter.TranslateStreamOut(context.Background(), lines, ch, "m")
 	close(ch)
 	if evs := collectEvents(ch); len(evs) != 0 {
 		t.Fatalf("empty stream should emit nothing, got %d events", len(evs))
@@ -399,7 +401,7 @@ func TestT_TranslateStreamEmpty(t *testing.T) {
 	lines2 <- `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`
 	close(lines2)
 	ch2 := make(chan provider.StreamEvent, 4)
-	adapter.TranslateStreamOut(lines2, ch2, "m")
+	adapter.TranslateStreamOut(context.Background(), lines2, ch2, "m")
 	close(ch2)
 	if evs := collectEvents(ch2); len(evs) != 1 {
 		t.Fatalf("expected 1 data event, got %d", len(evs))
@@ -412,8 +414,8 @@ func TestT_IsRefusal(t *testing.T) {
 	adapter := newTestAdapter(t)
 
 	t.Run("true", func(t *testing.T) {
-		if !adapter.IsRefusal("I cannot respond to that") {
-			t.Fatalf("IsRefusal('...cannot...') = false, want true")
+		if !adapter.IsRefusal("refused due to responsible use policy") {
+			t.Fatalf("IsRefusal('...responsible use policy...') = false, want true")
 		}
 	})
 	t.Run("false", func(t *testing.T) {
@@ -481,5 +483,46 @@ func TestT_AdapterStreamStubCli(t *testing.T) {
 	}
 	if !reflect.DeepEqual(content, []string{"Hello", " world"}) {
 		t.Fatalf("stream deltas = %v, want %v", content, []string{"Hello", " world"})
+	}
+}
+
+// T_isrefusal_no_generic_false_positive (P8, C8): IsRefusal NO marca como
+// negativa un error de sistema genérico ("cannot open file"), y SÍ marca un
+// texto de policy específico ("refused due to responsible use policy"). El
+// skeleton conserva el marker "cannot" ⇒ el caso genérico da true ⇒ RED.
+func TestT_IsRefusalNoGenericFalsePositive(t *testing.T) {
+	adapter := newTestAdapter(t)
+
+	if adapter.IsRefusal("cannot open file") {
+		t.Fatalf("IsRefusal('cannot open file') = true, want false (falso positivo genérico)") // RED
+	}
+	if !adapter.IsRefusal("refused due to responsible use policy") {
+		t.Fatalf("IsRefusal('refused due to responsible use policy') = false, want true")
+	}
+}
+
+// T_adapter_send_ctx_guarded (P4, C5): un TranslateStreamOut con ctx ya
+// cancelado y canal sin consumidor retorna en un plazo acotado (no bloquea).
+// El skeleton (claude.go) deja el send `ch <-` sin guard ⇒ bloquea ⇒ RED.
+func TestT_AdapterSendCtxGuarded(t *testing.T) {
+	adapter := newTestAdapter(t)
+
+	lines := make(chan string, 1)
+	lines <- `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`
+	close(lines)
+	ch := make(chan provider.StreamEvent) // sin buffer, sin consumidor
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ctx ya cancelado
+
+	done := make(chan struct{})
+	go func() {
+		adapter.TranslateStreamOut(ctx, lines, ch, "m")
+		close(done)
+	}()
+	select {
+	case <-done:
+		// retornó sin bloquear ✓
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("TranslateStreamOut con ctx cancelado y canal sin consumidor NO retorna (bloquea)") // RED
 	}
 }

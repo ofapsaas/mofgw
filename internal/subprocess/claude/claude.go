@@ -12,6 +12,7 @@ package claude
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,7 +209,9 @@ func mapStopReason(stop string) string {
 // content_block_start/stop, message_delta, message_stop) y los deltas de
 // thinking/tool_use no generan eventos. Nunca emite usage ni [DONE] (los
 // agrega el motor). Devuelve cuando `lines` se cierra.
-func (b *Backend) TranslateStreamOut(lines <-chan string, ch chan<- provider.StreamEvent, model string) {
+// RED (013-004): la firma gana ctx (D2) pero el send `ch <-` NO está
+// guardado → T_adapter_send_ctx_guarded queda RED.
+func (b *Backend) TranslateStreamOut(ctx context.Context, lines <-chan string, ch chan<- provider.StreamEvent, model string) {
 	for ln := range lines {
 		line := strings.TrimSpace(ln)
 		if line == "" {

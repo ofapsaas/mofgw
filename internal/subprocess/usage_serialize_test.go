@@ -60,10 +60,13 @@ func waitForStubStart(t *testing.T, lockFile string) {
 	t.Fatalf("el stub del request no arrancó (el lock file %s no recibió 'start'); el motor no spawneó", lockFile)
 }
 
-// T_usage_fabricated_complete (P6, C7): tras un Complete exitoso, el Usage
-// de la respuesta es no degenerado: PromptTokens/CompletionTokens/TotalTokens
-// >= 0, Total >= 0. El motor fabrica los conteos si el CLI no los emite.
-func TestT_UsageFabricatedComplete(t *testing.T) {
+// T_usage_preserved_complete (P1, C7): tras un Complete exitoso donde el
+// stub default emite usage {1,1,2}, la respuesta preserva el usage no
+// degenerado del backend (P1/D4). Renombrado desde
+// TestT_UsageFabricatedComplete (013-001): tras P1 el stub default ejercita
+// PRESERVACIÓN, no fabricación (la fabricación queda cubierta por
+// TestT_UsageFabricatedWhenZero). NO borrado — valida el camino preservado.
+func TestT_UsagePreservedComplete(t *testing.T) {
 	h := newTestProvider(t, withModels("m1"))
 	body := chatBody("m1", map[string]any{"role": "user", "content": "HELLO"})
 

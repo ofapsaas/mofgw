@@ -500,12 +500,6 @@ func (c *Config) validate() error {
 			if p.Backend != "claude" {
 				return fmt.Errorf("config: provider %q: unknown backend %q", p.ID, p.Backend)
 			}
-			if p.Command == "" {
-				p.Command = "claude"
-			}
-			if p.SessionDir == "" {
-				p.SessionDir = DefaultSessionDir
-			}
 		default:
 			return fmt.Errorf("config: provider %q: unknown provider type %q", p.ID, p.Type)
 		}

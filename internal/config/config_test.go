@@ -529,3 +529,32 @@ providers:
 		t.Fatalf("api_key no resuelta")
 	}
 }
+
+// ---- 013-004-resilience-ops: P7 — defaults de config fuera de validate() ----
+
+// T_config_defaults_in_parse (P7, C8): al parsear un provider type:subprocess
+// SIN command ni session_dir, el Config resultante lee Command=="claude" y
+// SessionDir==DefaultSessionDir (defaults aplicados en Parse/factory).
+// validate() no produce esa mutación como efecto secundario. RED: el skeleton
+// quitó la mutación de validate() sin cablear los defaults en Parse() ⇒
+// Command/SessionDir quedan vacíos ⇒ aserción falla.
+func TestT_ConfigDefaultsInParse(t *testing.T) {
+	raw := `
+providers:
+  - id: sub
+    type: subprocess
+    backend: claude
+    models: ["m"]
+`
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse de subprocess sin command/session_dir: %v", err)
+	}
+	p := cfg.Providers[0]
+	if p.Command != "claude" {
+		t.Fatalf("Command = %q, want %q (default aplicado en Parse)", p.Command, "claude") // RED
+	}
+	if p.SessionDir != DefaultSessionDir {
+		t.Fatalf("SessionDir = %q, want %q", p.SessionDir, DefaultSessionDir) // RED
+	}
+}
