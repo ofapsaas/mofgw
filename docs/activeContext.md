@@ -1,7 +1,7 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (feature 013-001-subprocess-core MERGED — epic 013).
+> Última actualización: 2026-08-12 (features 013-001 + 013-002 MERGED — epic 013).
 
 ## Estado del programa
 
@@ -29,6 +29,26 @@
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 013-002-adapter-claude (epic 013-mofgw-cli-subprocess)
+
+### Decisiones relevantes
+
+- **Feature 013-002-adapter-claude MERGED (2/4 del epic 013).** Nuevo paquete `internal/subprocess/claude/`: implementa la interfaz `subprocess.Backend` (de 013-001) para el CLI `claude`. Suite completa **552 tests `-race` en 21 paquetes**, go vet + gofmt limpios. Commits: `d20c293` RED, `b8a211a` GREEN, `e5ec87d` fixes robustez + review.md. El motor (013-001) NO se modificó.
+- **Adapter delgado (solo implementa `Backend`, sin tocar el motor):** `Name()="claude"`; `Args` = `[bin, -p, --session-id s.ID, --model model, --output-format stream-json, ...flags]` (prompt SIEMPRE por stdin, nunca en argv — P3); `TranslateReq` = último mensaje `user` limpio (string o array text, sin tools — D3/D4); `TranslateOut` parsea el stream-json agregado → `choices[0].content` (text deltas) + `finish_reason` (`end_turn`/`stop_sequence`→`stop`, `max_tokens`→`length`); `TranslateStreamOut` = un chunk OpenAI por `text_delta`, sin usage/[DONE] (los agrega el motor); `IsRefusal` sobre stderr (markers refus/cannot/not able to/policy/responsible use/safety).
+- **Wire-format único stream-json (C1):** `Args` no distingue stream ⇒ `--output-format stream-json` SIEMPRE; `TranslateOut` parsea el stream-json agregado. Un formato para Complete y Stream, motor intacto. **No se incluye `--include-partial-messages`** (decisión owner 12 Ago).
+- **Text-only (I4):** solo blocks `text` se surfacean; `thinking`/`tool_use` descartados. `usage` real de claude se descarta (el motor fabrica/sobreescribe — P6/P7 de 001).
+- **Review APPROVE (qwen3.7-plus):** **0 bloqueantes**, relevance audit 19/19 PASS. 2 importantes documentados para **013-004** (limitaciones de diseño, no errores del implementer): (1) `TranslateStreamOut` send sin guard de ctx — raíz en interfaz `Backend` sin context → cambio de interfaz en hardening; (2) marker `IsRefusal` "cannot" con riesgo de falsos positivos → ajustar con datos del smoke real (spec B-Q7). 3 menores → 2 resueltos en `e5ec87d` (scanner buffer, prompt vacío fail-fast), 1 aceptado (stream ID). 2 nits, 2 FYI.
+
+### Deuda técnica transferida a 013-004 (hardening)
+
+- Cambio de interfaz `Backend.TranslateStreamOut` para recibir context (evita goroutine leak bajo abandono del consumidor).
+- Ajustar markers de `IsRefusal` de claude con datos del smoke real (spec B-Q7).
+- De la review de 013-001: preservar usage real del backend si no-cero; manejar `sc.Err()` del scanner; allowlist de env; limpieza TTL de sesiones y lock map.
+
+### Próxima feature en cola
+
+- **013-003-config-wiring** (epic 013-mofgw-cli-subprocess): config `type: subprocess` + `backend` + `command` + `session_dir` + `backend_flags` en `ProviderConfig`, factory en `cmd/mofgw/main.go` (rama subprocess), catálogo `/v1/models` sin-tools para modelos subprocess, request path omite/rechaza `tools`, restricción "solo agentes del usuario". Quedan 003-004 (001-002 done). Coordinar vía `cdad-epic`. Los adapters gemini/codex quedan a futuro.
 
 ### 12 Ago 2026 — Feature: 013-001-subprocess-core (epic 013-mofgw-cli-subprocess)
 
