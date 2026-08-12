@@ -530,14 +530,52 @@ func TestE2E011001_F_RechazosFeaturesFuturas(t *testing.T) {
 		}
 	})
 	t.Run("part_input_file", func(t *testing.T) {
-		b := inputPart(t, body, "input_file")
+		// POST-AUDIT (011-004): el rechazo P9 de 001 ya no existe (spec 004
+		// §P6). input_file → part file chat (P2/CA-2). Convertido de assert de
+		// rechazo a assert de traducción. Parts completas (inputPart no aplica).
+		b := responsesBody("hola")
+		item := b["input"].([]any)[0].(map[string]any)
+		item["content"] = []any{filePart("data:application/pdf;base64,JVBERi0xLjc=", "doc.pdf")}
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
-		assertReject(t, code, raw, "file attachments not yet supported") // P9
+		if code != 200 {
+			t.Fatalf("status = %d, want 200 (traducción a part file, spec 004 §P2); body=%s", code, raw)
+		}
+		ca := wireContentArray(t, u.gotBody, 0)
+		if len(ca) != 1 {
+			t.Fatalf("content array len = %d, want 1: %s", len(ca), u.gotBody)
+		}
+		file, _ := ca[0]["file"].(map[string]any)
+		if ca[0]["type"] != "file" || file == nil {
+			t.Fatalf("part[0] = %+v, want file (P2): %s", ca[0], u.gotBody)
+		}
+		if file["file_data"] != "data:application/pdf;base64,JVBERi0xLjc=" || file["filename"] != "doc.pdf" {
+			t.Fatalf("part[0].file = %+v, want file_data/filename copiados tal cual (P2)", file)
+		}
 	})
 	t.Run("part_input_image", func(t *testing.T) {
-		b := inputPart(t, body, "input_image")
+		// POST-AUDIT (011-004): ídem M1. input_image → part image_url (P1/CA-1),
+		// detail passthrough.
+		b := responsesBody("hola")
+		item := b["input"].([]any)[0].(map[string]any)
+		item["content"] = []any{imagePart("data:image/png;base64,iVBORw0KGgo=", stringPtr("low"))}
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
-		assertReject(t, code, raw, "file attachments not yet supported") // P9
+		if code != 200 {
+			t.Fatalf("status = %d, want 200 (traducción a part image_url, spec 004 §P1); body=%s", code, raw)
+		}
+		ca := wireContentArray(t, u.gotBody, 0)
+		if len(ca) != 1 {
+			t.Fatalf("content array len = %d, want 1: %s", len(ca), u.gotBody)
+		}
+		iu, _ := ca[0]["image_url"].(map[string]any)
+		if ca[0]["type"] != "image_url" || iu == nil {
+			t.Fatalf("part[0] = %+v, want image_url (P1): %s", ca[0], u.gotBody)
+		}
+		if iu["url"] != "data:image/png;base64,iVBORw0KGgo=" {
+			t.Fatalf("image_url.url = %v, want data-URI (P1)", iu["url"])
+		}
+		if iu["detail"] != "low" {
+			t.Fatalf("image_url.detail = %v, want low (passthrough, P1)", iu["detail"])
+		}
 	})
 }
 

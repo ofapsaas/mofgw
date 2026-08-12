@@ -645,13 +645,56 @@ func TestE2E011003_P10_RechazosConservados(t *testing.T) {
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
 		assertReject(t, code, raw, "structured output not yet supported") // P4 de 002
 	})
-	t.Run("part_input_file_400", func(t *testing.T) {
-		code, raw := responsesAs(t, h.srv.URL, h.key, inputPart(t, body, "input_file"))
-		assertReject(t, code, raw, "file attachments not yet supported") // P9 de 001
+	t.Run("part_input_file", func(t *testing.T) {
+		// POST-AUDIT (011-004): la rama P9 de 001 fue eliminada (spec 004 §P6);
+		// el subtest ya no vive en "rechazos conservados". input_file → part
+		// file (P2/CA-2). Harness propio para inspeccionar el wire upstream.
+		u := upstreamOK("m", "x")
+		h2 := build(t, []*upstream{u}, "sk-test-1")
+		b := responsesBody("hola")
+		item := b["input"].([]any)[0].(map[string]any)
+		item["content"] = []any{filePart("data:application/pdf;base64,JVBERi0xLjc=", "doc.pdf")}
+		code, raw := responsesAs(t, h2.srv.URL, h2.key, b)
+		if code != 200 {
+			t.Fatalf("status = %d, want 200 (part file traducida, spec 004 §P2); body=%s", code, raw)
+		}
+		ca := wireContentArray(t, u.gotBody, 0)
+		if len(ca) != 1 {
+			t.Fatalf("content array len = %d, want 1: %s", len(ca), u.gotBody)
+		}
+		file, _ := ca[0]["file"].(map[string]any)
+		if ca[0]["type"] != "file" || file == nil {
+			t.Fatalf("part[0] = %+v, want file (P2): %s", ca[0], u.gotBody)
+		}
+		if file["file_data"] != "data:application/pdf;base64,JVBERi0xLjc=" || file["filename"] != "doc.pdf" {
+			t.Fatalf("part[0].file = %+v, want file_data/filename (P2)", file)
+		}
 	})
-	t.Run("part_input_image_400", func(t *testing.T) {
-		code, raw := responsesAs(t, h.srv.URL, h.key, inputPart(t, body, "input_image"))
-		assertReject(t, code, raw, "file attachments not yet supported") // P9 de 001
+	t.Run("part_input_image", func(t *testing.T) {
+		// POST-AUDIT (011-004): ídem M3. input_image → part image_url (P1/CA-1).
+		u := upstreamOK("m", "x")
+		h2 := build(t, []*upstream{u}, "sk-test-1")
+		b := responsesBody("hola")
+		item := b["input"].([]any)[0].(map[string]any)
+		item["content"] = []any{imagePart("data:image/png;base64,iVBORw0KGgo=", stringPtr("low"))}
+		code, raw := responsesAs(t, h2.srv.URL, h2.key, b)
+		if code != 200 {
+			t.Fatalf("status = %d, want 200 (part image_url traducida, spec 004 §P1); body=%s", code, raw)
+		}
+		ca := wireContentArray(t, u.gotBody, 0)
+		if len(ca) != 1 {
+			t.Fatalf("content array len = %d, want 1: %s", len(ca), u.gotBody)
+		}
+		iu, _ := ca[0]["image_url"].(map[string]any)
+		if ca[0]["type"] != "image_url" || iu == nil {
+			t.Fatalf("part[0] = %+v, want image_url (P1): %s", ca[0], u.gotBody)
+		}
+		if iu["url"] != "data:image/png;base64,iVBORw0KGgo=" {
+			t.Fatalf("image_url.url = %v, want data-URI (P1)", iu["url"])
+		}
+		if iu["detail"] != "low" {
+			t.Fatalf("image_url.detail = %v, want low (passthrough, P1)", iu["detail"])
+		}
 	})
 	t.Run("body_no_json_400", func(t *testing.T) {
 		code, raw := responsesRaw(t, h.srv.URL, h.key, []byte(`not-json`))
