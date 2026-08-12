@@ -12,11 +12,13 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ofapsaas/mofgw/internal/auth"
 	"github.com/ofapsaas/mofgw/internal/health"
 	"github.com/ofapsaas/mofgw/internal/provider"
 )
@@ -1142,5 +1144,107 @@ func TestStreamFirstTokenTimeoutProviderOverride(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("rotación tardó %s — override per-provider no aplicó (esperado ~%s)", elapsed, provFT)
+	}
+}
+
+// ---- 013-003-config-wiring: P8/P9 — restricción "solo agentes del
+// usuario" (allowlist clientID en ProviderSpec.AllowedClients) ----
+
+// clientCtx produce un context que transporta un clientID (vía auth.Wrap,
+// el único canal público para inyectar la identidad del cliente; la key de
+// ctx es privada en auth).
+func clientCtx(clientID string) context.Context {
+	key := "sk-" + clientID
+	authz := auth.New([]auth.Client{{ID: clientID, KeySHA256: auth.HashKey(key)}})
+	var out context.Context
+	handler := authz.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		out = r.Context()
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	return out
+}
+
+// TestT_RestrictionAllowedClient verifica P8 (C9): clientID en la allowlist
+// se rutea al provider subprocess y obtiene una completion.
+func TestT_RestrictionAllowedClient(t *testing.T) {
+	sub := newFake("sub", "sub-model").ok("de sub")
+	r := New([]ProviderSpec{
+		{Provider: sub, AllowedClients: []string{"me"}},
+	}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(clientCtx("me"), reqFor("sub-model"), bodyFor("sub-model", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de sub" {
+		t.Fatalf("content = %q, want de sub", res.Response.Choices[0].Message.Content)
+	}
+	if sub.callCount() != 1 {
+		t.Fatalf("sub calls = %d, want 1", sub.callCount())
+	}
+}
+
+// TestT_RestrictionDeniedClientFallback verifica P8 (C9): un clientID fuera
+// de la allowlist NO recibe el modelo del provider (se excluye de
+// candidatos → fallback al otro provider; el subprocess nunca se toca).
+func TestT_RestrictionDeniedClientFallback(t *testing.T) {
+	sub := newFake("sub", "sub-model").fail500() // si se llamara, fallaría
+	http := newFake("http", "sub-model").ok("de http")
+	r := New([]ProviderSpec{
+		{Provider: sub, AllowedClients: []string{"me"}},
+		{Provider: http},
+	}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(clientCtx("other"), reqFor("sub-model"), bodyFor("sub-model", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de http" {
+		t.Fatalf("content = %q, want de http (fallback)", res.Response.Choices[0].Message.Content)
+	}
+	if sub.callCount() != 0 {
+		t.Fatalf("sub calls = %d, want 0 (cliente no autorizado)", sub.callCount())
+	}
+}
+
+// TestT_RestrictionDeniedClient404 verifica P8 (C9): cliente no autorizado
+// y sin otro provider que sirva el modelo → 404 model_not_found, sin tocar
+// el CLI subprocess (I5: exclusión de candidatos, no error no-retryable).
+func TestT_RestrictionDeniedClient404(t *testing.T) {
+	sub := newFake("sub", "sub-model").ok("x")
+	r := New([]ProviderSpec{
+		{Provider: sub, AllowedClients: []string{"me"}},
+	}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	_, err := r.Complete(clientCtx("other"), reqFor("sub-model"), bodyFor("sub-model", nil))
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError", err)
+	}
+	if ce.Status != http.StatusNotFound || ce.Type != "model_not_found" {
+		t.Fatalf("status/type = %d/%s, want 404/model_not_found", ce.Status, ce.Type)
+	}
+	if sub.callCount() != 0 {
+		t.Fatalf("sub calls = %d, want 0", sub.callCount())
+	}
+}
+
+// TestT_RestrictionNoAllowlistUnrestricted verifica P9 (C10): sin
+// AllowedClients, cualquier clientID autenticado usa el provider (sin
+// restricción, backward compatible).
+func TestT_RestrictionNoAllowlistUnrestricted(t *testing.T) {
+	sub := newFake("sub", "sub-model").ok("de sub")
+	r := New([]ProviderSpec{
+		{Provider: sub}, // sin allowlist
+	}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(clientCtx("anyone"), reqFor("sub-model"), bodyFor("sub-model", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de sub" {
+		t.Fatalf("content = %q, want de sub", res.Response.Choices[0].Message.Content)
 	}
 }

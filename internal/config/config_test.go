@@ -7,6 +7,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -393,5 +394,138 @@ clients:
 	}
 	if found == nil || *found != 45*time.Second {
 		t.Fatalf("provider override = %v, want 45s", found)
+	}
+}
+
+// ---- 013-003-config-wiring: P1-P4 (config type:subprocess) ----
+
+// subprocessYAML: config mínima con un provider type:subprocess SIN
+// base_url/api_key_env (P1/P2). Clients fija la allowlist (D5).
+const subprocessYAML = `
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+providers:
+  - id: sub
+    type: subprocess
+    backend: claude
+    command: "claude"
+    session_dir: "/tmp/mofgw-sessions"
+    models: ["claude-sonnet-4"]
+    max_tokens: 8192
+    backend_flags: ["--dangerously-skip-permissions"]
+    clients: ["me"]
+`
+
+// TestT_ConfigSubprocessValid verifica P1 (C2): un type:subprocess válido
+// parsea y valida sin error, con backend obligatorio y los campos
+// opcionales/defaults leídos.
+func TestT_ConfigSubprocessValid(t *testing.T) {
+	cfg, err := LoadFile(writeTemp(t, subprocessYAML))
+	if err != nil {
+		t.Fatalf("subprocess válido: %v", err)
+	}
+	p := cfg.Providers[0]
+	if p.Type != "subprocess" || p.Backend != "claude" {
+		t.Fatalf("type/backend = %q/%q, want subprocess/claude", p.Type, p.Backend)
+	}
+	if p.Command != "claude" || p.SessionDir != "/tmp/mofgw-sessions" {
+		t.Fatalf("command/session_dir = %q/%q", p.Command, p.SessionDir)
+	}
+	if len(p.BackendFlags) != 1 || p.BackendFlags[0] != "--dangerously-skip-permissions" {
+		t.Fatalf("backend_flags = %v", p.BackendFlags)
+	}
+	if len(p.Clients) != 1 || p.Clients[0] != "me" {
+		t.Fatalf("clients = %v", p.Clients)
+	}
+	if p.MaxTokens != 8192 {
+		t.Fatalf("max_tokens = %d, want 8192", p.MaxTokens)
+	}
+}
+
+// TestT_ConfigSubprocessNoKey verifica P2 (C3): un type:subprocess sin
+// base_url ni api_key_env es válido (claude usa OAuth/suscripción).
+func TestT_ConfigSubprocessNoKey(t *testing.T) {
+	cfg, err := LoadFile(writeTemp(t, subprocessYAML))
+	if err != nil {
+		t.Fatalf("subprocess sin key/base_url: %v", err)
+	}
+	if cfg.Providers[0].BaseURL != "" || cfg.Providers[0].APIKeyEnv != "" {
+		t.Fatalf("subprocess no debe requerir base_url/api_key_env: %+v", cfg.Providers[0])
+	}
+}
+
+// TestT_ConfigUnknownTypeError verifica P3 (C4): type desconocido → error
+// descriptivo ("unknown provider type"), sin arrancar. Se da base_url y
+// api_key_env para que el único motivo de fallo sea el type.
+func TestT_ConfigUnknownTypeError(t *testing.T) {
+	y := `
+providers:
+  - id: p
+    type: bogus
+    base_url: "https://x/v1"
+    api_key_env: "K"
+    models: ["m"]
+`
+	t.Setenv("K", "k")
+	_, err := LoadFile(writeTemp(t, y))
+	if err == nil {
+		t.Fatal("type desconocido debería fallar")
+	}
+	if !strings.Contains(err.Error(), "unknown provider type") {
+		t.Fatalf("error debería ser descriptivo, got: %v", err)
+	}
+}
+
+// TestT_ConfigUnknownBackendError verifica P3 (C4): backend != "claude"
+// → error descriptivo al cargar (owner 12 Ago: validación en tiempo de
+// carga, alineado con "de carga" de P3/C4).
+func TestT_ConfigUnknownBackendError(t *testing.T) {
+	y := `
+providers:
+  - id: p
+    type: subprocess
+    backend: gemini
+    base_url: "https://x/v1"
+    api_key_env: "K"
+    models: ["m"]
+`
+	t.Setenv("K", "k")
+	_, err := LoadFile(writeTemp(t, y))
+	if err == nil {
+		t.Fatal("backend != claude debería fallar")
+	}
+	if !strings.Contains(err.Error(), "unknown backend") {
+		t.Fatalf("error debería nombrar backend desconocido, got: %v", err)
+	}
+}
+
+// TestT_ConfigHTTPBackwardCompat verifica P4 (C5): type:http explícito +
+// base_url/api_key_env carga y valida EXACTAMENTE como el tipo vacío.
+func TestT_ConfigHTTPBackwardCompat(t *testing.T) {
+	y := `
+server:
+  addr: "127.0.0.1:3369"
+fallback:
+  max_retries: 2
+providers:
+  - id: p
+    type: http
+    base_url: "https://api.example.com/v1"
+    api_key_env: "MOFGW_P4_KEY"
+    models: ["m"]
+    max_tokens: 4096
+`
+	t.Setenv("MOFGW_P4_KEY", "k1")
+	cfg, err := LoadFile(writeTemp(t, y))
+	if err != nil {
+		t.Fatalf("type:http debería cargar igual que sin type: %v", err)
+	}
+	if cfg.Providers[0].BaseURL != "https://api.example.com/v1" {
+		t.Fatalf("base_url = %q", cfg.Providers[0].BaseURL)
+	}
+	if cfg.Providers[0].APIKey != "k1" {
+		t.Fatalf("api_key no resuelta")
 	}
 }

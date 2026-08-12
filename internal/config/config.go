@@ -137,7 +137,31 @@ type ProviderConfig struct {
 
 	// APIKey se puebla al resolver APIKeyEnv (nunca viene del YAML).
 	APIKey string `yaml:"-"`
+
+	// 013-003-config-wiring (D1): discriminador de tipo + campos del
+	// provider subprocess. Type zero-value "" (o "http") = comportamiento
+	// HTTP actual (backward compatible, P4); "subprocess" requiere Backend
+	// y NO exige base_url/api_key_env (P2).
+	Type string `yaml:"type"`
+	// Backend: backend del motor subprocess ("claude" hoy; gemini/codex a
+	// futuro). Obligatorio cuando Type=="subprocess"; != "claude" → error
+	// descriptivo al cargar (owner 12 Ago, C4/P3).
+	Backend string `yaml:"backend"`
+	// Command: binario del CLI (default "claude").
+	Command string `yaml:"command"`
+	// SessionDir: base de sesiones del motor (default DefaultSessionDir).
+	SessionDir string `yaml:"session_dir"`
+	// BackendFlags: flags opacos que pasan tal cual al argv del CLI (I2).
+	BackendFlags []string `yaml:"backend_flags"`
+	// Clients: allowlist de clientID con acceso al provider subprocess
+	// (D5, mapeada a ProviderSpec.AllowedClients). Vacío = sin restricción
+	// (P9, warning de arranque).
+	Clients []string `yaml:"clients"`
 }
+
+// DefaultSessionDir es el directorio base de sesiones del provider
+// subprocess cuando session_dir no está configurado (013-003 P1).
+const DefaultSessionDir = "~/.config/mofgw/sessions"
 
 // BudgetConfig es el límite de consumo de un cliente (008-002-budget):
 // cost_usd_max y/o tokens_max opcionales (0 = sin límite para esa

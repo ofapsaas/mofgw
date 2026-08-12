@@ -122,6 +122,12 @@ type ProviderSpec struct {
 	// producción el knob providers[].thinking_path manda — un ID real
 	// como "acct1" no está en la tabla verificada → sin inyección).
 	ThinkingPath string
+
+	// 013-003-config-wiring (D5): allowlist de clientID con acceso a este
+	// provider. Vacío = sin restricción (P9). En GREEN, candidates(model,
+	// clientID) excluye el spec cuando len>0 y el clientID del request no
+	// está (fallback preservado, I5).
+	AllowedClients []string
 }
 
 // CooldownStore guarda el estado de cooldown en memoria (map + mutex),
