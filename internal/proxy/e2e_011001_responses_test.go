@@ -591,17 +591,6 @@ func assertReject(t *testing.T, code int, raw []byte, wantMsg string) {
 	}
 }
 
-// inputPart reemplaza la part de content del primer input item por una del
-// type dado (input_file/input_image).
-func inputPart(t *testing.T, base map[string]any, partType string) map[string]any {
-	t.Helper()
-	b := cloneMap(base)
-	input := b["input"].([]any)
-	item := input[0].(map[string]any)
-	item["content"] = []any{map[string]any{"type": partType, "file_id": "file-123"}}
-	return b
-}
-
 // cloneMap copia un mapa a nivel superficial (suficiente para los subtests).
 func cloneMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))

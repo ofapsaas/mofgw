@@ -320,6 +320,41 @@ func TestE2E011004_P3_MensajesMixtosPorMensaje(t *testing.T) {
 	}
 }
 
+// test_postcondition_3d (VERIFICAR — Contexto técnico §"Verificaciones
+// pendientes", recomendación: "mapear solo los tipos conocidos preservando el
+// orden y dropear las desconocidas"): un mensaje que activa content-array y
+// trae una part de tipo desconocido (input_text + input_image + input_unknown)
+// → el wire upstream tiene SOLO los tipos conocidos (text + image_url), EN
+// ORDEN, con la part desconocida dropeada. Coherente con el string-content que
+// ignora lo que no es input_text (P3/D1).
+func TestE2E011004_P3_PartTipoDesconocidoDropeada(t *testing.T) {
+	u := upstreamOK("m", "hola")
+	h := build(t, []*upstream{u}, "sk-test-1")
+
+	b := responsesBody("hola")
+	item := b["input"].([]any)[0].(map[string]any)
+	item["content"] = []any{
+		map[string]any{"type": "input_text", "text": "¿qué dice?"},
+		imagePart("data:image/png;base64,iVBORw0KGgo=", nil),
+		map[string]any{"type": "input_unknown", "text": "x"},
+	}
+	code, raw := responsesAs(t, h.srv.URL, h.key, b)
+	if code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", code, raw)
+	}
+
+	ca := wireContentArray(t, u.gotBody, 0)
+	if len(ca) != 2 {
+		t.Fatalf("content array len = %d, want 2 (part desconocida dropeada): %s", len(ca), u.gotBody)
+	}
+	if ca[0]["type"] != "text" {
+		t.Fatalf("ca[0].type = %v, want text (orden, I3)", ca[0]["type"])
+	}
+	if ca[1]["type"] != "image_url" {
+		t.Fatalf("ca[1].type = %v, want image_url (orden, I3)", ca[1]["type"])
+	}
+}
+
 // ---- BLOQUE C — coexistencia con el ciclo tool-calling (P4 → CA-5) ----
 
 // test_postcondition_4 (CA-5): input[] mixto con message-imagen +
