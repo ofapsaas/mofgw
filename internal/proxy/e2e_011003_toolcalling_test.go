@@ -45,9 +45,9 @@ import (
 // Los parámetros/schema viajan como json.RawMessage para verificar la
 // byte-identidad I3 sin re-marshal.
 type toolCallWire struct {
-	Model             string   `json:"model"`
-	Temperature       *float64 `json:"temperature"`
-	Tools             []struct {
+	Model       string   `json:"model"`
+	Temperature *float64 `json:"temperature"`
+	Tools       []struct {
 		Type     string `json:"type"`
 		Function struct {
 			Name        string          `json:"name"`
