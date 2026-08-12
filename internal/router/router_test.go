@@ -1248,3 +1248,60 @@ func TestT_RestrictionNoAllowlistUnrestricted(t *testing.T) {
 		t.Fatalf("content = %q, want de sub", res.Response.Choices[0].Message.Content)
 	}
 }
+
+// TestT_RestrictionDeniedCooldownGraceNoWait verifica P8 (regresión del
+// fix de shortestCooldown): la grace de degradación NUNCA debe esperar el
+// cooldown de un provider que el cliente no puede usar (denegado por
+// allowlist). Con un provider restringido en cooldown CORTO (≤ grace) y
+// otro permitido en cooldown LARGO (> grace), el cliente denegado debe
+// hacer fast-fail de inmediato — no dormir esperando el cooldown corto del
+// provider que de todos modos no podría usar. Pre-fix (shortestCooldown sin
+// filtrar AllowedClients) el router dormía ~3s; post-fix retorna al instante.
+func TestT_RestrictionDeniedCooldownGraceNoWait(t *testing.T) {
+	sub := newFake("sub", "sub-model").fail500()     // restringido a "me"; si se llamara, fallaría
+	httpP := newFake("http", "sub-model").fail500()  // permitido, también en cooldown largo
+
+	r := NewWithOptions([]ProviderSpec{
+		{Provider: sub, AllowedClients: []string{"me"}},
+		{Provider: httpP},
+	}, Options{
+		MaxRetries:    1,
+		Cooldown:      time.Minute,
+		GlobalTimeout: 30 * time.Second,
+		Degradation: DegradationConfig{
+			MaxRequests:   0,
+			CooldownGrace: 5 * time.Second,
+		},
+	})
+
+	// Ambos en cooldown: sub con restante CORTO (3s ≤ grace), http con
+	// restante LARGO (30s > grace).
+	cs := r.Cooldowns()
+	cs.Set("sub", 3*time.Second)
+	cs.Set("http", 30*time.Second)
+
+	start := time.Now()
+	_, err := r.Complete(clientCtx("other"), reqFor("sub-model"), bodyFor("sub-model", nil))
+	elapsed := time.Since(start)
+
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError (fast-fail)", err)
+	}
+	if ce.Status != http.StatusBadGateway || ce.Code != "all_providers_down" {
+		t.Fatalf("status/code = %d/%s, want 502/all_providers_down (fast-fail)", ce.Status, ce.Code)
+	}
+	// Anti-spurious-wait: si shortestCooldown considerara el cooldown del
+	// provider denegado (sub, 3s ≤ grace), el router dormiría ~3s. Con el
+	// fix solo ve el cooldown permitido (http, 30s > grace) → retorno
+	// inmediato.
+	if elapsed >= 2*time.Second {
+		t.Fatalf("Complete tardó %s — esperó el cooldown del provider denegado (bug: shortestCooldown sin filtro de AllowedClients)", elapsed)
+	}
+	if sub.callCount() != 0 {
+		t.Fatalf("sub calls = %d, want 0 (cliente no autorizado, nunca se llama)", sub.callCount())
+	}
+	if httpP.callCount() != 0 {
+		t.Fatalf("http calls = %d, want 0 (en cooldown, no se intenta)", httpP.callCount())
+	}
+}

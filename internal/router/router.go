@@ -423,14 +423,21 @@ func (r *Router) fastFail() error {
 }
 
 // shortestCooldown devuelve el cooldown restante más corto entre los
-// providers que sirven el modelo (0 si ninguno está en cooldown).
-func (r *Router) shortestCooldown(model string) time.Duration {
+// providers que sirven el modelo y que el clientID puede usar (0 si
+// ninguno está en cooldown). 013-003 (P8): un provider con AllowedClients
+// no vacío se excluye cuando el clientID no está en la allowlist — así la
+// grace de degradación nunca espera por un provider que ese cliente no
+// podría usar de todos modos.
+func (r *Router) shortestCooldown(model, clientID string) time.Duration {
 	var min time.Duration
 	found := false
 	for i := range r.specs {
 		s := &r.specs[i]
 		if !s.Provider.Serves(model) {
 			continue
+		}
+		if len(s.AllowedClients) > 0 && !contains(s.AllowedClients, clientID) {
+			continue // P8: cliente no autorizado → se excluye del cálculo
 		}
 		rem := r.cooldowns.Remaining(s.Provider.ID())
 		if rem > 0 && (!found || rem < min) {
@@ -716,7 +723,7 @@ func (r *Router) resolveReady(ctx context.Context, model string) ([]int, error) 
 	}
 	// Todos en cooldown/unhealthy: grace para cooldowns cortos.
 	if r.degradCfg.CooldownGrace > 0 {
-		if wait := r.shortestCooldown(model); wait > 0 && wait <= r.degradCfg.CooldownGrace {
+		if wait := r.shortestCooldown(model, clientID); wait > 0 && wait <= r.degradCfg.CooldownGrace {
 			r.logger.Debug("degraded: waiting for cooldown expiry", "wait", wait.String())
 			if sleepCtx(ctx, wait) {
 				ready, _ = r.candidates(model, clientID)
