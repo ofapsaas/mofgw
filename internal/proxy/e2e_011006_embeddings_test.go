@@ -44,6 +44,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -129,6 +130,23 @@ func embeddingsFail(status int) *embeddingsUpstream {
 //
 // Los tests que necesitan llegar a Ollama (C/E/F/G/H) asumen ese wiring.
 
+// buildWithEmbeddings materializa el CONTRATO buildWithEmbeddings de arriba
+// (GREEN): construye el harness con buildMultiClient (clientID
+// "client-"+clientKey, h.key = clientKey), levanta el mock de Ollama en
+// httptest, apunta el cliente HTTP de embeddings a esa URL (SetEmbeddings,
+// I2) y fuerza el modelo de embeddings del clientID (SetClientEmbeddingsModel,
+// P3). Reemplaza buildMultiClient en los tests que necesitan llegar a Ollama
+// (C/E/F/G/H/I y subtests 200/502 de J).
+func buildWithEmbeddings(t *testing.T, u *embeddingsUpstream, clientKey, model string) *harness {
+	t.Helper()
+	h := buildMultiClient(t, []*upstream{}, clientKey)
+	srv := httptest.NewServer(u.handler())
+	t.Cleanup(srv.Close)
+	h.proxySrv.SetEmbeddings(srv.URL, "")                     // base_url global (I2)
+	h.proxySrv.SetClientEmbeddingsModel("client-"+clientKey, model) // modelo forzado (P3)
+	return h
+}
+
 // ---- helpers del endpoint /v1/embeddings (análogos a h.chat/responses) ----
 
 // embeddings envía POST /v1/embeddings autenticado y devuelve el
@@ -210,7 +228,7 @@ func decodeEmbeddings(t *testing.T, raw []byte) *embeddingsEnvelope {
 // ---- BLOQUE A — P1: ruta protegida y clientID sin scoping nuevo ----
 
 func TestE2E011006_A_Auth(t *testing.T) {
-	h := buildMultiClient(t, []*upstream{}, "k1")
+	h := buildWithEmbeddings(t, embeddingsOK("m", [][]float64{{0.1}}, 1), "k1", "m")
 
 	// Sin Bearer → 401 con envelope (P1, auth.Wrap protege /v1/*). En RED la
 	// ruta no está registrada; auth.Wrap intercepta sin Bearer → 401, y con
@@ -265,7 +283,7 @@ func TestE2E011006_B_BodyInvalido(t *testing.T) {
 
 func TestE2E011006_C_ModeloForzado(t *testing.T) {
 	u := embeddingsOK("m", [][]float64{{0.1, 0.2, 0.3}}, 3)
-	h := buildMultiClient(t, []*upstream{}, "k1")
+	h := buildWithEmbeddings(t, u, "k1", "m")
 
 	// Odoo manda model "x" y dimensions 1536; el cliente tiene
 	// embeddings.model == "m" → el body upstream hacia Ollama lleva "m",
@@ -318,7 +336,7 @@ func TestE2E011006_D_ClienteSinModelo(t *testing.T) {
 
 func TestE2E011006_E_InputDimensionsPassthrough(t *testing.T) {
 	u := embeddingsOK("m", [][]float64{{0.1}}, 3)
-	h := buildMultiClient(t, []*upstream{}, "k1")
+	h := buildWithEmbeddings(t, u, "k1", "m")
 
 	body := embeddingsBody("hola mundo", "x", 1536, "float")
 	code, _ := embeddingsAs(t, h.srv.URL, h.key, body)
@@ -351,7 +369,7 @@ func TestE2E011006_F_RespuestaOpenAICompatible(t *testing.T) {
 		vec[i] = float64(i) / 100.0
 	}
 	u := embeddingsOK("m", [][]float64{vec}, 5)
-	h := buildMultiClient(t, []*upstream{}, "k1")
+	h := buildWithEmbeddings(t, u, "k1", "m")
 
 	code, raw := embeddingsAs(t, h.srv.URL, h.key, embeddingsBody("hola", "x", 1536, "float"))
 	if code != 200 {
@@ -396,7 +414,7 @@ func TestE2E011006_G_PricingUsage(t *testing.T) {
 	// prompt_tokens 10 por request; modelo AUSENTE de pricing: → costo 0
 	// (P7/D5). Los contadores de usage del clientID se incrementan.
 	u := embeddingsOK("m", [][]float64{{0.1}}, 10)
-	h := buildMultiClient(t, []*upstream{}, "k1")
+	h := buildWithEmbeddings(t, u, "k1", "m")
 
 	resp := h.embeddings(t, "k1", embeddingsBody("hi", "x", 0, "float"))
 	if resp.StatusCode != 200 {
@@ -424,7 +442,7 @@ func TestE2E011006_H_Budget(t *testing.T) {
 	// acumulado es 20 ≥ 15 → el 3er request responde 429 (P8), igual que
 	// /v1/chat/completions. El upstream mock (embeddingsOK prompt 10) se
 	// wirea en GREEN vía buildWithEmbeddings.
-	h := buildMultiClient(t, []*upstream{}, "k1")
+	h := buildWithEmbeddings(t, embeddingsOK("m", [][]float64{{0.1}}, 10), "k1", "m")
 	h.proxySrv.SetBudget(map[string]config.BudgetConfig{
 		"client-k1": {TokensMax: 15},
 	})
@@ -451,7 +469,7 @@ func TestE2E011006_H_Budget(t *testing.T) {
 
 func TestE2E011006_I_ErrorUpstream(t *testing.T) {
 	t.Run("ollama_500", func(t *testing.T) {
-		h := buildMultiClient(t, []*upstream{}, "k1")
+		h := buildWithEmbeddings(t, embeddingsFail(500), "k1", "m")
 		code, raw := embeddingsAs(t, h.srv.URL, h.key, embeddingsBody("hi", "x", 0, "float"))
 		if code != 502 {
 			t.Fatalf("status = %d, want 502 (P9: upstream 500)", code)
@@ -461,7 +479,7 @@ func TestE2E011006_I_ErrorUpstream(t *testing.T) {
 	t.Run("ollama_429_no_reintentable", func(t *testing.T) {
 		// un 429 de Ollama no-reintentable responde como fallo upstream 502
 		// (P9: no se reenvía el request).
-		h := buildMultiClient(t, []*upstream{}, "k1")
+		h := buildWithEmbeddings(t, embeddingsFail(429), "k1", "m")
 		code, raw := embeddingsAs(t, h.srv.URL, h.key, embeddingsBody("hi", "x", 0, "float"))
 		if code != 502 {
 			t.Fatalf("status = %d, want 502 (P9: 429 no-reintentable)", code)
@@ -490,7 +508,7 @@ func TestE2E011006_J_EnvelopeUniforme(t *testing.T) {
 		assertErrorEnvelope(t, raw)
 	})
 	t.Run("429_budget", func(t *testing.T) {
-		h := buildMultiClient(t, []*upstream{}, "k1")
+		h := buildWithEmbeddings(t, embeddingsOK("m", [][]float64{{0.1}}, 10), "k1", "m")
 		h.proxySrv.SetBudget(map[string]config.BudgetConfig{
 			"client-k1": {TokensMax: 15},
 		})
@@ -510,7 +528,7 @@ func TestE2E011006_J_EnvelopeUniforme(t *testing.T) {
 		assertErrorEnvelope(t, body)
 	})
 	t.Run("502_upstream", func(t *testing.T) {
-		h := buildMultiClient(t, []*upstream{}, "k1")
+		h := buildWithEmbeddings(t, embeddingsFail(500), "k1", "m")
 		code, raw := embeddingsAs(t, h.srv.URL, h.key, embeddingsBody("hi", "x", 0, "float"))
 		if code != 502 {
 			t.Fatalf("status = %d, want 502 (P9/P10)", code)

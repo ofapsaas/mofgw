@@ -146,6 +146,10 @@ type ClientConfig struct {
 
 	// Budget: límite de consumo (008-002). nil = sin límite.
 	Budget *BudgetConfig `yaml:"budget"`
+
+	// Embeddings: modelo de embeddings forzado por cliente (011-006 P3).
+	// nil = cliente sin modelo → 400 "no embeddings model configured" (P4).
+	Embeddings *ClientEmbeddingsConfig `yaml:"embeddings"`
 }
 
 // PricingConfig son los precios por millón de tokens de un modelo
@@ -194,6 +198,26 @@ type WebSearchConfig struct {
 	Timeout    time.Duration `yaml:"timeout"`
 }
 
+// EmbeddingsConfig es la configuración GLOBAL del endpoint /v1/embeddings
+// (011-006 D3/D4): un Ollama por instancia mofgw. BaseURL: el Ollama al que
+// mofgw forwardea (`POST base_url+"/embeddings"`, I2: nunca api.openai.com).
+// APIKeyEnv: variable de entorno de la key (opcional — Ollama local sin key
+// por default). El modelo forzado es POR CLIENTE (ClientConfig.Embeddings).
+type EmbeddingsConfig struct {
+	BaseURL   string `yaml:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
+	// APIKey se puebla al resolver APIKeyEnv (nunca viene del YAML).
+	APIKey string `yaml:"-"`
+}
+
+// ClientEmbeddingsConfig es el modelo de embeddings forzado por cliente
+// (011-006 P3/D2): `model` es el que mofgw manda a Ollama (ignorando el
+// `model` de Odoo, "el cliente nunca elige") y el que aparece en el envelope
+// de respuesta. Ausente (nil) → cliente sin modelo de embeddings → 400 (P4).
+type ClientEmbeddingsConfig struct {
+	Model string `yaml:"model"`
+}
+
 // ModelMetadata es la metadata declarativa de un modelo para el catálogo
 // (007-001-model-metadata). Alimenta /v1/models (007-002) y, en el futuro,
 // decisiones de ruteo. Datos verificados en research-token-efficiency.md §4.
@@ -232,6 +256,10 @@ type Config struct {
 
 	// WebSearch: grounded search server-side (011-005).
 	WebSearch WebSearchConfig `yaml:"web_search"`
+
+	// Embeddings: forward de embeddings a Ollama (011-006). Global: un
+	// Ollama por instancia mofgw; el modelo forzado es por cliente.
+	Embeddings EmbeddingsConfig `yaml:"embeddings"`
 
 	// Efficiency: eficiencia de gateway (010-001).
 	Efficiency EfficiencyConfig `yaml:"efficiency"`
@@ -544,6 +572,16 @@ func (c *Config) resolveKeys() error {
 			return fmt.Errorf("config: provider %q: env var %s no está seteada (las keys nunca van en el YAML)", p.ID, p.APIKeyEnv)
 		}
 		p.APIKey = v
+	}
+	// embeddings.api_key_env (011-006): opcional — solo se resuelve si está
+	// configurado (Ollama local sin key por default, D3). Seteada y ausente
+	// → fail-fast (mismo criterio que providers).
+	if c.Embeddings.APIKeyEnv != "" {
+		v, ok := os.LookupEnv(c.Embeddings.APIKeyEnv)
+		if !ok || strings.TrimSpace(v) == "" {
+			return fmt.Errorf("config: embeddings: env var %s no está seteada (las keys nunca van en el YAML)", c.Embeddings.APIKeyEnv)
+		}
+		c.Embeddings.APIKey = v
 	}
 	return nil
 }

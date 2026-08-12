@@ -248,6 +248,19 @@ func run() error {
 		srv.SetWebSearch(false, nil)
 	}
 	srv.SetWebSearchMaxResults(cfg.WebSearch.MaxResults)
+	// Forward de embeddings a Ollama (011-006 P1/D3): base_url global (un
+	// Ollama por instancia) + modelo forzado POR CLIENTE (P3). Sin
+	// embeddings.base_url → cliente no configurado (endpoint → 502 upstream,
+	// P9). El modelo forzado se setea solo para clientes que lo declaran;
+	// un cliente sin él → 400 (P4).
+	if cfg.Embeddings.BaseURL != "" {
+		srv.SetEmbeddings(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey)
+	}
+	for _, cc := range cfg.Clients {
+		if cc.Embeddings != nil && cc.Embeddings.Model != "" {
+			srv.SetClientEmbeddingsModel(cc.ID, cc.Embeddings.Model)
+		}
+	}
 
 	httpServer := newHTTPServer(cfg.Server, srv.Handler())
 

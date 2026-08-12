@@ -30,6 +30,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/clamp"
 	"github.com/ofapsaas/mofgw/internal/composition"
 	"github.com/ofapsaas/mofgw/internal/config"
+	"github.com/ofapsaas/mofgw/internal/embeddings"
 	"github.com/ofapsaas/mofgw/internal/limiter"
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/metrics"
@@ -119,6 +120,17 @@ type Server struct {
 	webSearchEnabled    bool
 	webSearchClient     websearch.Client
 	webSearchMaxResults int
+
+	// embeddingsClient + embeddingsModels: forward de embeddings a Ollama
+	// (011-006 P1/P3/D3). embeddingsClient es el cliente HTTP dedicado
+	// apuntado a base_url+"/embeddings" (I2: nunca api.openai.com); nil =
+	// embeddings no configurados → 502 upstream (P9). embeddingsModels es el
+	// modelo de embeddings forzado por cliente (P3), keyed por clientID;
+	// cliente sin modelo → 400 (P4). Ambos inmutables tras
+	// SetEmbeddings/SetClientEmbeddingsModel (antes del tráfico, patrón
+	// SetBudget).
+	embeddingsClient embeddings.Client
+	embeddingsModels map[string]string
 }
 
 // New construye el Server. Los parámetros de concurrencia se pasan ya
@@ -174,6 +186,36 @@ func (s *Server) SetWebSearchMaxResults(n int) {
 	if n > 0 {
 		s.webSearchMaxResults = n
 	}
+}
+
+// SetEmbeddings configura el cliente HTTP de embeddings (011-006 P1/D3):
+// apunta el forward a `baseURL+"/embeddings"` (nunca api.openai.com, I2).
+// apiKey es opcional (Ollama local sin key por default). Debe llamarse antes
+// del tráfico (patrón SetWebSearch); con baseURL vacía no se configura
+// (embeddingsClient queda nil → 502 upstream, P9).
+func (s *Server) SetEmbeddings(baseURL, apiKey string) {
+	if baseURL == "" {
+		return
+	}
+	s.embeddingsClient = embeddings.New(baseURL, apiKey, 0)
+}
+
+// SetClientEmbeddingsModel configura el modelo de embeddings forzado por
+// cliente (011-006 P3): `model` es el que mofgw manda a Ollama (ignorando el
+// `model` de Odoo) y el que aparece en el envelope de respuesta. Cliente sin
+// modelo configurado → 400 "no embeddings model configured for client" (P4).
+// Debe llamarse antes del tráfico (mapa inmutable después, patrón SetBudget).
+func (s *Server) SetClientEmbeddingsModel(clientID, model string) {
+	if s.embeddingsModels == nil {
+		s.embeddingsModels = make(map[string]string)
+	}
+	s.embeddingsModels[clientID] = model
+}
+
+// embeddingsModelFor devuelve el modelo de embeddings configurado para el
+// clientID (P3), o "" si no tiene (→ 400, P4). Sin default global silencioso.
+func (s *Server) embeddingsModelFor(clientID string) string {
+	return s.embeddingsModels[clientID]
 }
 
 // responseCacheKey arma la key del cache exact-match (010-002 P1):
@@ -313,7 +355,8 @@ func (s *Server) captureTelemetryHeaders(r *http.Request, logger *slog.Logger) m
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
-	mux.HandleFunc("POST /v1/responses", s.handleResponses) // 011-001
+	mux.HandleFunc("POST /v1/responses", s.handleResponses)   // 011-001
+	mux.HandleFunc("POST /v1/embeddings", s.handleEmbeddings) // 011-006
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /v1/context", s.handleContext)

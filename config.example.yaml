@@ -62,6 +62,10 @@ clients:
     #   cost_usd_max: 5.0
     #   tokens_max: 10000000
     #   window: 24h
+    # embeddings: modelo de embeddings FORZADO por cliente (011-006, P3).
+    # mofgw ignora el `model` que manda Odoo y usa este. Sin él → 400.
+    # embeddings:
+    #   model: "all-minilm"
   - id: cron-daily
     key_sha256: "<sha256 hex de la key del cron>"
 
@@ -138,3 +142,10 @@ web_search:
   enabled: false
   max_results: 3        # tope de resultados inyectados (default 3)
   # timeout: 10s        # tope por llamada a DDG (default 10s)
+
+# Forward de embeddings a Ollama (011-006). base_url GLOBAL (un Ollama por
+# instancia mofgw); el modelo forzado es POR CLIENTE (clients[].embeddings.model).
+# api_key_env opcional (Ollama local sin key por default).
+embeddings:
+  base_url: "http://localhost:11434"
+  # api_key_env: MOFGW_EMBEDDINGS_API_KEY
