@@ -5,7 +5,7 @@
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010) + EPIC-011 (mofgw-odoo) CERRADO 12 Ago 2026 — 9/9 features done + integración E2E verificada + closure completado. mofgw es el único proveedor de IA de Odoo (reemplazo total de OpenAI).**
+**✅ Programa mofgw 10/10 epics DONE (001-010) + EPIC-011 (mofgw-odoo) CERRADO 12 Ago 2026 — 9/9 features done + integración E2E verificada + closure completado + deudas resueltas. mofgw es el 100% del proveedor de IA de Odoo (reemplazo total de OpenAI, verificado: chat + embeddings + server actions).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -39,14 +39,14 @@
 
 ### Deuda técnica detectada (se llevó al closure-011)
 
-- **`ir_actions_server.AI_PROVIDER` (D6):** el path de server actions (`state='ai'`) sigue apuntando a openai/gpt-4.1. Deuda documentada; requiere parchear `ir_actions_server.py:26-27` en epic futuro.
-- **Embeddings reales sin verificar contra Ollama desplegado:** el E2E de embeddings usó mock; falta verificación empírica con un Ollama accesible desde el VPS.
-- **Reindexación de sources:** si una instancia tenía chunks 1536-dim, reindexar tras el redimensionado (paso operativo en README de mofgw_ai).
+- **Resuelto tras closure:** embeddings reales verificados (Odoo→mofgw→Ollama all-minilm 384-dim) y `ir_actions_server.AI_PROVIDER` overrideado a mofgw/deepseek-v4-flash (server actions ya no usan openai). **100% reemplazo de OpenAI en Odoo (ai.agent + server actions) verificado.**
+- **`ir_actions_server.AI_PROVIDER` (D6) — RESUELTO 12 Ago:** override declarativo de los atributos de clase en `mofgw_ai/models/ir_actions_server.py` → server actions (`state='ai'`) usan `mofgw`/`deepseek-v4-flash`. Test `test_server_actions_use_mofgw`.
 - **Audio out (whisper/realtime):** deuda del epic — Odoo con mofgw no tendrá voz hasta epic posterior.
+- **Reindexación de sources:** si una instancia tenía chunks 1536-dim, reindexar tras el redimensionado (paso operativo en README de mofgw_ai).
 
 ### Próximo paso en cola
 
-- **NINGUNO en mofgw-odoo — epic 011 cerrado.** Programa mofgw completo (10/10 epics + 011). Restos operativos: deuda D6 (server actions), verificación empírica de embeddings reales con Ollama, y criterios del programa general (E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes). Decidir: próximo epic, feature standalone, o cerrar.
+- **NINGUNO en mofgw-odoo — epic 011 cerrado + 100% deuda resuelta.** Programa mofgw completo (10/10 epics + 011). Restos operativos del programa general: E2E integral 48h con OpenClaw, omniroute deshabilitado, 10+ agentes concurrentes. Decidir: próximo epic, feature standalone, o cerrar.
 
 ### 12 Ago 2026 — Feature: 011-008-odoo-provider (epic 011-mofgw-odoo) — ÚLTIMA, epic 9/9
 
