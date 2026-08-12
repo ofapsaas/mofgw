@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-005-web-search MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-006-embeddings MERGED).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004/005 MERGED 12 Ago (6/9 con 009).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004/005/006 MERGED 12 Ago (7/9 con 009).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,33 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 001/002/003/004/005 DONE; 006-008 queued; 009 DONE | 🔄 EN CURSO | ae10d86 (011-005) |
+| EPIC-011 (odoo) | 001-006 DONE; 007-008 queued; 009 DONE | 🔄 EN CURSO | 7c3b5d7 (011-006) |
 
-**Suite:** 18 paquetes, **481 tests verde con `-race`** (465 + 16 feature 011-005 + paquete nuevo internal/websearch). vet limpio; gofmt limpio en archivos de la feature.
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005, primera llamada saliente a DDG), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (009 DONE).
+**Suite:** 19 paquetes, **499 tests verde con `-race`** (481 + 18 feature 011-006 + paquete nuevo internal/embeddings). vet limpio; gofmt limpio en archivos de la feature.
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005, llamada saliente DDG), embeddings (006, forward a Ollama con modelo forzado por cliente), staging enterprise en mofgw-staging.example.com (009 DONE).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-006-embeddings (epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-006-embeddings DONE — `POST /v1/embeddings` en mofgw, forward a Ollama (endpoint que Odoo 19 usa en `_request_llm_embedding`).** mofgw actúa como gateway: recibe el request de Odoo, **fuerza el modelo de embeddings del cliente** (principio "el cliente nunca elige", P3 — el `model` que manda Odoo se IGNORA por completo, no llega a Ollama ni al envelope), lo forwardea al Ollama configurado en `embeddings.base_url` y devuelve el vector OpenAI-compatible. Segunda llamada saliente del proxy (tras DDG en 005), con un **cliente HTTP dedicado**. Suite completa **499 tests `-race`** verde en **19 paquetes** (paquete nuevo `internal/embeddings` + 18 tests feature), go vet limpio. Commits: `ca0931f` RED, `7c3b5d7` GREEN. Es la 6ta feature del epic 011 (**7/9 done con 009**).
+- **Nuevo paquete `internal/embeddings` — cliente HTTP dedicado (patrón `websearch.Client` de 005, aplica ADR-005):** `provider.Client` NO es reusable para embeddings (`Complete`/`Stream` hardcodean `/chat/completions`, I7). `embeddings.Client` tipado (interfaz `Embed(ctx, body) → raw`, sin reflexión) y el concreto `Ollama` hace `POST base_url+"/embeddings"`. Nunca habla con `api.openai.com` (I2). Setter `SetEmbeddings(baseURL, apiKey)` (global) + `SetClientEmbeddingsModel(clientID, model)` (mapa inmutable post-set, patrón SetBudget). Router, providers y `provider.Client` intactos (I1, I7).
+- **D1 — dimensions passthrough (hallazgo descubrimiento verificado):** mofgw fuerza el modelo por cliente pero **NO valida el `dimensions` de Odoo** (hardcodeado en 1536 en ai_embedding.py:32); lo deja pasar a Ollama, que **SÍ acepta `dimensions` y trunca** si el modelo lo soporta. El vector real es la dimensión **nativa** del modelo (all-minilm = 384). La alineación de dimensión es **config manual en Odoo** (feature 011-007), no validación en mofgw (I4). Cambiar de modelo de embeddings ⇒ reindexar sources en Odoo (riesgo operativo, plan-011:66). `input` viaja byte-idéntico (P5).
+- **D2 — cliente sin `embeddings.model` → 400 fail-fast:** sin default global silencioso; `error.message == "no embeddings model configured for client"`. D3 — `base_url` **global** (un Ollama por instancia mofgw), modelo **por cliente**. D4 — auth de Ollama sin key por default, `embeddings.api_key_env` **opcional**. D5 — pricing por **tokens del input** (`prompt_tokens`, mismo flujo `recordCacheTokens`); modelo ausente de `pricing:` → costo 0; si se agrega a `pricing:` pasa a costar automáticamente. Headers `X-Usage-*` con `setUsageHeaders`. Budget por cliente aplicado (P8).
+- **Review APPROVE (qwen3.7-plus):** **0 bloqueantes.** Opcional **#2 APLICADO** — `parseEmbeddingsUsage` reutiliza `provider.Usage` directo; opcional **#6 APLICADO** — frontmatter del spec. #1/#3/#4 **DESCARTADOS con motivo**; FYI #5 (límite 4MB documentado). Auditoría: **10/10 postcondiciones con test**, ninguno sobrante, cero dependencia interna.
+
+### Deuda técnica detectada
+
+- **Verificación empírica pendiente (desviación no bloqueante):** compatibilidad real del shape de embeddings (`input` string-vs-array, `data[].embedding`, `dimensions`/truncado) contra el Ollama real y `_request_llm_embedding` de Odoo 19 (tests usan mock upstream).
+- **Riesgo operativo documentado (plan-011:66):** cambiar el modelo de embeddings a una dimensión distinta a la nativa (all-minilm=384) ⇒ reindexar sources en Odoo. Alineación manual (011-007).
+- **Dependencia saliente a Ollama (nueva, aplica ADR-005):** segunda llamada saliente del proxy (tras DDG). Timeout 30s por intento, body upstream limitado a 4MB, 429 de Ollama no-reintentable → 502 (P9).
+
+### Próxima feature en cola
+
+- **011-007-embedding-vector** (epic 011-mofgw-odoo): alineación de la dimensión del vector de embeddings en Odoo (config manual, arranca desde el hallazgo D1 de 006). Quedan 007-008 pendientes (001-006 done; 009 staging-enterprise ya DONE — **7/9 done**). Coordinar vía `cdad-epic`.
 
 ### 12 Ago 2026 — Feature: 011-005-web-search (epic 011-mofgw-odoo)
 
