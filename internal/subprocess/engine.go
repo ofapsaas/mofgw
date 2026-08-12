@@ -9,8 +9,8 @@
 // serializa los requests por sesión (máximo un proceso CLI en vuelo por
 // sesión), spawnea el CLI con el prompt único traducido por el Backend,
 // fabrica el usage y normaliza TODO fallo a *provider.ErrUpstream. El
-// motor NO conoce strings backend-específicos: argv, traducción y parseo
-// viven en la frontera Backend (I2).
+// motor NO conoce strings backend-específicos: argv, traducción, parseo y
+// detección de negativa de policy viven en la frontera Backend (I2).
 package subprocess
 
 import (
@@ -67,8 +67,8 @@ func NewSessionKey(clientID, model string, mode SessionKeyMode) string {
 }
 
 // Backend es la frontera de traducción del motor (D1): posee argv,
-// traducción de formato y parseo. El motor NO conoce strings
-// backend-específicos.
+// traducción de formato, parseo y detección de negativa de policy. El
+// motor NO conoce strings backend-específicos.
 type Backend interface {
 	// Name identifica el backend (observabilidad).
 	Name() string
@@ -82,6 +82,10 @@ type Backend interface {
 	TranslateOut(raw []byte, model string) (*provider.ChatResponse, error)
 	// TranslateStreamOut traduce líneas del stdout (streaming) a eventos.
 	TranslateStreamOut(lines <-chan string, ch chan<- provider.StreamEvent, model string)
+	// IsRefusal reporta si el stderr del CLI señala una negativa de
+	// policy/safety (P11). Es responsabilidad del Backend reconocer la
+	// señal concreta; el motor NO interpreta stderr backend-específico (I2).
+	IsRefusal(stderr string) bool
 }
 
 // Provider implementa provider.Provider (I1) ejecutando un CLI como
@@ -188,6 +192,13 @@ func (p *Provider) Complete(ctx context.Context, body []byte) (*provider.Complet
 // spawnea el CLI, traduce el stdout línea a línea y emite un chunk final
 // con usage fabricado + [DONE]. Los errores pre-primer-byte vuelven como
 // error de retorno (canal nil); los mid-stream viajan como StreamEvent.Err.
+//
+// El canal ch se drena por el consumidor. Para evitar un leak de
+// goroutine y la inanición del lock por sesión (P8) si el consumidor
+// abandona el canal (disconnect/timeout del proxy), todo send del motor a
+// ch se guarda con select sobre ctx.Done(): ante cancelación se hace kill
+// + reap del proceso y se retorna, liberando el lock. El scanner de stdout
+// se guarda del mismo modo para no dejar una segunda goroutine colgada.
 func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
 	clientID := auth.ClientIDFrom(ctx)
 	sess, err := p.resolveSession(clientID)
@@ -249,7 +260,13 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for sc.Scan() {
 			outLen.Add(int64(len(sc.Bytes())))
-			lines <- sc.Text()
+			// Guard contra un segundo leak: si el ctx se cancela, el
+			// scanner deja de enviar y cierra lines.
+			select {
+			case lines <- sc.Text():
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -257,17 +274,42 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 	go func() {
 		defer close(ch)
 		defer release()
+
+		// send emite a ch guardándose en ctx.Done(). Devuelve false si el
+		// ctx se canceló (consumidor abandonó el canal): en ese caso hace
+		// kill + reap del proceso y el goroutine retorna, liberando el
+		// lock por sesión (P8) en vez de bloquear para siempre.
+		send := func(ev provider.StreamEvent) bool {
+			select {
+			case ch <- ev:
+				return true
+			case <-ctx.Done():
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait() // reap: sin hijos huérfanos
+				return false
+			}
+		}
+
 		p.backend.TranslateStreamOut(lines, ch, model)
+
+		// Si el ctx ya está cancelado al terminar la traducción, no
+		// seguimos: kill + reap y salir (release corre vía defer).
+		if ctx.Err() != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return
+		}
 
 		exitErr := cmd.Wait()
 		if exitErr != nil {
 			// mid-stream fallo: normalizado, nunca error crudo de ctx (P10).
-			if ctx.Err() != nil {
-				ch <- provider.StreamEvent{Err: provider.NewErrUpstream(0, "timeout", "request cancelled or timed out")}
-			} else if isRefusal(stderr.String()) {
-				ch <- provider.StreamEvent{Err: provider.NewErrUpstream(400, "invalid_request_error", "request refused by policy")}
-			} else {
-				ch <- provider.StreamEvent{Err: provider.NewErrUpstream(500, "upstream_error", p.backend.Name()+" exited with error")}
+			switch {
+			case ctx.Err() != nil:
+				send(provider.StreamEvent{Err: provider.NewErrUpstream(0, "timeout", "request cancelled or timed out")})
+			case p.backend.IsRefusal(stderr.String()):
+				send(provider.StreamEvent{Err: provider.NewErrUpstream(400, "invalid_request_error", "request refused by policy")})
+			default:
+				send(provider.StreamEvent{Err: provider.NewErrUpstream(500, "upstream_error", p.backend.Name()+" exited with error")})
 			}
 			return
 		}
@@ -283,8 +325,12 @@ func (p *Provider) Stream(ctx context.Context, body []byte) (<-chan provider.Str
 				"total_tokens":      usage.TotalTokens,
 			},
 		})
-		ch <- provider.StreamEvent{Data: string(payload)}
-		ch <- provider.StreamEvent{Data: "[DONE]"}
+		if !send(provider.StreamEvent{Data: string(payload)}) {
+			return
+		}
+		if !send(provider.StreamEvent{Data: "[DONE]"}) {
+			return
+		}
 	}()
 	return ch, nil
 }
@@ -324,10 +370,11 @@ func (p *Provider) acquireLock(ctx context.Context, sessionID string) (func(), e
 }
 
 // normalizeExit convierte un fallo de ejecución del CLI a *ErrUpstream
-// (P10/P11/P12): timeout de ctx ⇒ "timeout"; refusal de policy ⇒
-// invalid_request_error/400 no-retryable; cualquier otro exit no-cero ⇒
-// upstream_error/500 retryable. Todo mensaje es controlado y seguro
-// (nunca el stderr crudo, que podría filtrar paths/argv).
+// (P10/P11/P12): timeout de ctx ⇒ "timeout"; refusal de policy (señalada
+// por el Backend vía IsRefusal, I2) ⇒ invalid_request_error/400
+// no-retryable; cualquier otro exit no-cero ⇒ upstream_error/500 retryable.
+// Todo mensaje es controlado y seguro (nunca el stderr crudo, que podría
+// filtrar paths/argv).
 func (p *Provider) normalizeExit(ctx context.Context, runErr error, stderr string) error {
 	if ctx.Err() != nil {
 		return provider.NewErrUpstream(0, "timeout", "request cancelled or timed out")
@@ -338,7 +385,7 @@ func (p *Provider) normalizeExit(ctx context.Context, runErr error, stderr strin
 	if !errors.As(runErr, &exitErr) {
 		return provider.NewErrUpstream(0, "network", "spawn backend")
 	}
-	if isRefusal(stderr) {
+	if p.backend.IsRefusal(stderr) {
 		return provider.NewErrUpstream(400, "invalid_request_error", "request refused by policy")
 	}
 	return provider.NewErrUpstream(500, "upstream_error", p.backend.Name()+" exited with error")
@@ -372,17 +419,4 @@ func estimateTokens(n int) int {
 		return 0
 	}
 	return n / 4
-}
-
-// isRefusal detecta una señal genérica de negativa de policy/safety en el
-// stderr del CLI (P11). El motor solo reconoce palabras clave genéricas;
-// la señal concreta del backend la maneja el propio Backend.
-func isRefusal(stderr string) bool {
-	low := strings.ToLower(stderr)
-	for _, kw := range []string{"refused", "policy", "safety"} {
-		if strings.Contains(low, kw) {
-			return true
-		}
-	}
-	return false
 }

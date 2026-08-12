@@ -125,6 +125,14 @@ func (b *stubBackend) TranslateStreamOut(lines <-chan string, ch chan<- provider
 	}
 }
 
+// IsRefusal reporta si el stderr del CLI señala una negativa de
+// policy/safety (P11). Señal genérica: contiene "refused", "policy" o
+// "safety" (case-insensitive), p.ej. "refused due to policy".
+func (b *stubBackend) IsRefusal(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return hasStr(s, "refused", "policy", "safety")
+}
+
 // recordedModels devuelve una copia de los modelos registrados por Args.
 func (b *stubBackend) recordedModels() []string {
 	b.mu.Lock()
