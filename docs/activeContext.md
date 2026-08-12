@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-004-file-attachments MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-005-web-search MERGED).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004 MERGED 12 Ago (5/9 con 009).**
+**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004/005 MERGED 12 Ago (6/9 con 009).**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,37 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 001/002/003/004 DONE; 005-008 queued; 009 DONE | 🔄 EN CURSO | 69ddae1 (011-004) |
+| EPIC-011 (odoo) | 001/002/003/004/005 DONE; 006-008 queued; 009 DONE | 🔄 EN CURSO | ae10d86 (011-005) |
 
-**Suite:** 17 paquetes, **465 tests verde con `-race`** (464 + test part desconocida fix review). vet limpio; gofmt limpio en archivos de la feature.
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (009 DONE).
+**Suite:** 18 paquetes, **481 tests verde con `-race`** (465 + 16 feature 011-005 + paquete nuevo internal/websearch). vet limpio; gofmt limpio en archivos de la feature.
+**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005, primera llamada saliente a DDG), embeddings via Ollama por cliente, staging enterprise en mofgw-staging.example.com (009 DONE).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-005-web-search (epic 011-mofgw-odoo)
+
+### Decisiones relevantes
+
+- **Feature 011-005-web-search DONE — grounded search server-side en `/v1/responses`.** Reemplaza el rechazo incondicional D3 de 003 (cualquier tool `type != "function"` → HTTP 400) por la **resolución real** del caso `web_search_preview`: detectar → buscar en DDG → inyectar los resultados como system message prependido → **remover** la tool del upstream → item message. mofgw **emula** el grounded search server-side porque Odoo NO maneja el ciclo `web_search_call` (verificado: Odoo solo lee `text` del item `message`). Suite completa **481 tests `-race`** verde en **18 paquetes** (paquete nuevo `internal/websearch` + 16 tests feature), go vet limpio. Commits: `dfea7b1` RED, `ae10d86` GREEN.
+- **D1 — mofgw emula grounded search (primera llamada saliente del proxy → ADR-005):** detectar `web_search_preview` → ejecutar DDG → inyectar resultados como system message **prependido** → **QUITAR** `web_search_preview` de los tools upstream → item message normal. Sin ciclo `web_search_call`. Decisión arquitectónica nueva → **ADR-005**.
+- **D2 — query = último mensaje user (determinista):** concatenación de los text de las parts input_text del último item message con role=="user". Descartada la alternativa de 2 round-trips.
+- **D3 — cliente DDG propio en Go, sin dependencias:** `internal/websearch` scrapea `html.duckduckgo.com/html/?q=` → top-N `{Title,URL,Snippet}`, con fallback a Instant Answer API. Solo stdlib (regex + html.UnescapeString + net/http). Contrato `websearch.Client` desacoplado del parser.
+- **D4 — inyección como system message:** `[Web search results for "<query>"]` + N items numerados `title|url|snippet`, N = max_results (default 3). Sin url_citation (Odoo solo lee text).
+- **D5 — gating `web_search.enabled:false` default (opt-in):** false → 400 conservado de 003 (sin regresión); true → flujo web search. Fallo de DDG = **best-effort** sin grounding (nunca 4xx/5xx al cliente). Tool type!=function no-web-search sigue 400 en ambos modos.
+- **Despacho 3 vías** en la rama que rechazaba: (a) web_search_preview + enabled:true → flujo; (b) web_search_preview + enabled:false → 400; (c) type!=function no-web-search → 400. Infra: WebSearchConfig (enabled/max_results/timeout), setter **tipado** `SetWebSearch(enabled bool, client websearch.Client)`, wiring en main.go. **I1/ADR-004 respetado.**
+- **P8 — cache excluido para web search:** un request web search activo **nunca** se sirve ni almacena en el response cache aunque temperature==0 (resultados DDG cambian; P8_CacheExcluidoParaWebSearch verifica 2 llamadas al upstream con mock A→B).
+- **Review APPROVE (qwen3.7-plus):** **1 bloqueante RESUELTO + 1 opcional APLICADO.** Bloqueante #1 — setter/campo `any` + 47 líneas de reflect (fallo silencioso, viola 2 laws) → **reemplazado por la interfaz tipada `websearch.Client`** (mock devuelve `[]websearch.Result`; se eliminó el reflect, el import y reflectFieldString). Opcional #2 APLICADO — `html.UnescapeString` stdlib. #3/#4/#5 DESCARTADOS con motivo. FYI #6/#7 sin acción. Auditoría: 8/8 postcondiciones con test.
+
+### Deuda técnica detectada
+
+- **Verificación empírica pendiente (desviación no bloqueante):** soporte real de DDG (scrape + fallback Instant Answer) con provider real — tests usan mock (I6).
+- **Dependencia saliente a DDG (nueva, ADR-005):** primera llamada saliente del proxy a un servicio no-provider. Best-effort sin errores nuevos (I2), query solo como query parameter (sin SSRF), body limitado a 4MB. Vigilar disponibilidad/rate limits de DDG en prod.
+- **Riesgo del epic vigente (sin cambio):** Odoo 19 usa Responses API en estado "preview". Web search queda enabled:false por default hasta opt-in en config de prod.
+
+### Próxima feature en cola
+
+- **011-006-embeddings** (epic 011-mofgw-odoo): forward de embeddings a Ollama (modelo por cliente, pricing). Quedan 006-008 pendientes (001-005 done como troncos; 009 staging-enterprise ya DONE — **6/9 done**). Coordinar vía `cdad-epic`.
 
 ### 12 Ago 2026 — Feature: 011-004-file-attachments (epic 011-mofgw-odoo)
 
