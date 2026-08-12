@@ -1,11 +1,11 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (cdad-scribe, feature 011-007-embedding-vector MERGED).
+> Última actualización: 2026-08-12 (cdad-scribe, feature 011-008-odoo-provider MERGED — EPIC-011 COMPLETO).
 
 ## Estado del programa
 
-**✅ Programa mofgw 10/10 epics DONE (001-010). EN CURSO: EPIC-011 (mofgw-odoo) — mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI). Features 011-001/002/003/004/005/006/007 MERGED 12 Ago (8/9 con 009). Queda SOLO 011-008.**
+**✅ Programa mofgw 10/10 epics DONE (001-010) + EPIC-011 (mofgw-odoo) COMPLETO 9/9 features done 12 Ago. mofgw como proveedor de IA de Odoo (reemplazo total de OpenAI) — en integración cross-feature + closure.**
 
 | Epic | Features | Status | Commit evidence |
 |------|----------|--------|-----------------|
@@ -20,13 +20,36 @@
 | SEC-001 (hardening) | 4 fixes | ✅ DONE | b368656 |
 | EPIC-009 (contexto-análisis) | 3 features | ✅ DONE | da8446c (E2E cross-feature) + closure-009.md |
 | EPIC-010 (catálogo-fiel) | 2 features | ✅ DONE | (11 Ago, deploy prod) |
-| EPIC-011 (odoo) | 001-007 DONE; 008 queued; 009 DONE | 🔄 EN CURSO | f8a6a6b (011-007) |
+| EPIC-011 (odoo) | 001-009 DONE (9/9) | 🔄 INTEGRACIÓN + CLOSURE | 5900431 (011-008) |
 
-**Suite:** 19 paquetes, **499 tests verde con `-race`** (sin cambios en esta feature — es del lado Odoo). vet limpio.
-**EPIC-011 (mofgw-odoo):** Odoo 19 enterprise como cliente de mofgw — reemplazo total de OpenAI. Chat vía Responses API (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005), embeddings (006), embedding-vector (007, módulo Odoo local mofgw_ai), odoo-provider (008, pendiente). Staging enterprise en staging-vps (staging-instance) + mofgw-staging.example.com.
+**Suite:** 19 paquetes, **499 tests verde con `-race`** (mofgw Go; el módulo Odoo mofgw_ai tiene 13 tests de módulo que pasan en VPS). vet limpio.
+**EPIC-011 (mofgw-odoo) COMPLETO 9/9:** Odoo 19 enterprise usa mofgw como único proveedor de IA (reemplazo total de OpenAI). Lado Go: responses (001), structured output (002), tool-calling (003), file-attachments (004), web-search grounded (005), embeddings (006). Lado Odoo (módulo local mofgw_ai): embedding-vector (007), odoo-provider (008, monkeypatch in-place). staging-enterprise (009).
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 12 Ago 2026 — Feature: 011-008-odoo-provider (epic 011-mofgw-odoo) — ÚLTIMA, epic 9/9
+
+### Decisiones relevantes
+
+- **Feature 011-008-odoo-provider DONE — registro de mofgw como provider de IA de Odoo 19 (módulo local `mofgw_ai`, ÚLTIMA feature del epic 011 → epic 9/9 done).** Del lado Odoo (0 cambios Go). El módulo registra mofgw reutilizando el flujo openai de `LLMApiService` (formato `/v1/responses`, tool call openai) apuntando `base_url` a mofgw. Verificado en VPS (staging-vps/staging-instance): **13/13 tests pasan** (4 de 007 + 9 del provider).
+- **Mecanismo D1 — monkeypatch in-place (no subclase):** el core instancia `LLMApiService` por nombre y comparte `PROVIDERS` por referencia. `mofgw_ai/__init__.py` hace `PROVIDERS.append(Provider('mofgw', 'mofgw', 'all-minilm', [5 llms]))` + parchea in-place `__init__` (base_url), `_get_api_token` (config→env→UserError), `_request_llm` (delega a `_request_llm_openai`), `_build_tool_call_response` (formato openai). Cada parche = guard+delegate al original para openai/google (sin regresión I2). **Doble guard de idempotencia** (`if not any(p.name=='mofgw')` + flag `_mofgw_patched`). **→ ADR-007.**
+- **D3 — override obligatorio de `ai.embedding.embedding_model`:** `PROVIDERS.append` NO actualiza `EMBEDDING_MODELS_SELECTION` (snapshot separado) → re-declara `embedding_model = fields.Selection(selection_add=[('all-minilm','All-minilm')])` con `ondelete={'all-minilm':'cascade'}`. El `embedding_model` del Provider mofgw es exactamente `'all-minilm'` → embeddings 384-dim alineados con la columna `vector(384)` de 007 (I4).
+- **D4/D5 — config por instancia:** `ir.config_parameter` `ai.mofgw_url` + `ai.mofgw_key`, fallback env `ODOO_AI_MOFGW_TOKEN`; `res.config.settings` hereda + view. **URL default `http://127.0.0.1:3369/v1`.** Masking key vía `widget="password"` (patrón core).
+- **Review APPROVE (qwen3.7-plus):** **0 bloqueantes.** Fix #2 APLICADO (spec password via widget); #1/#3 DESCARTADOS; FYI #4 (E2E staging). Auditoría: 10/11 postcondiciones con test (P11 E2E deuda). Monkeypatch correcto, doble guard idempotencia, ondelete cascade, seguridad key adecuada.
+- **3 bugs de test corregidos en GREEN:** openai también usa `function_call_output`; `get_values()` devuelve strings; `requests` normaliza `method` a `'post'`.
+- **EPIC 011 COMPLETO — 9/9 done (001-009).** Entra a integración cross-feature y closure — coordinar vía `cdad-epic`.
+
+### Deuda técnica detectada
+
+- **`ir_actions_server.AI_PROVIDER` (D6, out of scope):** el path de server actions queda fuera; el path principal cubierto es `ai.agent`. Deuda del epic para integración/closure.
+- **P11/C7 E2E no verificada (FYI):** `request_llm` real contra mofgw en staging — ejecutar manualmente antes de cerrar 011.
+- **`_to_open_ai_tool_schema`** no transforma para provider != 'openai'; mofgw traduce en su capa. Verificar si algún upstream exige la forma openai estricta.
+- **Monkeypatch global (ADR-007, Media):** patrón no soportado de Odoo — re-evaluar si el core cambia `LLMApiService`/`PROVIDERS` en futuras versiones.
+
+### Próxima feature en cola
+
+- **NINGUNA — epic 011 completo (9/9 done).** Siguiente: **integración cross-feature + closure del epic 011-mofgw-odoo** vía `cdad-epic` (E2E integral de los 8 endpoints Go + módulo Odoo en staging, ejecutar P11/C7, resolver deuda D6).
 
 ### 12 Ago 2026 — Feature: 011-007-embedding-vector (epic 011-mofgw-odoo)
 
