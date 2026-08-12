@@ -415,7 +415,8 @@ func holdSlotResponses(t *testing.T, srv *httptest.Server, key string) chan int 
 // ---- BLOQUE F — P6-P9: rechazo explícito de features futuras ----
 
 func TestE2E011001_F_RechazosFeaturesFuturas(t *testing.T) {
-	h := build(t, []*upstream{upstreamOK("m", "x")}, "sk-test-1")
+	u := upstreamOK("m", "x")
+	h := build(t, []*upstream{u}, "sk-test-1")
 
 	body := responsesBody("hola")
 
@@ -437,11 +438,46 @@ func TestE2E011001_F_RechazosFeaturesFuturas(t *testing.T) {
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
 		assertReject(t, code, raw, "tool calling not yet supported") // P7 (web_search_preview)
 	})
+	// POST-AUDIT (011-002): el rechazo 400 de json_schema ya no existe. 002
+	// reemplaza la rama P8 de 001 por la traducción a response_format (spec
+	// 002 §P1). Convertido de assert de rechazo a assert de traducción.
 	t.Run("text_format_json_schema", func(t *testing.T) {
 		b := cloneMap(body)
-		b["text"] = map[string]any{"format": map[string]any{"type": "json_schema", "name": "x", "schema": map[string]any{}}}
+		schemaRaw := `{"type":"object","properties":{"x":{"type":"string"}}}`
+		b["text"] = map[string]any{"format": map[string]any{
+			"type": "json_schema", "name": "json_schema",
+			"schema": json.RawMessage(schemaRaw), "strict": true,
+		}}
 		code, raw := responsesAs(t, h.srv.URL, h.key, b)
-		assertReject(t, code, raw, "structured output not yet supported") // P8
+		if code != 200 {
+			t.Fatalf("status = %d, want 200 (traducción a response_format, spec 002 §P1); body=%s", code, raw)
+		}
+		var wire struct {
+			ResponseFormat struct {
+				Type       string `json:"type"`
+				JSONSchema struct {
+					Name   string          `json:"name"`
+					Schema json.RawMessage `json:"schema"`
+					Strict *bool           `json:"strict"`
+				} `json:"json_schema"`
+			} `json:"response_format"`
+		}
+		if err := json.Unmarshal([]byte(u.gotBody), &wire); err != nil {
+			t.Fatalf("body upstream no es JSON: %v\n%s", err, u.gotBody)
+		}
+		if wire.ResponseFormat.Type != "json_schema" {
+			t.Fatalf("response_format.type = %q, want json_schema: %s", wire.ResponseFormat.Type, u.gotBody)
+		}
+		if wire.ResponseFormat.JSONSchema.Name != "json_schema" {
+			t.Fatalf("json_schema.name = %q, want json_schema", wire.ResponseFormat.JSONSchema.Name)
+		}
+		// I3: schema byte-identidad con el input (no re-marshal).
+		if string(wire.ResponseFormat.JSONSchema.Schema) != schemaRaw {
+			t.Fatalf("schema wire no byte-idéntico al input:\nwant %s\ngot  %s", schemaRaw, wire.ResponseFormat.JSONSchema.Schema)
+		}
+		if wire.ResponseFormat.JSONSchema.Strict == nil || !*wire.ResponseFormat.JSONSchema.Strict {
+			t.Fatalf("json_schema.strict no emitido como true: %+v", wire.ResponseFormat.JSONSchema)
+		}
 	})
 	t.Run("part_input_file", func(t *testing.T) {
 		b := inputPart(t, body, "input_file")
