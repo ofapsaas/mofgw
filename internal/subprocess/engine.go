@@ -252,7 +252,14 @@ func (p *Provider) Complete(ctx context.Context, body []byte) (*provider.Complet
 		return nil, provider.NewErrUpstream(0, "network", "invalid backend output")
 	}
 	p.fillResponse(resp, sess, model, len(body), len(raw))
-	return &provider.CompleteResult{Response: resp, Raw: raw, ProviderID: p.id}, nil
+	// Raw = la respuesta OpenAI traducida serializada (el proxy pasa Raw al
+	// cliente con rewriteResponseModel). Para subprocess NO es el stdout
+	// crudo del backend (formato claude) — es el ChatResponse traducido.
+	rawOpenAI, err := json.Marshal(resp)
+	if err != nil {
+		return nil, provider.NewErrUpstream(0, "network", "marshal response")
+	}
+	return &provider.CompleteResult{Response: resp, Raw: rawOpenAI, ProviderID: p.id}, nil
 }
 
 // Stream ejecuta un chat streaming (P7/P8/P10): resuelve la sesión,

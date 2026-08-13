@@ -592,3 +592,25 @@ func hasArg(argv []string, flag string) bool {
 	}
 	return false
 }
+
+// T_translate_out_assistant_event — regresión smoke real (12 Ago): el CLI
+// claude a veces emite el evento `assistant` con el mensaje completo
+// (content[].type=="text") en vez de content_block_delta. TranslateOut debe
+// parsear ambos.
+func TestT_TranslateOutAssistantEvent(t *testing.T) {
+	adapter := newTestAdapter(t)
+	raw := []byte(`{"type":"system","subtype":"init","session_id":"x"}
+{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"Hola"},{"type":"text","text":" mundo"}],"stop_reason":null}}
+{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null}}
+{"type":"message_stop"}`)
+	resp, err := adapter.TranslateOut(raw, "claude-sonnet-4-6")
+	if err != nil {
+		t.Fatalf("TranslateOut error: %v", err)
+	}
+	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content != "Hola mundo" {
+		t.Fatalf("content = %q, want %q", resp.Choices[0].Message.Content, "Hola mundo")
+	}
+	if resp.Choices[0].FinishReason != "stop" {
+		t.Fatalf("finish_reason = %q, want stop", resp.Choices[0].FinishReason)
+	}
+}

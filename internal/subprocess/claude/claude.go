@@ -158,10 +158,12 @@ func contentToText(raw json.RawMessage) (string, error) {
 
 // claudeEvent modela un evento del stream-json de claude. `delta` es crudo
 // porque su forma varía por tipo de evento: en content_block_delta es
-// {type,text}, en message_delta es {stop_reason,stop_sequence}.
+// {type,text}, en message_delta es {stop_reason,stop_sequence}. `message`
+// es el bloque del evento `assistant` (message.content[]).
 type claudeEvent struct {
-	Type  string          `json:"type"`
-	Delta json.RawMessage `json:"delta"`
+	Type    string          `json:"type"`
+	Delta   json.RawMessage `json:"delta"`
+	Message json.RawMessage `json:"message"`
 }
 
 // textDelta extrae el text de un delta de content_block_delta (solo si es
@@ -178,6 +180,27 @@ func textDelta(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return d.Text, true
+}
+
+// messageText extrae el texto concatenado de los bloques content[].type=="text"
+// de un evento `assistant` (message.content[]). Devuelve "" si no hay texto.
+func messageText(raw json.RawMessage) string {
+	var m struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, c := range m.Content {
+		if c.Type == "text" {
+			sb.WriteString(c.Text)
+		}
+	}
+	return sb.String()
 }
 
 // stopReason extrae el stop_reason del delta de un message_delta.
@@ -215,6 +238,12 @@ func (b *Backend) TranslateOut(raw []byte, model string) (*provider.ChatResponse
 		case "content_block_delta":
 			if text, ok := textDelta(ev.Delta); ok {
 				content.WriteString(text)
+			}
+		case "assistant":
+			// El CLI real a veces emite el evento `assistant` con el mensaje
+			// completo (content[].type=="text") en vez de deltas.
+			if t := messageText(ev.Message); t != "" {
+				content.WriteString(t)
 			}
 		case "message_delta":
 			stop = stopReason(ev.Delta)
