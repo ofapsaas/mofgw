@@ -39,14 +39,15 @@ func TestT_ArgvBuild(t *testing.T) {
 	adapter := claude.New(bin)
 	sess := &subprocess.Session{ID: "sess-1", Dir: t.TempDir(), ClientID: "client-a"}
 
-	got := adapter.Args(sess, "claude-sonnet-4-6", []string{"--verbose"})
+	got := adapter.Args(sess, "claude-sonnet-4-6", []string{"--bare"})
 	want := []string{
 		bin,
 		"-p",
 		"--session-id", "sess-1",
 		"--model", "claude-sonnet-4-6",
 		"--output-format", "stream-json",
-		"--verbose",
+		"--verbose", // requerido con --print + --output-format=stream-json (verificado CLI real)
+		"--bare",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Args = %v, want %v", got, want)
@@ -524,5 +525,54 @@ func TestT_AdapterSendCtxGuarded(t *testing.T) {
 		// retornó sin bloquear ✓
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("TranslateStreamOut con ctx cancelado y canal sin consumidor NO retorna (bloquea)") // RED
+	}
+}
+
+// T_session_id_uuid_format — regresión del smoke real (12 Ago): el CLI claude
+// exige un UUID válido en --session-id (Q5). El motor deriva Session.ID como
+// sha256 hex de 32 chars; el adapter lo formatea como UUID determinista. Un
+// ID de 32 hex → UUID con guiones; un ID no-hex (defensivo) → passthrough.
+func TestT_SessionIDUUIDFormat(t *testing.T) {
+	bin := buildClaudeStubCLI(t)
+	adapter := claude.New(bin)
+
+	// ID de 32 hex (como produce el motor): se formatea como UUID.
+	hexID := "e0b107f9f96f69a2b6165a2ac7ae5516"
+	sess := &subprocess.Session{ID: hexID}
+	argv := adapter.Args(sess, "claude-sonnet-4-6", nil)
+	found := false
+	for i, a := range argv {
+		if a == "--session-id" && i+1 < len(argv) {
+			got := argv[i+1]
+			want := "e0b107f9-f96f-69a2-b616-5a2ac7ae5516"
+			if got != want {
+				t.Fatalf("session-id = %q, want UUID %q", got, want)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("argv no contiene --session-id: %v", argv)
+	}
+	// El argv incluye --verbose (requerido con --print + stream-json).
+	hasVerbose := false
+	for _, a := range argv {
+		if a == "--verbose" {
+			hasVerbose = true
+		}
+	}
+	if !hasVerbose {
+		t.Fatalf("argv sin --verbose (requerido para stream-json con --print): %v", argv)
+	}
+
+	// Passthrough defensivo: ID no-hex se deja tal cual.
+	nonHex := "sess-1"
+	argv2 := adapter.Args(&subprocess.Session{ID: nonHex}, "m", nil)
+	for i, a := range argv2 {
+		if a == "--session-id" && i+1 < len(argv2) {
+			if argv2[i+1] != "sess-1" {
+				t.Fatalf("session-id no-hex = %q, want passthrough sess-1", argv2[i+1])
+			}
+		}
 	}
 }
