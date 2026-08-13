@@ -175,6 +175,43 @@ providers:
 
 > **Importante:** el orden de la lista define la cadena. Si quieres que `provider-b` se intente antes que `provider-a`, mueve su bloque arriba. Editar el orden **ES** la configuración del fallback.
 
+### `providers` de tipo `subprocess` (EPIC-013) — CLI claude / suscripciones
+
+Un provider `type: subprocess` ejecuta el CLI de un backend de IA como subproceso en vez de hablar HTTP. Permite usar una **suscripción de consumidor** (p.ej. Claude Pro) sin API key ni reverse-engineering de OAuth: mofgw corre el binario `claude` y traduce entre OpenAI y el formato del CLI.
+
+Campos específicos (además de `id`, `models`, `max_tokens`, `clients`):
+
+| Campo | Obligatorio | Descripción |
+|-------|-------------|-------------|
+| `type` | ✅ | `"subprocess"` para este tipo. Ausente o `"http"` = provider HTTP (default). |
+| `backend` | ✅ | Backend del motor: `"claude"` hoy (gemini/codex a futuro). `!= "claude"` → error de carga. |
+| `command` | — | Binario del CLI (default `"claude"`). **Recomendado ruta absoluta** — el PATH del servicio systemd no siempre incluye `~/.local/bin`. |
+| `session_dir` | — | Base de sesiones por cliente (default `~/.config/mofgw/sessions`). |
+| `backend_flags` | — | Flags opacos que se agregan al argv del CLI (control de tools/permisos, ver abajo). |
+| `clients` | — | **Allowlist de clientID** con acceso a este provider (013-003). Vacío/ausente = **sin restricción** (cualquier cliente autenticado puede usarlo). Solo agentes del usuario recomendado. |
+
+```yaml
+providers:
+  - id: claude-pro
+    type: subprocess
+    backend: claude
+    command: "$HOME/.local/bin/claude"   # ruta absoluta (PATH del service)
+    models: ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7"]
+    max_tokens: 8192
+    # backend_flags: ["--permission-mode", "strict", "--disallowedTools", "Bash,Edit,Write"]
+    clients: ["agent-main", "cron-daily"]     # SOLO estos clientes pueden usarlo
+```
+
+**Comportamiento y limitaciones (verificado con el CLI real 2.1.229):**
+
+- **Sesiones nombradas por cliente**: la primera vez que un cliente usa el provider, mofgw crea la sesión (`-n <clientID>`); las siguientes la reanudan (`--resume <clientID>`), reutilizando el prompt-cache (~8x más barato). mofgw envía solo el último mensaje `user` por stdin; el CLI mantiene el historial.
+- **Sin `base_url`/`api_key_env`**: el subprocess NO usa API key (claude usa OAuth/suscripción). Si el config loader te reclama esos campos para un `type: subprocess`, estás corriendo un **binario viejo** — recompilá con la fuente actual.
+- **Modelos marcados sin tools**: el CLI usa sus propias tools por detrás; mofgw las omite del request (el modelo se ve como text-only). Declará en `model_metadata` con `supported_parameters: ["reasoning"]` (sin `"tools"`).
+- **Continuación de sesión**: si `--resume` falla con "no conversation found" (dir stale), el motor reintenta con creación (`-n`). Si hay **duplicados** con el mismo nombre, `--resume` falla con "matches N sessions" — reparar con `scripts/claude-session-repair.sh <clientID> [--keep-newest|--fresh]`.
+- **Control de tools/permisos** vía `backend_flags` (opacos): ej. read-only `["--permission-mode","strict","--disallowedTools","Bash,Edit,Write"]`, o allowlist `["--allowedTools","Read,WebSearch"]`. NO usar `--dangerously-skip-permissions` salvo riesgo asumido.
+- **Costo**: el primer call de un cliente paga la creación de la cache del scaffolding del CLI (~$0.03-0.07); los siguientes son baratos. Es una suscripción, no pay-per-token: el `usage`/costo que reporta mofgw es **estimado** (del largo del output), no exacto.
+- **Estabilidad**: la integración con el CLI es un *hack* — el CLI no es una API estable; el formato de salida varía según contexto (deltas vs mensaje completo). mofgw maneja ambos, pero no es tan robusto como un provider HTTP.
+
 ### `clients` — autenticación
 
 Cada cliente autorizado (agente, cron…) tiene su propia API key. En el config **solo va el hash SHA-256 hex** de la key (`key_sha256`), nunca la key en claro.
