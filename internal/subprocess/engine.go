@@ -95,6 +95,11 @@ type Backend interface {
 	// policy/safety (P11). Es responsabilidad del Backend reconocer la
 	// señal concreta; el motor NO interpreta stderr backend-específico (I2).
 	IsRefusal(stderr string) bool
+	// IsSessionNotFound reporta si el stderr del CLI indica que la sesión a
+	// reanudar no existe ("no conversation found"). El motor la usa para
+	// reintentar con creación (-n) en vez de fallar: el estado `New` basado
+	// en la existencia del dir no es confiable (dirs stale). Backend-específico.
+	IsSessionNotFound(stderr string) bool
 }
 
 // Provider implementa provider.Provider (I1) ejecutando un CLI como
@@ -243,7 +248,28 @@ func (p *Provider) Complete(ctx context.Context, body []byte) (*provider.Complet
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, p.normalizeExit(ctx, err, stderr.String())
+		// Retry de creación de sesión: si el stderr indica que la sesión a
+		// reanudar no existe ("no conversation found"), el estado `New`
+		// (por dir) era stale — reintentar UNA vez con creación (-n). La
+		// detección es backend-específica (I2); el retry es del motor.
+		if p.backend.IsSessionNotFound(stderr.String()) {
+			sess.New = true
+			argv2 := p.backend.Args(sess, model, p.backendFlags)
+			cmd2 := exec.CommandContext(ctx, argv2[0], argv2[1:]...)
+			cmd2.Dir = sess.Dir
+			cmd2.Env = p.childEnv()
+			cmd2.Stdin = strings.NewReader(prompt)
+			var out2, err2 bytes.Buffer
+			cmd2.Stdout = &out2
+			cmd2.Stderr = &err2
+			if err2run := cmd2.Run(); err2run == nil {
+				stdout, stderr = out2, err2
+			} else {
+				return nil, p.normalizeExit(ctx, err2run, err2.String())
+			}
+		} else {
+			return nil, p.normalizeExit(ctx, err, stderr.String())
+		}
 	}
 
 	raw := stdout.Bytes()

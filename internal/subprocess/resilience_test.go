@@ -12,6 +12,8 @@ package subprocess_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,8 @@ import (
 	"time"
 
 	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/subprocess"
+	"github.com/ofapsaas/mofgw/internal/subprocess/claude"
 )
 
 // fakeClock es un reloj mutable para inyectar via SetNow (P5/P6). Se muta
@@ -305,5 +309,41 @@ func TestT_EvictedSessionReusable(t *testing.T) {
 	// Re-request de la sesión evictada: se re-crea y completa.
 	if _, err := h.p.Complete(clientCtx("client-a"), body); err != nil {
 		t.Fatalf("sesión evictada no re-creable al volver a pedir: %v", err)
+	}
+}
+
+// T_session_not_found_retry_creates — regresión smoke real (12 Ago): el
+// estado `New` por dir es stale (el dir existe pero la sesión claude no).
+// El motor debe reintentar con creación (-n) cuando --resume falla con
+// "no conversation found". El stub falla en --resume y funciona en -n.
+func TestT_SessionNotFoundRetryCreates(t *testing.T) {
+	// Stub que: con --resume en argv → stderr "No conversation found" + exit 1;
+	// con -n → stdout claude stream-json válido + exit 0.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "stub.sh")
+	body := `#!/bin/sh
+if printf '%s' "$@" | grep -q -- '--resume'; then
+  echo "No conversation found with session ID: x" >&2
+  exit 1
+fi
+printf '%s\n' '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"created ok"}}'
+printf '%s\n' '{"type":"message_delta","delta":{"stop_reason":"end_turn"}}'
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	backend := claude.New(script)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// New=false (sesión "existe") pero el resume falla → debe reintentar con -n.
+	p := subprocess.NewProvider("stub", []string{"m1"}, 4096, t.TempDir(), nil, backend, logger)
+
+	body2 := chatBody("m1", map[string]any{"role": "user", "content": "hi"})
+	res, err := p.Complete(clientCtx("client-a"), body2)
+	if err != nil {
+		t.Fatalf("Complete con resume fallido + retry -n falló: %v", err)
+	}
+	if got := res.Response.Choices[0].Message.Content; got != "created ok" {
+		t.Fatalf("content = %q, want %q (retry -n debió crear)", got, "created ok")
 	}
 }

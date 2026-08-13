@@ -337,5 +337,14 @@ func (b *Backend) IsRefusal(stderr string) bool {
 	return false
 }
 
+// IsSessionNotFound reporta si el stderr del CLI indica que la sesión a
+// reanudar no existe ("No conversation found with session ID"). El motor
+// reintenta con creación (-n) en ese caso (verificado en el smoke real: el
+// estado `New` por dir no es confiable).
+func (b *Backend) IsSessionNotFound(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "no conversation found")
+}
+
 // Assert de compilación (P10): Backend implementa subprocess.Backend.
 var _ subprocess.Backend = (*Backend)(nil)

@@ -146,6 +146,11 @@ func (b *stubBackend) IsRefusal(stderr string) bool {
 	return hasStr(s, "refused", "policy", "safety")
 }
 
+// IsSessionNotFound reporta si el stderr indica que la sesión no existe.
+func (b *stubBackend) IsSessionNotFound(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "no conversation found")
+}
+
 // recordedModels devuelve una copia de los modelos registrados por Args.
 func (b *stubBackend) recordedModels() []string {
 	b.mu.Lock()
