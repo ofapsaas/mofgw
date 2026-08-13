@@ -288,6 +288,26 @@ func mapStopReason(stop string) string {
 // P4 (D2): todo send a ch se guarda con select sobre ctx.Done(); ante
 // cancelación retorna sin bloquear ni colgar el lock.
 func (b *Backend) TranslateStreamOut(ctx context.Context, lines <-chan string, ch chan<- provider.StreamEvent, model string) {
+	// emitChunk manda un chunk OpenAI con delta.content (P4/D2: guard de ctx).
+	emitChunk := func(text string) {
+		if text == "" {
+			return
+		}
+		chunk := map[string]any{
+			"id":      "chatcmpl-" + model,
+			"object":  "chat.completion.chunk",
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": text}, "finish_reason": nil}},
+		}
+		payload, err := json.Marshal(chunk)
+		if err != nil {
+			return
+		}
+		select {
+		case ch <- provider.StreamEvent{Data: string(payload)}:
+		case <-ctx.Done():
+		}
+	}
+
 	for ln := range lines {
 		line := strings.TrimSpace(ln)
 		if line == "" {
@@ -297,28 +317,15 @@ func (b *Backend) TranslateStreamOut(ctx context.Context, lines <-chan string, c
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			continue // tolerante a líneas no-JSON
 		}
-		if ev.Type != "content_block_delta" {
-			continue // control events, thinking, tool_use
-		}
-		text, ok := textDelta(ev.Delta)
-		if !ok {
-			continue // thinking_delta, input_json_delta, etc.
-		}
-		chunk := map[string]any{
-			"id":      "chatcmpl-" + model,
-			"object":  "chat.completion.chunk",
-			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"content": text}, "finish_reason": nil}},
-		}
-		payload, err := json.Marshal(chunk)
-		if err != nil {
-			continue
-		}
-		// P4 (D2): guard del send sobre ctx.Done(). El kill+reap del proceso
-		// lo hace el motor; el adapter solo deja de enviar y retorna.
-		select {
-		case ch <- provider.StreamEvent{Data: string(payload)}:
-		case <-ctx.Done():
-			return
+		switch ev.Type {
+		case "content_block_delta":
+			if text, ok := textDelta(ev.Delta); ok {
+				emitChunk(text)
+			}
+		case "assistant":
+			// El CLI real a veces emite el evento `assistant` con el mensaje
+			// completo (content[].type=="text") en vez de deltas.
+			emitChunk(messageText(ev.Message))
 		}
 	}
 }

@@ -614,3 +614,28 @@ func TestT_TranslateOutAssistantEvent(t *testing.T) {
 		t.Fatalf("finish_reason = %q, want stop", resp.Choices[0].FinishReason)
 	}
 }
+
+// T_translate_stream_assistant_event — regresión opencode (12 Ago): el CLI
+// real a veces emite `assistant` (mensaje completo) en vez de deltas; el
+// stream debe traducirlo a un chunk OpenAI con delta.content.
+func TestT_TranslateStreamAssistantEvent(t *testing.T) {
+	adapter := newTestAdapter(t)
+	lines := make(chan string, 4)
+	lines <- `{"type":"system","subtype":"init","session_id":"x"}`
+	lines <- `{"type":"assistant","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"Hola desde assistant"}]}}`
+	lines <- `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`
+	lines <- `{"type":"message_stop"}`
+	close(lines)
+	ch := make(chan provider.StreamEvent, 8)
+	adapter.TranslateStreamOut(context.Background(), lines, ch, "m")
+	close(ch)
+	var got []string
+	for _, ev := range collectEvents(ch) {
+		if d := deltaContent(ev.Data); d != "" {
+			got = append(got, d)
+		}
+	}
+	if len(got) != 1 || got[0] != "Hola desde assistant" {
+		t.Fatalf("deltas = %v, want [Hola desde assistant]", got)
+	}
+}
