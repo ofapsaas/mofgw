@@ -62,6 +62,10 @@ providers:
   # Provider subprocess (013-003): ejecuta el CLI de un backend de IA como
   # subproceso en vez de hablar HTTP. NO usa base_url/api_key_env (claude usa
   # OAuth/suscripción). Los requests se serializan por sesión del cliente.
+  # ⚠️ Si el config loader reclama base_url/api_key_env para un provider
+  # type: subprocess, estás corriendo un binario mofgw VIEJO (sin el código
+  # del epic 013) — recompilá/redesplegá con la fuente actual. El binario
+  # nuevo valida type:subprocess sin esos campos.
   - id: provider-claude-cli
     type: subprocess
     backend: claude          # backend del motor ("claude" hoy; gemini/codex a futuro).
