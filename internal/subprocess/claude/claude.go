@@ -40,38 +40,65 @@ func (b *Backend) Name() string { return "claude" }
 // (-p), sesión, modelo, wire-format stream-json y los backendFlags opacos
 // al final. El prompt NO viaja en argv (P3): lo escribe el motor por stdin.
 //
-// VERIFICADO empíricamente contra el CLI real v2.1.229 (12 Ago 2026): (a)
-// `--session-id` exige un UUID válido — el motor deriva s.ID como sha256 hex
-// de 32 chars, el adapter lo formatea como UUID (Q5); (b)
-// `--output-format=stream-json` con `--print` requiere `--verbose` (Q6); (c)
-// `--session-id` SÓLO en el primer call de la sesión (repetido da "already
-// in use"); los calls siguientes usan `--resume` (continúa y reutiliza el
-// prompt-cache, ~20x más barato). `s.New` lo setea el motor (dir recién
-// creado).
+// VERIFICADO empíricamente contra el CLI real v2.1.229 (12 Ago 2026): usa
+// SESIONES NOMBRADAS — `-n <nombre>` crea la sesión, `--resume <nombre>`
+// la continúa (persiste historial y reutiliza el prompt-cache, ~8x más
+// barato). El nombre = clientID saneado (legible, determinista). Evita el
+// hack del `--session-id` UUID y el "already in use" de reusar un id. El
+// CLI exige `--verbose` con `--print` + `--output-format=stream-json`.
+// `s.New` lo setea el motor (dir recién creado → primera vez del cliente).
 func (b *Backend) Args(s *subprocess.Session, model string, flags []string) []string {
 	bin := b.bin
 	if bin == "" {
 		bin = "claude"
 	}
+	name := sessionName(s)
 	argv := []string{bin, "-p"}
 	if s.New {
-		argv = append(argv, "--session-id", toSessionUUID(s.ID))
+		argv = append(argv, "-n", name)
 	} else {
-		argv = append(argv, "--resume", toSessionUUID(s.ID))
+		argv = append(argv, "--resume", name)
 	}
 	argv = append(argv, "--model", model, "--output-format", "stream-json", "--verbose")
 	return append(argv, flags...)
 }
 
-// toSessionUUID formatea el session-id del motor (sha256 hex, 32 chars) como
-// un UUID válido `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` que el CLI claude
-// acepta en `--session-id`. Si s no es un hex de 32 chars, lo devuelve tal
-// cual (passthrough defensivo — el motor siempre produce 32 hex).
-func toSessionUUID(s string) string {
-	if len(s) == 32 {
-		return s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32]
+// sessionName deriva el nombre de la sesión nombrada del CLI claude: el
+// clientID saneado a [a-zA-Z0-9_-] (chars seguros para `claude -n`). Si el
+// clientID queda vacío o produce un nombre vacío (defensivo — el motor hace
+// fail-closed sin clientID), cae al session key sha256 hex del motor (ya
+// alfanumérico, seguro y determinista por cliente).
+func sessionName(s *subprocess.Session) string {
+	name := sanitizeName(s.ClientID)
+	if name == "" {
+		name = s.ID // sha256 hex del motor: seguro y determinista
 	}
-	return s
+	return name
+}
+
+// sanitizeName deja solo [a-zA-Z0-9_-], reemplazando el resto por '-', y
+// trima guiones de los extremos (el CLI rechaza nombres con guiones
+// iniciales/finales).
+func sanitizeName(s string) string {
+	var b []byte
+	lastHyphen := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
+		if ok {
+			b = append(b, c)
+			lastHyphen = c == '-'
+		} else {
+			if !lastHyphen && len(b) > 0 {
+				b = append(b, '-')
+				lastHyphen = true
+			}
+		}
+	}
+	for len(b) > 0 && b[len(b)-1] == '-' {
+		b = b[:len(b)-1]
+	}
+	return string(b)
 }
 
 // TranslateReq traduce el body chat-completions a UN prompt único limpio

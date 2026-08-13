@@ -43,7 +43,7 @@ func TestT_ArgvBuild(t *testing.T) {
 	want := []string{
 		bin,
 		"-p",
-		"--session-id", "sess-1",
+		"-n", "client-a", // sesión nombrada: crea (New) con el clientID saneado
 		"--model", "claude-sonnet-4-6",
 		"--output-format", "stream-json",
 		"--verbose", // requerido con --print + --output-format=stream-json (verificado CLI real)
@@ -528,66 +528,67 @@ func TestT_AdapterSendCtxGuarded(t *testing.T) {
 	}
 }
 
-// T_session_id_uuid_format — regresión del smoke real (12 Ago): el CLI claude
-// exige un UUID válido en --session-id/--resume (Q5). El motor deriva
-// Session.ID como sha256 hex de 32 chars; el adapter lo formatea como UUID
-// determinista. Un ID de 32 hex → UUID con guiones; un ID no-hex (defensivo)
-// → passthrough. Y: sesión nueva → --session-id (crea); subsiguiente → --resume
-// (continúa; `--session-id` repetido da "already in use", Q7).
-func TestT_SessionIDUUIDFormat(t *testing.T) {
+// T_session_named — regresión del smoke real (12 Ago): el CLI claude usa
+// sesiones NOMBRADAS. Sesión nueva → `-n <nombre>` (crea); subsiguiente →
+// `--resume <nombre>` (continúa, reutiliza cache). El nombre = clientID
+// saneado a [a-zA-Z0-9_-]. Si el clientID es vacío, cae al session key
+// sha256 hex del motor.
+func TestT_SessionNamed(t *testing.T) {
 	bin := buildClaudeStubCLI(t)
 	adapter := claude.New(bin)
 
-	// ID de 32 hex (como produce el motor): se formatea como UUID.
-	hexID := "e0b107f9f96f69a2b6165a2ac7ae5516"
-	wantUUID := "e0b107f9-f96f-69a2-b616-5a2ac7ae5516"
-
-	// Sesión NUEVA → --session-id <uuid>.
-	argv := adapter.Args(&subprocess.Session{ID: hexID, New: true}, "claude-sonnet-4-6", nil)
-	found := false
-	for i, a := range argv {
-		if a == "--session-id" && i+1 < len(argv) {
-			if argv[i+1] != wantUUID {
-				t.Fatalf("session-id (nueva) = %q, want UUID %q", argv[i+1], wantUUID)
-			}
-			found = true
-		}
+	// Nueva → -n <clientID saneado>.
+	argv := adapter.Args(&subprocess.Session{ID: "ignored", ClientID: "agent-main", New: true}, "m", nil)
+	if !hasArgPair(argv, "-n", "agent-main") {
+		t.Fatalf("argv de sesión nueva debe ser -n <clientID>: %v", argv)
 	}
-	if !found {
-		t.Fatalf("argv de sesión nueva no contiene --session-id: %v", argv)
+	if hasArg(argv, "--resume") {
+		t.Fatalf("argv de sesión nueva no debe tener --resume: %v", argv)
 	}
 
-	// Sesión subsiguiente → --resume <uuid> (continúa, reutiliza cache).
-	argvR := adapter.Args(&subprocess.Session{ID: hexID, New: false}, "claude-sonnet-4-6", nil)
-	foundResume := false
-	for i, a := range argvR {
-		if a == "--resume" && i+1 < len(argvR) {
-			if argvR[i+1] != wantUUID {
-				t.Fatalf("resume = %q, want UUID %q", argvR[i+1], wantUUID)
-			}
-			foundResume = true
-		}
+	// Subsiguiente → --resume <clientID saneado>.
+	argvR := adapter.Args(&subprocess.Session{ID: "ignored", ClientID: "agent-main", New: false}, "m", nil)
+	if !hasArgPair(argvR, "--resume", "agent-main") {
+		t.Fatalf("argv de sesión subsiguiente debe ser --resume <clientID>: %v", argvR)
 	}
-	if !foundResume {
-		t.Fatalf("argv de sesión subsiguiente no contiene --resume: %v", argvR)
+
+	// Sanitización: chars no seguros → guiones, trims de extremos.
+	argvS := adapter.Args(&subprocess.Session{ID: "ignored", ClientID: "go.corp/1!", New: true}, "m", nil)
+	if !hasArgPair(argvS, "-n", "go-1") {
+		t.Fatalf("clientID saneado = %v, want go-1", argvS)
+	}
+
+	// ClientID vacío → fallback al session key (sha256 hex del motor).
+	argvF := adapter.Args(&subprocess.Session{ID: "e0b107f9f96f69a2b6165a2ac7ae5516", ClientID: "", New: true}, "m", nil)
+	if !hasArgPair(argvF, "-n", "e0b107f9f96f69a2b6165a2ac7ae5516") {
+		t.Fatalf("clientID vacío debe caer al session key: %v", argvF)
 	}
 
 	// El argv incluye --verbose (requerido con --print + stream-json).
 	for _, a := range argv {
 		if a == "--verbose" {
-			goto hasVerbose
+			return
 		}
 	}
 	t.Fatalf("argv sin --verbose (requerido para stream-json con --print): %v", argv)
-hasVerbose:
+}
 
-	// Passthrough defensivo: ID no-hex se deja tal cual.
-	argv2 := adapter.Args(&subprocess.Session{ID: "sess-1", New: true}, "m", nil)
-	for i, a := range argv2 {
-		if a == "--session-id" && i+1 < len(argv2) {
-			if argv2[i+1] != "sess-1" {
-				t.Fatalf("session-id no-hex = %q, want passthrough sess-1", argv2[i+1])
-			}
+// hasArgPair reporta si argv contiene el par (flag, value) consecutivo.
+func hasArgPair(argv []string, flag, value string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag && argv[i+1] == value {
+			return true
 		}
 	}
+	return false
+}
+
+// hasArg reporta si argv contiene el flag.
+func hasArg(argv []string, flag string) bool {
+	for _, a := range argv {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }
