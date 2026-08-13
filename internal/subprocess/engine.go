@@ -42,6 +42,12 @@ type Session struct {
 	ID       string
 	Dir      string
 	ClientID string
+	// New indica si la sesión se CREÓ en este request (primera vez que el
+	// cliente usa el provider: el dir de sesión no existía). El adapter lo
+	// usa para elegir crear (`--session-id`) vs continuar (`--resume`) —
+	// verificado en el smoke real 12 Ago: `--session-id` repetido da
+	// "already in use"; `--resume` continua y reutiliza el prompt-cache.
+	New bool
 }
 
 // SessionKeyMode selecciona la derivación de la key de sesión.
@@ -432,10 +438,12 @@ func (p *Provider) resolveSession(clientID string) (*Session, error) {
 	// nunca elimina el dir recién creado del request en curso (el cwd del
 	// CLI debe existir para spawnear).
 	p.sweepStale()
+	_, err := os.Stat(dir)
+	newSession := os.IsNotExist(err) // el dir no existía → primera vez del cliente
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, provider.NewErrUpstream(0, "network", "create session dir")
 	}
-	return &Session{ID: key, Dir: dir, ClientID: clientID}, nil
+	return &Session{ID: key, Dir: dir, ClientID: clientID, New: newSession}, nil
 }
 
 // acquireLock toma el lock de serialización por sesión (cap 1, D8) con

@@ -40,24 +40,26 @@ func (b *Backend) Name() string { return "claude" }
 // (-p), sesión, modelo, wire-format stream-json y los backendFlags opacos
 // al final. El prompt NO viaja en argv (P3): lo escribe el motor por stdin.
 //
-// VERIFICADO empíricamente contra el CLI real v2.1.229 (12 Ago 2026, via
-// mock local): (a) `--session-id` exige un UUID válido — el motor deriva
-// s.ID como sha256 hex de 32 chars, así que el adapter lo formatea como
-// UUID (insertando guiones) de forma determinista (Q5); (b)
-// `--output-format=stream-json` con `--print` requiere `--verbose` (Q6).
+// VERIFICADO empíricamente contra el CLI real v2.1.229 (12 Ago 2026): (a)
+// `--session-id` exige un UUID válido — el motor deriva s.ID como sha256 hex
+// de 32 chars, el adapter lo formatea como UUID (Q5); (b)
+// `--output-format=stream-json` con `--print` requiere `--verbose` (Q6); (c)
+// `--session-id` SÓLO en el primer call de la sesión (repetido da "already
+// in use"); los calls siguientes usan `--resume` (continúa y reutiliza el
+// prompt-cache, ~20x más barato). `s.New` lo setea el motor (dir recién
+// creado).
 func (b *Backend) Args(s *subprocess.Session, model string, flags []string) []string {
 	bin := b.bin
 	if bin == "" {
 		bin = "claude"
 	}
-	argv := []string{
-		bin,
-		"-p",
-		"--session-id", toSessionUUID(s.ID),
-		"--model", model,
-		"--output-format", "stream-json",
-		"--verbose",
+	argv := []string{bin, "-p"}
+	if s.New {
+		argv = append(argv, "--session-id", toSessionUUID(s.ID))
+	} else {
+		argv = append(argv, "--resume", toSessionUUID(s.ID))
 	}
+	argv = append(argv, "--model", model, "--output-format", "stream-json", "--verbose")
 	return append(argv, flags...)
 }
 
