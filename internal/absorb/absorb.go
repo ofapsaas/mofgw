@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/router"
@@ -31,12 +33,15 @@ import (
 
 // AbsorbedError es la estructura pública mínima de un error saliente.
 // Err conserva el error original SOLO para logs — nunca viaja al cliente.
+// RetryAfter (0 = ausente) se traduce al header Retry-After (TECHDEBT
+// #30, brazo abstain): el cliente sabe cuándo volver a intentar.
 type AbsorbedError struct {
 	StatusCode int
 	Code       string
 	Message    string
 	Type       string
 	ProviderID string
+	RetryAfter time.Duration
 	Err        error
 }
 
@@ -95,6 +100,7 @@ func sanitizeChain(ce *router.ChainError, original error) *AbsorbedError {
 		Message:    ce.Message,
 		Type:       ce.Type,
 		ProviderID: ce.ProviderID,
+		RetryAfter: ce.RetryAfter,
 		Err:        original,
 	}
 	// 401/403 de provider = config del proxy, no error del cliente.
@@ -108,11 +114,14 @@ func sanitizeChain(ce *router.ChainError, original error) *AbsorbedError {
 	// 4xx de cliente pasan con su status original (model_not_found,
 	// invalid_request). 5xx/timeout/429 agotado -> 502 upstream_unavailable,
 	// EXCEPTO los códigos semánticos de 002-004 (all_providers_down,
-	// degraded_limit) que se conservan tal cual para el operador/uptime.
+	// degraded_limit) y el abstain de cadena agotada (chain_exhausted,
+	// TECHDEBT #30) que se conservan tal cual para el operador/cliente.
 	if ce.Status >= 500 || ce.Status == http.StatusTooManyRequests {
 		switch ce.Code {
-		case "all_providers_down", "degraded_limit":
+		case "all_providers_down", "degraded_limit", "chain_exhausted":
 			// 002-004: códigos propios, status propio (502/503).
+			// chain_exhausted: señal abstain — 502 con código semántico,
+			// el cliente distingue "agoté toda la cadena" de un 502 plano.
 			out.StatusCode = ce.Status
 			out.Message = genericUpstreamMessage(ce.Message)
 		default:
@@ -173,13 +182,19 @@ func ClientError(status int, message, typ string) *AbsorbedError {
 //
 //	{"error":{"message":...,"type":...,"code":...}}
 //
-// Es la ÚNICA ruta por la que un error sale del proxy.
+// Es la ÚNICA ruta por la que un error sale del proxy. Si el error
+// lleva RetryAfter (TECHDEBT #30 — abstain de cadena agotada), se
+// emite el header Retry-After (segundos enteros) para que el cliente
+// haga backoff en vez de reintentar en loop.
 func Respond(w http.ResponseWriter, err error) {
 	ae := Sanitize(err)
 	if ae == nil {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if ae.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(ae.RetryAfter.Seconds()), 10))
+	}
 	w.WriteHeader(ae.StatusCode)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{

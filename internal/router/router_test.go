@@ -1258,8 +1258,8 @@ func TestT_RestrictionNoAllowlistUnrestricted(t *testing.T) {
 // provider que de todos modos no podría usar. Pre-fix (shortestCooldown sin
 // filtrar AllowedClients) el router dormía ~3s; post-fix retorna al instante.
 func TestT_RestrictionDeniedCooldownGraceNoWait(t *testing.T) {
-	sub := newFake("sub", "sub-model").fail500()     // restringido a "me"; si se llamara, fallaría
-	httpP := newFake("http", "sub-model").fail500()  // permitido, también en cooldown largo
+	sub := newFake("sub", "sub-model").fail500()    // restringido a "me"; si se llamara, fallaría
+	httpP := newFake("http", "sub-model").fail500() // permitido, también en cooldown largo
 
 	r := NewWithOptions([]ProviderSpec{
 		{Provider: sub, AllowedClients: []string{"me"}},
@@ -1303,5 +1303,84 @@ func TestT_RestrictionDeniedCooldownGraceNoWait(t *testing.T) {
 	}
 	if httpP.callCount() != 0 {
 		t.Fatalf("http calls = %d, want 0 (en cooldown, no se intenta)", httpP.callCount())
+	}
+}
+
+// ---- TECHDEBT #30: abstain (chain_exhausted + RetryAfter) ----
+
+func TestExhaustedChainNilLast(t *testing.T) {
+	// Sin error previo (nunca debería pasar, pero la normalización no
+	// debe paniquear): 502 chain_exhausted, sin hint.
+	r := NewWithOptions(nil, Options{})
+	ce := r.exhaustedChain(nil)
+	if ce.Status != http.StatusBadGateway || ce.Code != "chain_exhausted" {
+		t.Fatalf("status/code = %d/%s, want 502/chain_exhausted", ce.Status, ce.Code)
+	}
+	if ce.RetryAfter != 0 {
+		t.Fatalf("RetryAfter = %v, want 0 (sin info para hint)", ce.RetryAfter)
+	}
+}
+
+func TestExhaustedChain5xxNormalizedWithCooldownHint(t *testing.T) {
+	// Último error 5xx → 502 chain_exhausted, hint = cooldown del router
+	// (default conservador cuando el upstream no proveyó Retry-After).
+	r := NewWithOptions(nil, Options{Cooldown: 45 * time.Second})
+	last := &ChainError{
+		Status: http.StatusInternalServerError, Type: "upstream_error", Code: "upstream_error",
+		Message: "boom", ProviderID: "p1", Err: errors.New("500"),
+	}
+	ce := r.exhaustedChain(last)
+	if ce.Status != http.StatusBadGateway {
+		t.Fatalf("Status = %d, want 502", ce.Status)
+	}
+	if ce.Code != "chain_exhausted" {
+		t.Fatalf("Code = %q, want chain_exhausted (abstain)", ce.Code)
+	}
+	if ce.Message != "all providers failed" {
+		t.Fatalf("Message = %q, want all providers failed", ce.Message)
+	}
+	if ce.ProviderID != "p1" {
+		t.Fatalf("ProviderID = %q, want p1 (para logs)", ce.ProviderID)
+	}
+	if ce.RetryAfter != 45*time.Second {
+		t.Fatalf("RetryAfter = %v, want 45s (cooldown default)", ce.RetryAfter)
+	}
+}
+
+func TestExhaustedChain429HonorsUpstreamRetryAfter(t *testing.T) {
+	// Último error 429 con Retry-After del upstream → el hint del
+	// upstream gana sobre el cooldown default.
+	r := NewWithOptions(nil, Options{Cooldown: 60 * time.Second})
+	last := &ChainError{
+		Status: http.StatusTooManyRequests, Type: "upstream_error", Code: "upstream_error",
+		Message: "rate limited", ProviderID: "p2",
+		Err: &provider.ErrUpstream{StatusCode: 429, Type: "upstream_error", Message: "slow down", RetryAfter: 7 * time.Second},
+	}
+	ce := r.exhaustedChain(last)
+	if ce.Code != "chain_exhausted" {
+		t.Fatalf("Code = %q, want chain_exhausted", ce.Code)
+	}
+	if ce.RetryAfter != 7*time.Second {
+		t.Fatalf("RetryAfter = %v, want 7s (hint del upstream)", ce.RetryAfter)
+	}
+}
+
+func TestExhaustedChain4xxPassthrough(t *testing.T) {
+	// 4xx de cliente NO es agotamiento: pasa con su status/código
+	// original (abstain "request insoluble"), sin hint.
+	r := NewWithOptions(nil, Options{Cooldown: 30 * time.Second})
+	last := &ChainError{
+		Status: http.StatusBadRequest, Type: "invalid_request", Code: "invalid_request",
+		Message: "bad body",
+	}
+	ce := r.exhaustedChain(last)
+	if ce != last {
+		t.Fatal("4xx debe pasar idéntico (misma instancia)")
+	}
+	if ce.Code == "chain_exhausted" {
+		t.Fatal("4xx no debe marcarse como chain_exhausted")
+	}
+	if ce.RetryAfter != 0 {
+		t.Fatalf("RetryAfter = %v, want 0 (request insoluble no se reintenta)", ce.RetryAfter)
 	}
 }

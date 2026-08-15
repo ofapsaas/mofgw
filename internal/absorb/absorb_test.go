@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/router"
@@ -234,5 +235,85 @@ func assertNoLeaks(t *testing.T, msg string) {
 		if strings.Contains(msg, secret) {
 			t.Fatalf("mensaje filtra secreto %q: %q", secret, msg)
 		}
+	}
+}
+
+// ---- TECHDEBT #30: abstain (chain_exhausted + Retry-After) ----
+
+func TestSanitizePreservesChainExhausted(t *testing.T) {
+	// chain_exhausted es el código semántico del brazo abstain (cadena
+	// agotada tras retry+switch) — absorb NO debe reescribirlo a
+	// upstream_unavailable, igual que all_providers_down/degraded_limit.
+	ce := &router.ChainError{
+		Status: http.StatusBadGateway, Type: "upstream_error", Code: "chain_exhausted",
+		Message: "all providers failed", ProviderID: "p1",
+		Err: errors.New("up"), RetryAfter: 30 * time.Second,
+	}
+	ae := Sanitize(ce)
+	if ae.StatusCode != http.StatusBadGateway {
+		t.Fatalf("StatusCode = %d, want 502", ae.StatusCode)
+	}
+	if ae.Code != "chain_exhausted" {
+		t.Fatalf("Code = %q, want chain_exhausted (código semántico conservado)", ae.Code)
+	}
+	if ae.Message != "upstream provider error" {
+		t.Fatalf("Message = %q, want genérico (sin detalles internos)", ae.Message)
+	}
+	if ae.RetryAfter != 30*time.Second {
+		t.Fatalf("RetryAfter = %v, want 30s (propagado)", ae.RetryAfter)
+	}
+	assertNoLeaks(t, ae.Message)
+}
+
+func TestSanitizePropagatesRetryAfterOnGeneric502(t *testing.T) {
+	// Un 5xx genérico (sin código semántico) también propaga el hint si
+	// el router lo dejó: el cliente igualmente sabe cuándo reintentar.
+	ce := &router.ChainError{
+		Status: 500, Type: "upstream_error", Code: "upstream_error",
+		Message: "boom", RetryAfter: 10 * time.Second, Err: errors.New("500"),
+	}
+	ae := Sanitize(ce)
+	if ae.Code != "upstream_unavailable" {
+		t.Fatalf("Code = %q, want upstream_unavailable (default 5xx)", ae.Code)
+	}
+	if ae.RetryAfter != 10*time.Second {
+		t.Fatalf("RetryAfter = %v, want 10s (propagado igual)", ae.RetryAfter)
+	}
+}
+
+func TestRespondSetsRetryAfterHeader(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Respond(rec, &AbsorbedError{
+		StatusCode: http.StatusBadGateway, Code: "chain_exhausted",
+		Message: "upstream provider error", Type: "upstream_error",
+		RetryAfter: 90 * time.Second, Err: errors.New("exhausted"),
+	})
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "90" {
+		t.Fatalf("Retry-After = %q, want 90", got)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body inválido: %v", err)
+	}
+	if body.Error.Code != "chain_exhausted" {
+		t.Fatalf("body code = %q, want chain_exhausted", body.Error.Code)
+	}
+}
+
+func TestRespondNoRetryAfterHeaderWhenZero(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Respond(rec, &AbsorbedError{
+		StatusCode: http.StatusBadGateway, Code: "upstream_unavailable",
+		Message: "upstream provider error", Type: "upstream_error",
+	})
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want ausente (sin hint)", got)
 	}
 }

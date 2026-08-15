@@ -52,6 +52,10 @@ import (
 // 002-003: Code es un código estable para la capa de absorción;
 // ProviderID identifica el provider que originó el error ("" = error
 // del proxy/cliente); Err conserva el error original solo para logs.
+// RetryAfter (0 = ausente) es el brazo "abstain" de la cadena
+// (TECHDEBT #30, BENCH2ROBUST arXiv:2608.11977): tras agotar
+// retry+switch, la cadena le sugiere al cliente cuándo volver a
+// intentar, en vez de dejar un 502 plano sin semántica.
 type ChainError struct {
 	Status     int
 	Type       string
@@ -59,6 +63,7 @@ type ChainError struct {
 	Code       string
 	ProviderID string
 	Err        error
+	RetryAfter time.Duration
 }
 
 func (e *ChainError) Error() string { return fmt.Sprintf("%s: %s", e.Type, e.Message) }
@@ -887,7 +892,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 		}
 	}
 	r.logger.Debug("decision", "motivo", "max attempts reached", "attempts", attempts)
-	return nil, exhaustedChain(lastChain)
+	return nil, r.exhaustedChain(lastChain)
 }
 
 // StreamResult es el resultado de Stream: el provider que ganó y el
@@ -1156,7 +1161,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 		}
 	}
 	r.logger.Debug("decision", "motivo", "max attempts reached", "attempts", attempts)
-	return nil, exhaustedChain(lastChain)
+	return nil, r.exhaustedChain(lastChain)
 }
 
 // logFallback registra el evento provider_fallback (compartido por los
@@ -1175,20 +1180,40 @@ func (r *Router) logFallback(s *ProviderSpec, attempts, total int, causa string)
 // cliente ve SIEMPRE 502 upstream_error (regla 001-003 §B / 002-003),
 // nunca el status crudo del último provider (500/429 son internos del
 // upstream). 4xx de cliente no pasan por acá (retornan antes).
-// ProviderID y Err se conservan para logs.
-func exhaustedChain(last *ChainError) *ChainError {
+// ProviderID y Err se conservan para logs. TECHDEBT #30 (brazo
+// "abstain" de BENCH2ROBUST, arXiv:2608.11977): el 502 normalizado
+// lleva el código semántico chain_exhausted — distingue "falló todo
+// tras N intentos" de "el request es inválido/insoluble" (4xx
+// passthrough) — y un RetryAfter que sugiere al cliente cuándo
+// reintentar en vez de un 502 plano sin señal.
+func (r *Router) exhaustedChain(last *ChainError) *ChainError {
 	if last == nil {
-		return &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "all providers failed"}
+		return &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "chain_exhausted", Message: "all providers failed"}
 	}
 	if last.Status >= http.StatusInternalServerError || last.Status == http.StatusTooManyRequests {
 		return &ChainError{
 			Status:     http.StatusBadGateway,
 			Type:       "upstream_error",
-			Code:       "upstream_unavailable",
+			Code:       "chain_exhausted",
 			Message:    "all providers failed",
 			ProviderID: last.ProviderID,
 			Err:        last.Err,
+			RetryAfter: r.exhaustRetryAfter(last),
 		}
 	}
 	return last
+}
+
+// exhaustRetryAfter deriva el hint Retry-After de la cadena agotada:
+// el RetryAfter del último error si el upstream lo proveyó (429 con
+// header), si no el cooldown del router como default conservador.
+func (r *Router) exhaustRetryAfter(last *ChainError) time.Duration {
+	var ue *provider.ErrUpstream
+	if errors.As(last.Err, &ue) && ue.RetryAfter > 0 {
+		return ue.RetryAfter
+	}
+	if r.cooldown > 0 {
+		return r.cooldown
+	}
+	return 0
 }
