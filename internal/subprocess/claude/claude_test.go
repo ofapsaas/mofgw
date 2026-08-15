@@ -554,8 +554,8 @@ func TestT_SessionNamed(t *testing.T) {
 
 	// Sanitización: chars no seguros → guiones, trims de extremos.
 	argvS := adapter.Args(&subprocess.Session{ID: "ignored", ClientID: "go.corp/1!", New: true}, "m", nil)
-	if !hasArgPair(argvS, "-n", "go-1") {
-		t.Fatalf("clientID saneado = %v, want go-1", argvS)
+	if !hasArgPair(argvS, "-n", "go-corp-1") {
+		t.Fatalf("clientID saneado = %v, want go-corp-1", argvS)
 	}
 
 	// ClientID vacío → fallback al session key (sha256 hex del motor).
