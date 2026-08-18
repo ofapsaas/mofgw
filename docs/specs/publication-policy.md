@@ -19,11 +19,13 @@
 ## Checker antes de pushear
 
 ```bash
-# árbol actual — revisar además cualquier string literal real que no deba salir
-git grep -InE "/home/[a-z]|<test-key>|go-provider|go-provider-c|go-provider-b|client-x|infra-dev|test-instance|ofap\.saas|51\.[0-9]+\.[0-9]+\.[0-9]+" -- ':!*.resp.json' || echo "arbol limpio"
+# árbol actual — revisar además cualquier string literal real que no deba salir.
+# PATRONES: rutas reales /home/<user>, prefijos de cuentas internas del operador,
+# tokens de prueba, hosts privados, sufijos de dominio interno, IPs privadas.
+git grep -InE "/home/[a-z]|internal:test-key|go-internal|client-probe|infra-dev|test-instance|internal\.saas\.ar|[[:space:]]51\.[0-9]+\.[0-9]+\.[0-9]+" -- ':!*.resp.json' || echo "arbol limpio"
 ```
 
-> El comando usa los patrones reales **solo a nivel local** (este `grep` no se commitea como doc). Si aparece algo → sanitizar antes de push. En cualquier contenido publicable, preferir las descripciones genéricas de arriba antes que los strings literales.
+> El comando usa patrones **genéricos** (sin strings literales reales de identidad interna) para que él mismo no filtre información. En cualquier contenido publicable, preferir las descripciones genéricas de arriba antes que los strings literales.
 
 ## Si una fuga ya se publicó en el historial
 
