@@ -1306,6 +1306,36 @@ func TestT_RestrictionDeniedCooldownGraceNoWait(t *testing.T) {
 	}
 }
 
+// ---- 015-001-inter-attempt-delay: P2 (cero regresión con default 0) ----
+
+// Test015001_P2_DefaultIdenticalTraversalNoDelay verifica P2 (y por
+// transitividad P8): con inter_attempt_delay default (0, off), el recorrido
+// de la cadena es idéntico al actual — ante un fallo transitorio se hace
+// fallback al siguiente candidato SIN delay entre intentos. Este test usa el
+// constructor `New` (default) → compila y pasa HOY (guard de cero regresión);
+// si alguien pusiera un delay por defecto >0, este test lo detectaría.
+func Test015001_P2_DefaultIdenticalTraversalNoDelay(t *testing.T) {
+	p1 := newFake("p1", "m").fail500()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	start := time.Now()
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2 (fallback idéntico al actual)", res.Response.Choices[0].Message.Content)
+	}
+	if p2.callCount() != 1 {
+		t.Fatalf("p2 calls = %d, want 1 (fallback directo)", p2.callCount())
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("inter_attempt_delay default (0): no debe haber delay entre intentos; duró %s", elapsed)
+	}
+}
+
 // ---- TECHDEBT #30: abstain (chain_exhausted + RetryAfter) ----
 
 func TestExhaustedChainNilLast(t *testing.T) {
