@@ -4,11 +4,13 @@
 
 ## Lo que NUNCA va a este repo
 
-- Rutas reales del host/workspace: `/home/<user>`, `$HOME`, rutas absolutas locales.
-- Nombres de cuentas/providers internos: `go-provider*`, `go-provider-c`, `go-provider-b`, `go-corp`, `go-fiel`.
-- Clientes / credenciales de prueba internos: `client-x`, `client-opencode`, `<test-key>`.
-- Infraestructura del operador: `infra-dev`, `test-instance`, `internal.saas.arar`, IPs privadas (`51.*`, `10.*`, `192.168.*`), hostnames internos.
+- Rutas reales del host/workspace: `/home/<user>`, rutas absolutas locales.
+- Nombres reales de cuentas/providers internos (prefijos de cuenta del operador, ej. `go-provider-*` con sufijos internos).
+- Clientes / credenciales de prueba internos (tokens de prueba, IDs de cliente del operador).
+- Infraestructura del operador: hostnames/sufijos internos (`*.saas.ar`, hosts de dev/prod), IPs privadas (`10.*`, `192.168.*`, rangos públicos del operador), nombres de instancias internas.
 - Keys, tokens, secrets, límites de cuota o billing de providers.
+
+> **Nota:** no listar aquí strings literales de identidad real (hosts, cuentas, tokens reales). El propio policy no debe exponerlos. Usar descripciones genéricas y placeholders.
 
 ## Placeholders a usar en su lugar
 
@@ -17,12 +19,11 @@
 ## Checker antes de pushear
 
 ```bash
-# árbol actual
-git grep -nE "/home/[a-z]|go-provider|go-provider-c|go-provider-b|<test-key>|client-x|infra-dev|test-instance|ofap\.saas|51\.[0-9]+\.[0-9]+\.[0-9]+" -- ':!*.resp.json' || echo "arbol limpio"
-
-# historial completo (todos los commits)
-git rev-list --all | while read c; do git grep -lE "/home/[a-z]|<test-key>|infra-dev|go-provider-c" "$c" 2>/dev/null; done | sort -u
+# árbol actual — revisar además cualquier string literal real que no deba salir
+git grep -InE "/home/[a-z]|<test-key>|go-provider|go-provider-c|go-provider-b|client-x|infra-dev|test-instance|ofap\.saas|51\.[0-9]+\.[0-9]+\.[0-9]+" -- ':!*.resp.json' || echo "arbol limpio"
 ```
+
+> El comando usa los patrones reales **solo a nivel local** (este `grep` no se commitea como doc). Si aparece algo → sanitizar antes de push. En cualquier contenido publicable, preferir las descripciones genéricas de arriba antes que los strings literales.
 
 ## Si una fuga ya se publicó en el historial
 
@@ -33,4 +34,4 @@ git rev-list --all | while read c; do git grep -lE "/home/[a-z]|<test-key>|infra
 
 ## Incidencia de referencia (18 Ago 2026)
 
-El historial público contenía `$HOME` (≈47 commits), `<test-key>` (≈142) y archivos internos del worker (`task_plan.md`, `.cdad-state.json`, `external-reviews/*.resp.json`). Se reescribió el historial completo con `git-filter-repo` (limpieza de strings + eliminación de archivos internos) y se force-pusheó. El commit final limpio quedó en `6747371`. Backup previo: bundle local del 2026-08-18. **Esta política existe para que no se repita.**
+El historial público contenía rutas reales del host, un token de prueba interno y archivos internos del worker (`task_plan.md`, estado del worker, salidas de revisión). Se reescribió el historial completo con `git-filter-repo` (limpieza de strings + eliminación de archivos internos) y se force-pusheó, además de actualizar la documentación de usuario con las features 014 (registro unificado) y 015 (inter-attempt-delay). Backup previo: bundle local del 2026-08-18. **Esta política existe para que no se repita.**
