@@ -1,7 +1,7 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-12 (EPIC-013-mofgw-cli-subprocess CERRADO).
+> Última actualización: 2026-08-18 (feature 015-001-inter-attempt-delay CERRADA).
 
 ## Estado del programa
 
@@ -29,6 +29,19 @@
 **Deploy:** systemd user service activo en puerto 3369, providers reales (acct1, acct2, qwen/bailian, zen free).
 
 ## Decisiones recientes (cronología inversa)
+
+### 18 Ago 2026 — Feature 015-001-inter-attempt-delay CERRADA
+
+### Decisiones relevantes
+
+- **Feature 015-001-inter-attempt-delay MERGED (standalone, priorizada por Pablo el 17 Ago).** Nuevo knob `fallback.inter_attempt_delay` (duration, default `0` = off, cero regresión): ante un fallo **transitorio** (timeout/network/connect/I-O/EOF pre-primer-byte) donde el siguiente candidato de la cadena **comparte `base_url`** (SPOF entre cuentas del mismo proveedor), duerme `N` antes del intento siguiente — da tiempo al endpoint a recuperarse en blips de segundos que hoy tumban todas las cuentas a la vez. Suite completa **601 tests `-race` en 22 paquetes** verde, go build + vet + gofmt limpios. Commits: `804f00d` RED (P1-P6+P8 por cdad-test-writer), `78934f7` GREEN, `bbf2f27` review.md, `5e95406` state review-done.
+- **Semántica del delay — condicionado, nunca a ciegas:** aplica SOLO en fallos transitorios retryable de red del mismo `base_url`; **nunca** en `429` (cuota agotada → salto inmediato, la cuenta está exhausta no trabada) ni cuando el próximo candidato tiene **distinta** `base_url` (GO→qwen→claude-pro no se retrasa). Guard `prevBaseURL != ""` da backward-compat (providers legacy sin `base_url` nunca retrasan). Delay ctx-aware: si el ctx del cliente cancela durante el sleep, retorno inmediato. Implementación: helper `interAttemptDelaySleep` en `internal/router/router.go` compartido por ramas `complete` y `stream`.
+- **No interfiere con el pipeline existente:** no toca cooldown (300s) ni sticky ni cache ni registro (EPIC-014) ni `max_retries`. Es un knob aditivo + un helper condicional, off por default, reversible (anti-scope respetado).
+- **Review APPROVE (familia distinta al implementer): 0 bloqueantes.** Auditoría test↔postcondición P1-P8 todas con test, ninguno sobrante, sin mocks sobre plumbing; contrato declarado en RED (inter_attempt_delay, `Options.InterAttemptDelay`, `ProviderSpec.BaseURL`) y materializado en GREEN sin tocar tests (no auto-satisfacción). El optional (test directo en rama `stream`, hoy solo vía `complete` por simetría del helper) y el FYI (P6 asevera `err != nil` sin tipar el ChainError de cancelación) se **descartaron**: cobertura aceptable y suficiente para el contrato. Nota de proceso: el orquestador persistió el código de GREEN porque el cdad-implementer no pudo ejecutar go/git en su sandbox (edits en worktree).
+
+### Próxima en cola
+
+- **014-001-registro-unificado (epic 014)** sigue **BLOQUEADA** en gate 2→3: spec DRAFT completa (cdad-architect round 2) sin marca `Status: Approved by <X> on <fecha>` — aprobación HITL indelegable (Pablo). 4/5 criterios de gate OK; falta solo la aprobación. Mientras tanto se priorizaron features standalone como 015-001.
 
 ### 12 Ago 2026 — Epic 013-mofgw-cli-subprocess CERRADO (provider subprocess para suscripciones de CLIs)
 
