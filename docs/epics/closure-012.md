@@ -14,7 +14,7 @@ como copia instalada en el VPS de staging (`addons_local/`), sin versionar en ni
 ## Hallazgos del discovery
 
 - El fuente del módulo existía localmente y completo en
-  `$HOME/domains/mofgw-staging.example.com/addons_local/mofgw_ai/` — esta máquina es el
+  `$HOME/domains/mofgw-staging.example.com/addons_local/mofgw_ai/` — la máquina de dev es el
   host de dominios, así que `mofgw-staging.example.com` y el workstation comparten filesystem.
 - Inventario verificado: `__manifest__.py`, `__init__.py` (hook + monkeypatch provider),
   `models/{ai_embedding, ir_actions_server, res_config_settings}.py`,

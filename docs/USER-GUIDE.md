@@ -132,6 +132,7 @@ clients:   # clientes autorizados (agentes)
 | `max_retries` | `2` | Tope de intentos **totales** por request con recorrido **circular** de la cadena (`maxAttempts = max_retries + 1`). Con N providers, `max_retries >= N-1` garantiza recorrer toda la cadena en un solo request; valores mayores dan vueltas adicionales. |
 | `cooldown` | `60s` | Tiempo que un provider queda "enfriado" tras un fallo retryable (no se le vuelve a intentar hasta que pase). |
 | `cooldown_jitter` | `5s` | ±jitter aleatorio sobre el cooldown (anti thundering-herd: varios requests no golpean al mismo provider a la vez). |
+| `inter_attempt_delay` | `0` | Retardo (015-001) que se duerme **antes** del siguiente intento de la cadena cuando el provider que falló y el siguiente candidato **comparten `base_url`** (cuentas del mismo proveedor = SPOF). Da tiempo al endpoint a recuperarse tras un blip transitorio (connect/network/timeout/I-O/EOF pre-primer-byte). **NO** aplica en `429` (cuota: salto inmediato). Es `ctx`-aware (aborta si el cliente cancela). `0` = off (cero regresión). Ver §Limitaciones para más detalle. |
 | `timeout` | `120s` | Timeout global por intento (TTFB). |
 
 ### `providers` — el orden ES la cadena de fallback
@@ -195,7 +196,7 @@ providers:
   - id: claude-pro
     type: subprocess
     backend: claude
-    command: "$HOME/.local/bin/claude"   # ruta absoluta (PATH del service)
+    command: "$HOME/.local/bin/claude"          # ruta absoluta (PATH del service)
     models: ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-7"]
     max_tokens: 8192
     # backend_flags: ["--permission-mode", "strict", "--disallowedTools", "Bash,Edit,Write"]
@@ -332,6 +333,25 @@ clients:
 ```
 
 Al exceder el budget, el cliente recibe `429 rate_limit_exceeded` sin tocar el upstream. El costo usa el mismo cálculo estimado de `pricing`.
+
+### `registry` — registro unificado de accounting + outcome (014-001)
+
+Registro **append-only (JSONL) en disco** del ciclo completo de cada request que pasa por la cadena de routing. Es la **fuente de verdad** para responder "¿cuánto gastó el cliente X en el provider Y en este período?" y "¿qué provider patinó y por qué?" — cosas que `/metrics` (acumulado desde arranque, sin ventana temporal) y el telemetry de descubrimiento (`sample_rate<1`, sin tokens/costo) **no** cubren.
+
+```yaml
+registry:
+  enabled: false        # off por default — sin true no se crea ni escribe el archivo
+  # file: "/var/log/mofgw/registry.jsonl"
+```
+
+- `enabled` + `file` **vacío** → error de validación al arrancar (el proceso no levanta).
+- Emite, por cada request: un **evento por intento** (cada provider probado: `request_id`, `ts`, `client`, `provider`, `model`, `outcome ok|fallback`, `cause`, `status`, `attempt`, `retries`) + un **evento terminal** (`outcome success|error`, `error_code`, `status`, `final_provider`, `tokens prompt/completion/cache/reasoning`, `cost_usd`, `stream`).
+- **Privacidad por construcción:** escribe SOLO el esquema (metadata/agregados). Nunca contenido de prompts/respuestas/tools/headers/keys.
+- **Aditivo y reversible:** off por default, no altera el request path. Convive con `/metrics`, `state_file` y el telemetry (009) sin sustituirlos.
+- Sobrevive restarts: `O_APPEND|O_CREATE` (permisos `0o640`); sobre archivo no abrible → falla el arranque (fail-fast).
+- Un request interrumpido en streaming registra `outcome: success` con los tokens capturados hasta el corte (eventos por request físico; no se pierden eventos terminales).
+
+La **consolidación/visualización** (por día/semana/mes, por provider × modelo × cliente) es un consumidor externo de este JSONL — no toca mofgw.
 
 ## Endpoints
 

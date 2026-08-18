@@ -43,3 +43,4 @@ __pycache__/
 # Worker / lock state (local, not public)
 .worker/
 .project-lock
+task_plan_update.txt
