@@ -1,7 +1,7 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-18 (feature 015-001-inter-attempt-delay CERRADA).
+> Última actualización: 2026-08-18 (feature 014-001-registro-unificado CERRADA + epic 014 CERRADO).
 
 ## Estado del programa
 
@@ -30,6 +30,18 @@
 
 ## Decisiones recientes (cronología inversa)
 
+### 18 Ago 2026 — Feature 014-001-registro-unificado MERGED + EPIC-014 CERRADO
+
+### Decisiones relevantes
+
+- **Feature 014-001-registro-unificado (única feature del EPIC-014 mofgw-registro-unificado) MERGED + CERRADA.** Registro **append-only en disco (JSONL)** del ciclo completo de cada request que llega a la cadena de routing: **un evento por intento** (`attempt`: request_id, ts RFC3339 ms UTC, client, provider, model, outcome ok|fallback, cause, status, attempt, retries) + **un evento terminal** (`terminal`: outcome success|error, error_code, status, final_provider, tokens{prompt,completion,cache,reasoning}, cost_usd, stream). Es la **fuente de verdad con resolución temporal** que no existía: telemetry.jsonl (009-000) se loguea al ENTRAR (sin provider/tokens/costo) y /metrics+state.json acumulan desde arranque (sin ventana). El esquema del evento es el **contrato** que consume un epic EXTERNO de consolidación/visualización (fuera de mofgw; lee el JSONL, no toca el proxy).
+- **Arquitectura (aditiva, off por default):** nuevo paquete `internal/registry` (Writer síncrono best-effort, mutex thread-safe, `NewWriter` O_APPEND|O_CREATE|O_WRONLY 0o640 con fail-fast de arranque, `.Attempt()`/`.Terminal()`) + knob top-level `registry: {enabled, file}` (default `{false,""}`, `enabled=true`+`file=""` → error de validación). Emisores: `emitAttempt` en `internal/router/router.go` (Complete y stream, al concluir cada visita con outcome/cause/status/attempt/retries — reusa `classify` para `cause` y `ChainError.Code` para `error_code`), y `emitTerminalSuccess`/`emitTerminalError` en `internal/proxy/proxy.go` junto a `recordCacheTokens` (4 call-sites chat + responses.go + embeddings.go) y `handleChainError`. `cost_usd` = MISMA fórmula `estimateCost(model, miss, completion, hit)` (D9) que /metrics. Privacidad metadata-only por construcción (D1/I2): el writer serializa SOLO el esquema, nunca contenido de prompts/respuestas/tools/headers/keys (verificado con grep negativo, C15). Identidad por ctx: `logging.RequestID(ctx)` + `auth.ClientIDFrom(ctx)`.
+- **Aditividad total:** off por default (P2), no toca ruteo/fallback/cache/sticky/singleflight/metrics/telemetry 009-000 (conviven, P17); eventos post-decisión; fallo de escritura jamás altera la respuesta (best-effort runtime, fail-fast solo arranque P16/P3).
+- **Suite completa `go test ./... -count=1 -race` 622 passed in 23 packages** (nota: 1 flake estadístico aislado en `TestE2E010002_TTLExpiry` de la feature 010002, no relacionado, re-ejecución 622/622). go build OK, go vet limpio.
+- **Review two-layer APPROVE (0 bloqueantes):** familia de modelo distinta al implementer; P1-P17/I1-I10/C1-C17 verificados contra spec; no auto-satisfacción (RED 32e3459 → GREEN 9f1ee84 sin relajar implementación; 4 fixes de TEST legítimos del test-writer: keysIguales sort, MaxRetries 2→1, Cooldown time.Minute). 2 observaciones no-bloqueantes: O1 (C17 endpoints responses/embeddings y P17 telemetry sin test dedicado — opcional/follow-up fuera del gate) y O2 (FYI, terminal error del follower singleflight y stream interrumpido post-byte cubiertos por simetría). Artifacto: `docs/specs/014-001-registro-unificado/review.md`.
+- **Commits:** spec `1bc8f21` (aprobada Ofap HITL 18 Ago), RED `32e3459`, GREEN `9f1ee84`, review (review.md commiteada), merge+memory bank (este commit). Config `registry:` documentado en `config.example.yaml` (ya presente desde GREEN, línea ~219).
+- **Decisiones D1-D15 lockeadas en el spec** (writer dedicado tipado sin slog; discriminador type attempt|terminal; ts RFC3339 ms; intento = visita concluida con attempt/retries; cause = typ de classify; alcance only-routing D7; error_code = ChainError.Code; cost_usd = estimateCost; writer síncrono best-effort; identidad por ctx; esquema v1 extensible; singleflight por request físico D14; stream interrumpido = success con tokens capturados D15). Sin ADR nuevo (feature sin nueva llamada saliente ni frontera arquitectónica; decisiones en el spec). **EPIC-014 CERRADO** (única feature; closure: `docs/epics/closure-014.md`). Siguiente en cola: el epic EXTERNO de consolidación/visualización (fuera de mofgw).
+
 ### 18 Ago 2026 — Feature: 015-001-inter-attempt-delay (knob SPOF) MERGED
 
 ### Decisiones relevantes
@@ -48,7 +60,7 @@
 
 ### Próxima en cola
 
-- **014-001-registro-unificado (epic 014)** sigue **BLOQUEADA** en gate 2→3: spec DRAFT completa (cdad-architect round 2) sin marca `Status: Approved by <X> on <fecha>` — aprobación HITL indelegable (Pablo). 4/5 criterios de gate OK; falta solo la aprobación. Mientras tanto se priorizaron features standalone como 015-001.
+- **014-001-registro-unificado (epic 014)** CERRADA (18 Ago 2026) + **EPIC-014 (mofgw-registro-unificado) CERRADO** — feature 014-001 MERGED, review two-layer APPROVE (0 bloqueantes), memory bank actualizada, closure en `docs/epics/closure-014.md`. Siguiente paso: el epic EXTERNO de consolidación/visualización (fuera de mofgw; consume el JSONL, no toca el proxy).
 
 ### 12 Ago 2026 — Epic 013-mofgw-cli-subprocess CERRADO (provider subprocess para suscripciones de CLIs)
 
