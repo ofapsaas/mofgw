@@ -19,6 +19,14 @@ server:
 
 fallback:
   max_retries: 2               # intentos totales por request = max_retries + 1
+  # inter_attempt_delay: retardo entre intentos de la cadena ante fallos
+  # transitorios (timeout/network/connect/I-O/EOF pre-primer-byte) cuando el
+  # siguiente provider COMPARTE base_url con el que falló (SPOF de cuentas del
+  # mismo proveedor) (015-001). Se duerme N antes del siguiente intento para dar
+  # tiempo al endpoint a recuperarse. NO aplica en 429 (cuota: salto inmediato).
+  # ctx-aware (aborta si el cliente cancela). Default 0 = off (sin delay, cero
+  # regresión).
+  # inter_attempt_delay: 1s
   cooldown: 60s                # cooldown global por provider tras fallo retryable
   cooldown_jitter: 5s          # ± jitter anti thundering-herd
   timeout: 120s                # timeout global por intento (Complete; TTFB si no hay first_token_timeout)

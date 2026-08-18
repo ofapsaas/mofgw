@@ -30,6 +30,13 @@
 
 ## Decisiones recientes (cronología inversa)
 
+### 18 Ago 2026 — Feature: 015-001-inter-attempt-delay (knob SPOF) MERGED
+
+### Decisiones relevantes
+
+- **Feature 015-001-inter-attempt-delay MERGED — retardo configurable entre intentos de la cadena (`fallback.inter_attempt_delay`) ante blips transitorios del endpoint compartido (SPOF).** Nuevo knob (duration, default `0` = off, cero regresión) que, ante un fallo **transitorio** (timeout/network/connect/I-O/EOF pre-primer-byte — `transientStatus`), duerme `N` antes del siguiente intento SOLO cuando el siguiente provider **comparte `base_url`** con el que falló (cuentas del mismo proveedor caen juntas; el recorrido instantáneo no daba protección). NO aplica en `429` (cuota → salto inmediato). ctx-aware (aborta si el ctx del cliente cancela). Nuevo campo `ProviderSpec.BaseURL` (detección SPOF) + `Options.InterAttemptDelay` / `FallbackConfig.InterAttemptDelay`. Suite completa **601 tests `-race` en 22 paquetes** verde; go build + vet limpios, gofmt limpio. Commits: `602020f` spec, `804f00d` RED, `78934f7` GREEN. Feature standalone PRIORITARIA posterior a EPIC-013 (toma del worker antes que EPIC-014).
+- **Arquitectura (aditiva, off por default P8):** solo agregó un knob de config + un helper condicional `interAttemptDelaySleep` (`internal/router/router.go:752-758`) en los loops `complete`/`stream`; NO toca cooldown/sticky/cache/max_retries/transparencia. `transientStatus` captura exactamente 5xx retryable + timeout/network→502 excluyendo 429. Guard `prevBaseURL != ""` → providers legacy sin `base_url` nunca retrasan. Config negativa rechazada en validación (`config.go:486`). Review two-layer APPROVE (0 bloqueantes, familia de modelo distinta al implementer; P1-P8 verificadas contra spec, sin auto-satisfacción RED->GREEN). Documentado en `config.example.yaml` (fallback.inter_attempt_delay).
+
 ### 18 Ago 2026 — Feature 015-001-inter-attempt-delay CERRADA
 
 ### Decisiones relevantes
