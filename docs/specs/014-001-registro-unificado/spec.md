@@ -2,9 +2,11 @@
 feature_id: 014-001-registro-unificado
 feature_name: registro-unificado
 epic: 014-mofgw-registro-unificado
-status: draft
+status: approved
+approved_by: Ofap (HITL — owner técnico mofgw)
+approved_at: 2026-08-18
 created_at: 2026-08-17
-updated_at: 2026-08-17
+updated_at: 2026-08-18
 depends_on: 001-003-fallback (outcome por intento), 002-001-retry (retries por intento), 003-001-provider-cache (tokens cache/reasoning), 006-001-usage-accounting (tokens prompt/completion), 006-002-costos (cost_usd), 005-005-verbose (precedente privacidad), 009-000-request-telemetry (precedente writer JSONL + convivencia anti-scope), 011-001-responses-endpoint, 011-006-embeddings (recordCacheTokens en esos endpoints)
 paralelizable: no
 ---
@@ -403,4 +405,4 @@ request path) e individualmente testeable con un test de comportamiento.
 
 ---
 
-Status: **Draft** (cdad-architect, round 2/5, 2026-08-17). Pendiente aprobación del usuario (Pablo/Ofap HITL — indelegable) antes de RED.
+Status: **Approved** by Ofap on 2026-08-18 (HITL — owner técnico mofgw; plan del epic 014 ya aprobado por Pablo 17 Ago 2026). Aprobación del diseño detallado: aditivo, off por default, sin cambios al request path. Próximo paso: RED (test-writer).
