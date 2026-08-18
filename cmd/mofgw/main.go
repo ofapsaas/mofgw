@@ -96,6 +96,10 @@ func run() error {
 		}
 		specs = append(specs, router.ProviderSpec{
 			Provider: p,
+			// 015-001: base_url del provider, para la comparación SPOF del
+			// inter-attempt delay (solo aplica entre cuentas del mismo
+			// endpoint compartido).
+			BaseURL:  pc.BaseURL,
 			Cooldown: pc.Cooldown,
 			Timeout:  pc.Timeout,
 			// 029-001 (TECHDEBT #29): override per-provider del tope TTFB
@@ -136,6 +140,8 @@ func run() error {
 		Cooldown:       cfg.Fallback.Cooldown,
 		CooldownJitter: cfg.Fallback.CooldownJitter,
 		GlobalTimeout:  cfg.Fallback.Timeout,
+		// 015-001: retardo entre intentos del mismo SPOF (fallback.inter_attempt_delay).
+		InterAttemptDelay: cfg.Fallback.InterAttemptDelay,
 		Retry: router.RetryConfig{
 			MaxAttempts: cfg.Fallback.Retry.MaxAttempts,
 			BackoffBase: cfg.Fallback.Retry.BackoffBase,

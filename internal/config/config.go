@@ -88,6 +88,12 @@ type FallbackConfig struct {
 	Cooldown       time.Duration `yaml:"cooldown"`
 	CooldownJitter time.Duration `yaml:"cooldown_jitter"`
 	Timeout        time.Duration `yaml:"timeout"`
+	// InterAttemptDelay: 015-001 — retardo entre intentos de la cadena ante
+	// fallos TRANSITORIOS del endpoint compartido (SPOF de cuentas del
+	// mismo proveedor). Aplica solo cuando el siguiente candidato comparte
+	// base_url con el intento que falló; 429 (cuota) NUNCA añade delay.
+	// 0 (default) = off (cero regresión). Se valida >= 0 en Parse.
+	InterAttemptDelay time.Duration `yaml:"inter_attempt_delay"`
 	// FirstTokenTimeout: tope de TTFB (time-to-first-token) por intento de
 	// STREAM (TECHDEBT #29, incidente Obs-Radar 12 Ago 2026: un upstream
 	// colgado quemó 11+ min sin emitir primer token). Semántica de 3
@@ -475,6 +481,9 @@ func (c *Config) validate() error {
 	}
 	if c.Fallback.FirstTokenTimeout < 0 {
 		return fmt.Errorf("config: fallback.first_token_timeout no puede ser negativo")
+	}
+	if c.Fallback.InterAttemptDelay < 0 {
+		return fmt.Errorf("config: fallback.inter_attempt_delay no puede ser negativo")
 	}
 	if c.Server.MaxBodyBytes <= 0 {
 		return fmt.Errorf("config: server.max_body_bytes debe ser > 0")

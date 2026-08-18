@@ -95,6 +95,10 @@ type Options struct {
 	Cooldown       time.Duration
 	CooldownJitter time.Duration
 	GlobalTimeout  time.Duration
+	// InterAttemptDelay: 015-001 — retardo entre intentos de la cadena ante
+	// fallos transitorios del endpoint compartido (SPOF). 0 (default) = off
+	// (cero regresión).
+	InterAttemptDelay time.Duration
 	// FirstTokenTimeout: tope TTFB de streaming (TECHDEBT #29).
 	// nil = sin knob (fallback al GlobalTimeout para TTFB, comportamiento
 	// histórico); &0 = sin tope de primer token; &N = N.
@@ -113,6 +117,10 @@ type Options struct {
 // (nil = usar el global del config).
 type ProviderSpec struct {
 	Provider provider.Provider
+	// BaseURL: familia de endpoint del provider (015-001). Se usa para
+	// comparar SPOF: el inter-attempt delay solo aplica cuando el siguiente
+	// candidato COMPARTE base_url con el intento que falló.
+	BaseURL  string
 	Cooldown *time.Duration
 	Timeout  *time.Duration
 	// FirstTokenTimeout: override per-provider del tope TTFB de streaming
@@ -222,6 +230,7 @@ type Router struct {
 	firstTokenTO *time.Duration // nil = TTFB == GlobalTimeout (histórico)
 	jitter       time.Duration
 	globalTO     time.Duration
+	interDelay   time.Duration // 015-001: retardo entre intentos del mismo SPOF
 	retryCfg     RetryConfig
 	degradCfg    DegradationConfig
 	cooldowns    *CooldownStore
@@ -265,6 +274,7 @@ func NewWithOptions(specs []ProviderSpec, o Options) *Router {
 		cooldown:     o.Cooldown,
 		jitter:       o.CooldownJitter,
 		globalTO:     o.GlobalTimeout,
+		interDelay:   o.InterAttemptDelay,
 		firstTokenTO: o.FirstTokenTimeout,
 		retryCfg:     o.Retry,
 		degradCfg:    o.Degradation,
@@ -714,6 +724,39 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// transientStatus reporta si un status de fallo es de clase TRANSITORIA de
+// red que amerita el inter-attempt delay (015-001): retryable (5xx,
+// timeout/network/connect/IO/EOF pre-byte) pero NUNCA 429 (cuota agotada →
+// la cuenta está exhausta, no trabada → salto inmediato, P4).
+func transientStatus(status int) bool {
+	return status >= http.StatusInternalServerError && status != http.StatusTooManyRequests
+}
+
+// interDelayPrev devuelve el estado de SPOF previo tras el fallo de un
+// provider: si el último fallo fue transitorio, recuerda su base_url para
+// aplicar el delay al siguiente candidato que comparta endpoint (015-001
+// P3). last nil o no-transitorio → ("", false) = sin delay.
+func (r *Router) interDelayPrev(last *ChainError, s *ProviderSpec) (prevBaseURL string, prevTransient bool) {
+	if last != nil && transientStatus(last.Status) {
+		return s.BaseURL, true
+	}
+	return "", false
+}
+
+// interAttemptDelaySleep duerme el inter-attempt delay (015-001 P3) antes
+// de intentar un provider, si el anterior falló transitorio en el MISMO
+// SPOF (misma base_url). No-op (true inmediato) cuando: knob off
+// (interDelay <= 0, P2), fallo no transitorio, base_url distinta (P5) o
+// base_url desconocida. Devuelve false si el cliente cancela durante el
+// sleep (P6).
+func (r *Router) interAttemptDelaySleep(ctx context.Context, s *ProviderSpec, prevBaseURL string, prevTransient bool) bool {
+	if !prevTransient || r.interDelay <= 0 || prevBaseURL == "" || prevBaseURL != s.BaseURL {
+		return true
+	}
+	r.logger.Debug("inter_attempt_delay", "provider", s.Provider.ID(), "wait", r.interDelay.String())
+	return sleepCtx(ctx, r.interDelay)
+}
+
 // resolveReady aplica la política de degradación cuando no hay
 // candidatos listos: grace de cooldown corto (002-004) y fast-fail.
 // Devuelve ready (posiblemente tras la espera) o un ChainError.
@@ -811,10 +854,18 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 
 	var lastChain *ChainError
 	attempts := 0
+	var prevBaseURL string
+	var prevTransient bool
 	for attempts < r.maxAttempts {
 		idx := ready[attempts%len(ready)]
 		attempts++
 		s := &r.specs[idx]
+		// 015-001 (P3/P6): antes de intentar este provider, si el anterior
+		// falló transitorio en el MISMO SPOF, dormir el inter-attempt delay
+		// (ctx-aware). P2/P4/P5: no-op (off / 429 / distinta base_url).
+		if !r.interAttemptDelaySleep(ctx, s, prevBaseURL, prevTransient) {
+			return nil, &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "request cancelled during inter-attempt delay", ProviderID: s.Provider.ID(), Err: ctx.Err()}
+		}
 		retryCfg := r.specRetry(s)
 		maxTries := retryCfg.MaxAttempts
 		if maxTries < 1 {
@@ -890,6 +941,10 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 			r.logger.Warn("intento fallido", "provider", s.Provider.ID(), "status", status)
 			break
 		}
+		// 015-001 (P3): tras el fallo de este provider (retries agotados),
+		// recordar si fue transitorio y su base_url para el delay del
+		// siguiente candidato que comparta endpoint.
+		prevBaseURL, prevTransient = r.interDelayPrev(lastChain, s)
 	}
 	r.logger.Debug("decision", "motivo", "max attempts reached", "attempts", attempts)
 	return nil, r.exhaustedChain(lastChain)
@@ -954,10 +1009,18 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 
 	var lastChain *ChainError
 	attempts := 0
+	var prevBaseURL string
+	var prevTransient bool
 	for attempts < r.maxAttempts {
 		idx := ready[attempts%len(ready)]
 		attempts++
 		s := &r.specs[idx]
+		// 015-001 (P3/P6): antes de intentar este provider, si el anterior
+		// falló transitorio en el MISMO SPOF, dormir el inter-attempt delay
+		// (ctx-aware). P2/P4/P5: no-op (off / 429 / distinta base_url).
+		if !r.interAttemptDelaySleep(ctx, s, prevBaseURL, prevTransient) {
+			return nil, &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: "request cancelled during inter-attempt delay", ProviderID: s.Provider.ID(), Err: ctx.Err()}
+		}
 		retryCfg := r.specRetry(s)
 		maxTries := retryCfg.MaxAttempts
 		if maxTries < 1 {
@@ -1159,6 +1222,10 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 			}
 			return commitStream(first), nil
 		}
+		// 015-001 (P3): tras el fallo de este provider (retries agotados),
+		// recordar si fue transitorio y su base_url para el delay del
+		// siguiente candidato que comparta endpoint.
+		prevBaseURL, prevTransient = r.interDelayPrev(lastChain, s)
 	}
 	r.logger.Debug("decision", "motivo", "max attempts reached", "attempts", attempts)
 	return nil, r.exhaustedChain(lastChain)
