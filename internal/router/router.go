@@ -43,7 +43,9 @@ import (
 	"github.com/ofapsaas/mofgw/internal/clamp"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/health"
+	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/registry"
 	"github.com/ofapsaas/mofgw/internal/timeouts"
 )
 
@@ -248,6 +250,11 @@ type Router struct {
 
 	degradedMu  sync.Mutex
 	degradedCnt int // requests servidos en degradación (002-004)
+
+	// registry: writer del registro unificado de accounting (014-001).
+	// nil = off (sin emisión de eventos attempt, I3). Seteado pre-tráfico
+	// vía SetRegistry; lectura concurrente segura (se asigna una sola vez).
+	registry *registry.Writer
 }
 
 // New construye el router con la API legacy (EPIC-001, sin reintentos,
@@ -299,6 +306,44 @@ func (r *Router) Affinity() *AffinityStore { return r.affinity }
 // pre-tráfico: mapa inmutable después; nil → sin inyección, P8).
 func (r *Router) SetModelMeta(meta map[string]config.ModelMetadata) {
 	r.modelMeta = meta
+}
+
+// SetRegistry configura el writer del registro de accounting (014-001).
+// nil = off (sin emisión de eventos attempt, I3/I6: cero cambio al ruteo).
+// Debe llamarse antes del tráfico (patrón SetModelMeta).
+func (r *Router) SetRegistry(w *registry.Writer) {
+	r.registry = w
+}
+
+// emitAttempt filma UN evento attempt al CONCLUSIÓN de una visita a un
+// provider (014-001 P7/P8): el outcome ya es conocido. Best-effort
+// (D10/I4): un error de escritura se loguea y el request sigue; nil writer
+// o request sin request_id en ctx → no-op (I3/D11). cause = typ de la
+// clasificación (D6); status = HTTP del fallo (200 en outcome ok).
+func (r *Router) emitAttempt(ctx context.Context, req *provider.ChatRequest, s *ProviderSpec, outcome, cause string, status, attempt, retries int) {
+	if r.registry == nil {
+		return
+	}
+	requestID := logging.RequestID(ctx)
+	if requestID == "" {
+		return // D11: sin request_id no se registra
+	}
+	ev := registry.AttemptEvent{
+		Type:      "attempt",
+		RequestID: requestID,
+		Ts:        time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		Client:    auth.ClientIDFrom(ctx),
+		Provider:  s.Provider.ID(),
+		Model:     req.Model,
+		Outcome:   outcome,
+		Cause:     cause,
+		Status:    status,
+		Attempt:   attempt,
+		Retries:   retries,
+	}
+	if err := r.registry.Attempt(ev); err != nil {
+		r.logger.Warn("registry: attempt no emitido", "provider", ev.Provider, "err", err)
+	}
 }
 
 // Health expone el store de salud (para /healthz del proxy).
@@ -886,6 +931,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 				ce := &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 				lastChain = ce
 				r.recordFailure(s)
+				r.emitAttempt(ctx, req, s, "fallback", ce.Code, ce.Status, attempts, try-1)
 				break
 			}
 			// 010-002 P4: inyección per-attempt del default prescriptivo
@@ -900,6 +946,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 					ce := &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 					lastChain = ce
 					r.recordFailure(s)
+					r.emitAttempt(ctx, req, s, "fallback", ce.Code, ce.Status, attempts, try-1)
 					break
 				}
 			}
@@ -909,12 +956,14 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 			if err == nil {
 				res.ProviderID = s.Provider.ID()
 				r.resetDegraded()
+				r.emitAttempt(ctx, req, s, "ok", "", http.StatusOK, attempts, try-1)
 				return res, nil
 			}
 			clErr := timeouts.Classify(err)
 			retryable, status, typ, msg := classify(clErr)
 			lastChain = &ChainError{Status: status, Type: typ, Code: typ, Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 			if !retryable {
+				r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 				return nil, lastChain
 			}
 
@@ -939,6 +988,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 
 			r.recordFailure(s)
 			r.logger.Warn("intento fallido", "provider", s.Provider.ID(), "status", status)
+			r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 			break
 		}
 		// 015-001 (P3): tras el fallo de este provider (retries agotados),
@@ -1044,6 +1094,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 			if err != nil {
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 				r.recordFailure(s)
+				r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 				break
 			}
 			// 010-002 P4: inyección per-attempt del default prescriptivo
@@ -1055,6 +1106,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				if err != nil {
 					lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 					r.recordFailure(s)
+					r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 					break
 				}
 			}
@@ -1070,9 +1122,10 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 			if err != nil {
 				pcancel()
 				clErr := timeouts.Classify(err)
-				retryable, _, _, msg := classify(clErr)
+				retryable, status, typ, msg := classify(clErr)
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 				if !retryable {
+					r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 					return nil, lastChain
 				}
 				if try < maxTries {
@@ -1085,6 +1138,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				}
 				r.logFallback(s, attempts, len(ready), "timeout/network")
 				r.recordFailure(s)
+				r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 				continue
 			}
 
@@ -1133,6 +1187,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 					}
 					r.logFallback(s, attempts, len(ready), "ttfb timeout")
 					r.recordFailure(s)
+					r.emitAttempt(ctx, req, s, "fallback", "timeout", http.StatusBadGateway, attempts, try-1)
 					continue
 				case first, ok := <-ch:
 					// drain del timer si ya disparó en la carrera del select
@@ -1155,14 +1210,16 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 						}
 						r.logFallback(s, attempts, len(ready), "stream closed before first byte")
 						r.recordFailure(s)
+						r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 						continue
 					}
 					if first.Err != nil {
 						pcancel()
 						clErr := timeouts.Classify(first.Err)
-						retryable, _, _, msg := classify(clErr)
+						retryable, status, typ, msg := classify(clErr)
 						lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 						if !retryable {
+							r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 							return nil, lastChain
 						}
 						if try < maxTries {
@@ -1175,8 +1232,10 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 						}
 						r.logFallback(s, attempts, len(ready), "first event error")
 						r.recordFailure(s)
+						r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 						continue
 					}
+					r.emitAttempt(ctx, req, s, "ok", "", http.StatusOK, attempts, try-1)
 					return commitStream(first), nil
 				}
 			}
@@ -1198,14 +1257,16 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				}
 				r.logFallback(s, attempts, len(ready), "stream closed before first byte")
 				r.recordFailure(s)
+				r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 				continue
 			}
 			if first.Err != nil {
 				pcancel()
 				clErr := timeouts.Classify(first.Err)
-				retryable, _, _, msg := classify(clErr)
+				retryable, status, typ, msg := classify(clErr)
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 				if !retryable {
+					r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 					return nil, lastChain
 				}
 				if try < maxTries {
@@ -1218,8 +1279,10 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				}
 				r.logFallback(s, attempts, len(ready), "first event error")
 				r.recordFailure(s)
+				r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 				continue
 			}
+			r.emitAttempt(ctx, req, s, "ok", "", http.StatusOK, attempts, try-1)
 			return commitStream(first), nil
 		}
 		// 015-001 (P3): tras el fallo de este provider (retries agotados),

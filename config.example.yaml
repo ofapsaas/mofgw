@@ -207,3 +207,15 @@ web_search:
 embeddings:
   base_url: "http://localhost:11434"
   # api_key_env: MOFGW_EMBEDDINGS_API_KEY
+
+# Registro unificado de accounting + outcome (014-001): canal dedicado
+# registry.jsonl con UN evento por intento (cada visita a un provider de la
+# cadena) + UN evento terminal por request en routing (outcome, tokens,
+# costo, streaming). Es la fuente de verdad con resolución temporal que
+# telemetry.jsonl (009-000) y /metrics no cubren (no reemplaza a ninguno).
+# Off por default (no crea archivo, cero costo). enabled=true + file vacío →
+# error al arrancar (fail-fast). El archivo es append-only y sobrevive
+# restarts. Privacidad: solo metadata del esquema, nunca prompts/respuestas.
+registry:
+  enabled: false
+  # file: "/var/log/mofgw/registry.jsonl"

@@ -140,6 +140,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	usage := parseEmbeddingsUsage(raw)
 	lastUsage = usage
 	s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, model, usage)
+	s.emitTerminalSuccess(logging.RequestID(r.Context()), clientID, providerID, model, usage, false)
 	s.setUsageHeaders(w.Header(), providerID, model, usage)
 
 	// 8. Forzar `model` del envelope == el forzado por cliente (P3/P6).

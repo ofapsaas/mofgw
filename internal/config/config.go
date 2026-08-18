@@ -233,6 +233,16 @@ type TelemetryConfig struct {
 	File       string  `yaml:"file"`
 }
 
+// RegistryConfig es la configuración del registro unificado de accounting +
+// outcome (014-001): canal dedicado registry.jsonl con UN evento por intento
+// + UN evento terminal por request en routing. Off por default (I3);
+// enabled=true + file="" → error de validación en Parse (D2, fail-fast
+// patrón telemetry 009-000 P8).
+type RegistryConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	File    string `yaml:"file"`
+}
+
 // WebSearchConfig es la configuración del grounded search server-side
 // (011-005 D5): Enabled=false (default) → `web_search_preview` conserva el
 // 400 de D3 de 003 (sin regresión); Enabled=true → mofgw emula el grounded
@@ -299,6 +309,9 @@ type Config struct {
 
 	// Telemetry: telemetría de descubrimiento (009-000).
 	Telemetry TelemetryConfig `yaml:"telemetry"`
+
+	// Registry: registro unificado de accounting + outcome (014-001).
+	Registry RegistryConfig `yaml:"registry"`
 
 	// WebSearch: grounded search server-side (011-005).
 	WebSearch WebSearchConfig `yaml:"web_search"`
@@ -394,6 +407,10 @@ func defaults() Config {
 			Enabled:    false,
 			SampleRate: 1,
 			File:       "",
+		},
+		Registry: RegistryConfig{
+			Enabled: false,
+			File:    "",
 		},
 		WebSearch: WebSearchConfig{
 			Enabled:    false,
@@ -635,6 +652,11 @@ func (c *Config) validate() error {
 	}
 	if c.Telemetry.Enabled && c.Telemetry.File == "" {
 		return fmt.Errorf("config: telemetry.enabled=true requiere telemetry.file")
+	}
+	// registry (014-001 P1/D2): enabled=true con file vacío es error de
+	// arranque (fail-fast, mismo patrón que telemetry).
+	if c.Registry.Enabled && c.Registry.File == "" {
+		return fmt.Errorf("config: registry.enabled=true requiere registry.file")
 	}
 	// context.analysis (009-001 P6): history_per_session negativo no tiene
 	// sentido (0 = sin history, solo agregados — consistente con la

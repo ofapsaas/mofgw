@@ -113,6 +113,25 @@ func waitRegistryLines(t *testing.T, path string, n int) []jsonLogLine {
 	return parseJSONLines(t, readRegistry(t, path))
 }
 
+// waitDegradedTerminal espera (hasta 2s) a que aparezca un terminal con
+// status 503 (degraded_limit) y lo devuelve; nil si no aparece. Se usa en
+// el escenario degradado (C13), donde el conteo total de líneas es variable
+// porque el request que aún camina la cadena emite attempts → no se puede
+// fiar de un umbral de líneas para detectar el terminal degradado.
+func waitDegradedTerminal(t *testing.T, path string) jsonLogLine {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, l := range parseJSONLines(t, readRegistry(t, path)) {
+			if l["type"] == "terminal" && l["status"] == float64(503) {
+				return l
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil
+}
+
 // lineByTypeAndRID: primera línea con `type` y `request_id` dados (para
 // correlación P11).
 func lineByTypeAndRID(lines []jsonLogLine, typ, rid string) jsonLogLine {
@@ -331,8 +350,11 @@ func Test014001_P9_RetryMismoProvider(t *testing.T) {
 // status 502, final_provider = último intentado, tokens/cost 0.
 func Test014001_P8_P10_P13_ChainAgotado(t *testing.T) {
 	regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+	// MaxRetries: 1 ⇒ maxAttempts = MaxRetries+1 = 2 (semántica 002-001),
+	// con 2 providers la cadena visita exactamente up1→up2 (2 attempts) y
+	// se agota — C7: 2 attempts + 1 terminal error chain_exhausted.
 	h, _, _ := buildRegistry(t, []fakeUpstream{upstreamFail(500), upstreamFail(503)}, "sk-test-1", regPath, router.Options{
-		MaxRetries: 2, Cooldown: 0, GlobalTimeout: 30 * time.Second,
+		MaxRetries: 1, Cooldown: 0, GlobalTimeout: 30 * time.Second,
 	})
 	resp := h.chat(t, map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": "hi"}}})
 	if resp.StatusCode != 502 {
@@ -467,31 +489,39 @@ func Test014001_P7_P12_StreamingOK(t *testing.T) {
 // ---- C13 — degraded fast-fail ----
 
 // Test014001_P10_P13_DegradedFastFail verifica C13/P10/P13: con todos los
-// providers down y degradación activa, el segundo request → 503 sin
-// attempts para su request_id y con un terminal error degraded_limit/
-// all_providers_down (se aceptan ambos códigos según la wording de C13).
+// providers down y degradación activa, el request degradado → 503 sin
+// attempts para su request_id y con un terminal error degraded_limit.
+// Semántica establecida (TestDegradationLimit503): el 1er request camina la
+// cadena (no es fast-fail), el fast-fail #1 da 502 all_providers_down y el
+// fast-fail #2 da 503 degraded_limit.
 func Test014001_P10_P13_DegradedFastFail(t *testing.T) {
 	regPath := filepath.Join(t.TempDir(), "registry.jsonl")
 	h, _, _ := buildRegistry(t, []fakeUpstream{upstreamFail(500)}, "sk-test-1", regPath, router.Options{
-		MaxRetries: 2, Cooldown: 0, GlobalTimeout: 30 * time.Second,
+		MaxRetries: 2, Cooldown: time.Minute, GlobalTimeout: 30 * time.Second,
 		Degradation: router.DegradationConfig{MaxRequests: 1, CooldownGrace: 0},
 	})
-	// Primer request: puede emitir attempts (tolerante).
+	// Semántica de degradación establecida (TestDegradationLimit503):
+	// - el primer request, con el provider FRESCO, camina la cadena
+	//   (no es fast-fail → NO cuenta para degradedCnt) → 502 chain_exhausted
+	//   tras emitir sus attempts.
+	// - fast-fail #1 → cnt=1, `1 > 1` false → 502 all_providers_down.
+	// - fast-fail #2 → cnt=2 > 1 → 503 degraded_limit.
+	// El 503 degradado se observa en el TERCER request.
 	r1 := h.chat(t, map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": "hi"}}})
 	io.Copy(io.Discard, r1.Body)
-	// Segundo request: degradado → 503.
+	// Primer fast-fail → 502 all_providers_down (no degradado aún).
 	r2 := h.chat(t, map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": "hi"}}})
-	if r2.StatusCode != 503 {
-		t.Fatalf("segundo request status = %d, want 503 (degradado, C13)", r2.StatusCode)
+	if r2.StatusCode != 502 {
+		t.Fatalf("segundo request status = %d, want 502 (primer fast-fail all_providers_down, C13)", r2.StatusCode)
 	}
 	io.Copy(io.Discard, r2.Body)
-	lines := waitRegistryLines(t, regPath, 3)
-	var lastTerm jsonLogLine
-	for _, l := range lines {
-		if l["type"] == "terminal" {
-			lastTerm = l
-		}
+	// Segundo fast-fail → 503 degraded_limit (C13).
+	r3 := h.chat(t, map[string]any{"model": "m", "messages": []map[string]string{{"role": "user", "content": "hi"}}})
+	if r3.StatusCode != 503 {
+		t.Fatalf("tercer request status = %d, want 503 (degradado degraded_limit, C13)", r3.StatusCode)
 	}
+	io.Copy(io.Discard, r3.Body)
+	lastTerm := waitDegradedTerminal(t, regPath)
 	if lastTerm == nil {
 		t.Fatalf("sin terminal degradado (C13): %s", readRegistry(t, regPath))
 	}
@@ -499,15 +529,15 @@ func Test014001_P10_P13_DegradedFastFail(t *testing.T) {
 		t.Fatalf("terminal status = %v, want 503 (C13)", lastTerm["status"])
 	}
 	code, _ := lastTerm["error_code"].(string)
-	if code != "degraded_limit" && code != "all_providers_down" {
-		t.Fatalf("error_code = %q, want degraded_limit o all_providers_down (C13)", code)
+	if code != "degraded_limit" {
+		t.Fatalf("error_code = %q, want degraded_limit (C13)", code)
 	}
 	rid, _ := lastTerm["request_id"].(string)
 	if rid == "" {
 		t.Fatalf("terminal sin request_id (C13)")
 	}
 	// El request degradado NO emite attempts (P13/C13).
-	for _, l := range lines {
+	for _, l := range parseJSONLines(t, readRegistry(t, regPath)) {
 		if l["type"] == "attempt" && l["request_id"] == rid {
 			t.Fatalf("el request degradado emitió attempt: %v (C13)", l)
 		}

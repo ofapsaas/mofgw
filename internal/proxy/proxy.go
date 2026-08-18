@@ -35,6 +35,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/logging"
 	"github.com/ofapsaas/mofgw/internal/metrics"
 	"github.com/ofapsaas/mofgw/internal/provider"
+	"github.com/ofapsaas/mofgw/internal/registry"
 	"github.com/ofapsaas/mofgw/internal/respcache"
 	"github.com/ofapsaas/mofgw/internal/router"
 	"github.com/ofapsaas/mofgw/internal/singleflight"
@@ -131,6 +132,11 @@ type Server struct {
 	// SetBudget).
 	embeddingsClient embeddings.Client
 	embeddingsModels map[string]string
+
+	// registry: writer del registro unificado de accounting + outcome
+	// (014-001). nil = off (sin emisión de eventos terminal, I3/I6).
+	// Seteado pre-tráfico vía SetRegistry; lectura concurrente segura.
+	registry *registry.Writer
 }
 
 // New construye el Server. Los parámetros de concurrencia se pasan ya
@@ -406,6 +412,13 @@ func (s *Server) SetContextAnalysis(enabled bool, historyPerSession int) {
 // y el store de afinidad queda vacío (P8/C11).
 func (s *Server) SetStickyRouting(enabled bool) {
 	s.stickyRouting = enabled
+}
+
+// SetRegistry configura el writer del registro unificado de accounting
+// (014-001). nil = off (sin emisión de eventos terminal, I3/I6: cero cambio
+// al request path). Debe llamarse antes del tráfico (patrón SetStickyRouting).
+func (s *Server) SetRegistry(w *registry.Writer) {
+	s.registry = w
 }
 
 // SetBudget configura los límites de consumo por cliente (008-002 P1).
@@ -702,6 +715,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		lastUsage = streamUsage
 		if providerID != "" {
 			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, req.Model, streamUsage)
+			s.emitTerminalSuccess(logging.RequestID(r.Context()), clientID, providerID, req.Model, streamUsage, true)
 		}
 		return
 	}
@@ -733,12 +747,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			if cerr != nil {
 				// Líder: responde su error como en el flujo legacy; el
 				// vuelo termina sin resultado compartido.
-				s.handleChainError(w, cerr, logger)
+				s.handleChainError(w, cerr, logger, logging.RequestID(r.Context()), clientID, req.Stream)
 				return nil
 			}
 			providerID = cres.ProviderID
 			s.metrics.SetLastProvider(cres.ProviderID)
 			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, cres.ProviderID, req.Model, &cres.Response.Usage)
+			s.emitTerminalSuccess(logging.RequestID(r.Context()), clientID, cres.ProviderID, req.Model, &cres.Response.Usage, false)
 			lastUsage = &cres.Response.Usage
 			// headers de usage (007-003 P1): el cliente ve su consumo por request
 			s.setUsageHeaders(w.Header(), cres.ProviderID, req.Model, &cres.Response.Usage)
@@ -789,6 +804,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			lastUsage = usage
 			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, sfRes.ProviderID, req.Model, usage)
+			s.emitTerminalSuccess(logging.RequestID(r.Context()), clientID, sfRes.ProviderID, req.Model, usage, false)
 			s.setUsageHeaders(w.Header(), sfRes.ProviderID, req.Model, usage)
 		}
 		// Líder y follower escriben el mismo blob compartido (status,
@@ -802,12 +818,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	res, err := complete()
 	if err != nil {
-		s.handleChainError(w, err, logger)
+		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), clientID, req.Stream)
 		return
 	}
 	providerID = res.ProviderID
 	s.metrics.SetLastProvider(res.ProviderID)
 	s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, res.ProviderID, req.Model, &res.Response.Usage)
+	s.emitTerminalSuccess(logging.RequestID(r.Context()), clientID, res.ProviderID, req.Model, &res.Response.Usage, false)
 	lastUsage = &res.Response.Usage
 	// headers de usage (007-003 P1): el cliente ve su consumo por request
 	s.setUsageHeaders(w.Header(), res.ProviderID, req.Model, &res.Response.Usage)
@@ -887,6 +904,89 @@ func (s *Server) recordCacheTokens(requestID, clientID, sessionID, providerID, m
 	// error de registro jamás falla el request (I5 009-000).
 	if s.stickyRouting {
 		s.router.Affinity().Set(clientID+"|"+sessionID, providerID)
+	}
+}
+
+// emitTerminalSuccess filma UN evento terminal success (014-001 P12) junto
+// al call-site de recordCacheTokens: post-respuesta, con los tokens del
+// usage real del provider y cost_usd = estimateCost(model, miss, completion,
+// hit) (D9 — MISMA fórmula que recordCacheTokens para que registro y
+// /metrics concuerden). stream = flag real del request. Best-effort
+// (D10/I4): un error de escritura se loguea y el request sigue; nil writer o
+// request sin request_id → no-op (I3/D11).
+func (s *Server) emitTerminalSuccess(requestID, clientID, providerID, model string, u *provider.Usage, stream bool) {
+	if s.registry == nil {
+		return
+	}
+	if requestID == "" {
+		return // D11: sin request_id no se registra
+	}
+	prompt, completion, hit, reasoning := int64(0), int64(0), int64(0), int64(0)
+	if u != nil {
+		prompt = int64(u.PromptTokens)
+		completion = int64(u.CompletionTokens)
+		hit = int64(u.CachedTokens)
+		reasoning = int64(u.ReasoningTokens)
+	}
+	miss := prompt - hit
+	if miss < 0 {
+		miss = 0
+	}
+	ev := registry.TerminalEvent{
+		Type:          "terminal",
+		RequestID:     requestID,
+		Ts:            time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		Client:        clientID,
+		Outcome:       "success",
+		Status:        http.StatusOK,
+		FinalProvider: providerID,
+		Tokens: registry.Tokens{
+			Prompt:     int(prompt),
+			Completion: int(completion),
+			Cache:      int(hit),
+			Reasoning:  int(reasoning),
+		},
+		CostUSD: s.estimateCost(model, miss, completion, hit),
+		Stream:  stream,
+	}
+	if err := s.registry.Terminal(ev); err != nil {
+		s.logger.Warn("registry: terminal success no emitido", "request_id", requestID, "err", err)
+	}
+}
+
+// emitTerminalError filma UN evento terminal error (014-001 P13): cuando la
+// cadena falla. error_code = ChainError.Code semántico (D8); status = HTTP
+// FINAL enviado al cliente; final_provider = ChainError.ProviderID (último
+// provider intentado; "" si ninguno, p.ej. model_not_found). tokens/cost 0.
+// Best-effort (D10/I4): un error de escritura no altera la respuesta.
+func (s *Server) emitTerminalError(requestID, clientID string, ce *router.ChainError, stream bool) {
+	if s.registry == nil {
+		return
+	}
+	if requestID == "" {
+		return // D11: sin request_id no se registra
+	}
+	status := http.StatusBadGateway
+	code := "upstream_unavailable"
+	providerID := ""
+	if ce != nil {
+		status = ce.Status
+		code = ce.Code
+		providerID = ce.ProviderID
+	}
+	ev := registry.TerminalEvent{
+		Type:          "terminal",
+		RequestID:     requestID,
+		Ts:            time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		Client:        clientID,
+		Outcome:       "error",
+		ErrorCode:     code,
+		Status:        status,
+		FinalProvider: providerID,
+		Stream:        stream,
+	}
+	if err := s.registry.Terminal(ev); err != nil {
+		s.logger.Warn("registry: terminal error no emitido", "request_id", requestID, "err", err)
 	}
 }
 
@@ -1008,7 +1108,7 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *htt
 		res, err = s.router.Stream(ctx, req, body)
 	}
 	if err != nil {
-		s.handleChainError(w, err, logger)
+		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), auth.ClientIDFrom(r.Context()), req.Stream)
 		return "", nil
 	}
 	s.metrics.SetLastProvider(res.Provider.ID())
@@ -1040,7 +1140,9 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *htt
 // provider — absorb sanea el mensaje (sin URLs/keys/stack traces),
 // mapea el status (5xx/429 → 502, 401/403 de provider → 502
 // provider_auth_error) y responde. El detalle completo queda en logs.
-func (s *Server) handleChainError(w http.ResponseWriter, err error, logger *slog.Logger) {
+// requestID/clientID/stream permiten emitir el evento terminal error del
+// registro (014-001 P13) junto al manejo del error de cadena.
+func (s *Server) handleChainError(w http.ResponseWriter, err error, logger *slog.Logger, requestID, clientID string, stream bool) {
 	var ce *router.ChainError
 	if errors.As(err, &ce) {
 		s.metrics.IncErrors()
@@ -1051,9 +1153,11 @@ func (s *Server) handleChainError(w http.ResponseWriter, err error, logger *slog
 			"provider", ce.ProviderID,
 			"detail", ce.Err,
 		)
+		s.emitTerminalError(requestID, clientID, ce, stream)
 	} else {
 		s.metrics.IncErrors()
 		logger.Error("error interno", "err", err)
+		s.emitTerminalError(requestID, clientID, nil, stream)
 	}
 	absorb.Respond(w, err)
 }

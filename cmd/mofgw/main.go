@@ -42,6 +42,7 @@ import (
 	"github.com/ofapsaas/mofgw/internal/provider"
 	"github.com/ofapsaas/mofgw/internal/providerfactory"
 	"github.com/ofapsaas/mofgw/internal/proxy"
+	"github.com/ofapsaas/mofgw/internal/registry"
 	"github.com/ofapsaas/mofgw/internal/router"
 	"github.com/ofapsaas/mofgw/internal/websearch"
 )
@@ -208,7 +209,23 @@ func run() error {
 		defer telemetryCloser.Close()
 	}
 
+	// Registro unificado de accounting + outcome (014-001). Off por default
+	// (I3: sin archivo ni costo de emisión). enabled=true → fail-fast si el
+	// archivo no abre (P3/D10, patrón telemetry); nil si off. Se cablea al
+	// router (eventos attempt) y al proxy (eventos terminal).
+	var registryWriter *registry.Writer
+	if cfg.Registry.Enabled {
+		registryWriter, err = registry.NewWriter(cfg.Registry.File)
+		if err != nil {
+			return err
+		}
+		defer registryWriter.Close()
+		logger.Info("registro de accounting activo", "file", cfg.Registry.File)
+	}
+	r.SetRegistry(registryWriter)
+
 	srv := proxy.New(r, providers, authz, m, logger, telemetryLogger, cfg.Server.MaxBodyBytes, globalLimiter, keyedLimiter, cfg.Server.BackpressureTimeout)
+	srv.SetRegistry(registryWriter)
 
 	// Cableado del catálogo y eficiencia (006-002/007-001/008-002/008-003):
 	// pricing, metadata de modelos, budgets por cliente y margen de

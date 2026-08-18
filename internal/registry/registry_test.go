@@ -36,14 +36,19 @@ func sortedKeys(m map[string]any) []string {
 }
 
 // keysIguales: el set de keys de `got` es EXACTAMENTE `want` (sin extras,
-// sin faltantes) — P5/P6/C10.
+// sin faltantes) — P5/P6/C10. Compara ambos lados como SETS: ordena una
+// copia de `want` (que se pasa en orden legible del spec) para comparar
+// contra el `got` ya ordenado por sortedKeys.
 func keysIguales(got map[string]any, want []string) bool {
 	g := sortedKeys(got)
-	if len(g) != len(want) {
+	w := make([]string, len(want))
+	copy(w, want)
+	sort.Strings(w)
+	if len(g) != len(w) {
 		return false
 	}
 	for i := range g {
-		if g[i] != want[i] {
+		if g[i] != w[i] {
 			return false
 		}
 	}

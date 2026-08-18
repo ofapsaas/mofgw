@@ -500,7 +500,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// 6. Delegar en la pipeline de chat (router.Complete).
 	res, err := s.router.Complete(r.Context(), req, chatReqBody)
 	if err != nil {
-		s.handleChainError(w, err, logger)
+		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), clientID, false)
 		return
 	}
 	providerID = res.ProviderID
@@ -508,6 +508,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	lastUsage = &res.Response.Usage
 	model = rb.Model
 	s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, providerID, rb.Model, &res.Response.Usage)
+	s.emitTerminalSuccess(logging.RequestID(r.Context()), clientID, providerID, rb.Model, &res.Response.Usage, false)
 	s.setUsageHeaders(w.Header(), providerID, rb.Model, &res.Response.Usage)
 
 	// 7. Traducir chat → output[] (P10) con id estable (P11). Si el provider
