@@ -52,6 +52,8 @@ Ver [`docs/epics/plan.md`](docs/epics/plan.md) — 10 epics (5 originales + repl
 
 Más **SEC-001-security-hardening** (auditoría externa): SSE saneado, X-Agent-Id acotado, ReadHeaderTimeout, permisos de log → ✅ **implementado**
 
+11. **EPIC-016 mofgw-client-config** — `GET /v1/client-config?client=<id>` devuelve el **fragmento de configuración del provider mofgw** listo para insertar en el config de un cliente soportado (opencode.json, openclaw.json / zot models.json), generado desde el catálogo real (`/v1/models`) — para que la config del cliente quede siempre sincronizada cuando cambian los modelos upstream. → ✅ **implementado + deployado**
+
 ## Componentes opcionales
 
 - **`odoo/mofgw_ai/`** — módulo Odoo 19 enterprise que hace de mofgw el único
@@ -78,6 +80,7 @@ Más **SEC-001-security-hardening** (auditoría externa): SSE saneado, X-Agent-I
 - **Control de contexto:** rechazo temprano de prompts que exceden la ventana (ahorra intentos de la cadena), budget por cliente (429 al exceder), sesiones correlacionadas.
 - **Resiliencia ante blips de endpoint:** `fallback.inter_attempt_delay` (015) — retardo opcional entre intentos cuando el siguiente provider comparte `base_url` con el que falló (cuentas del mismo proveedor = SPOF), como backoff corto para dar tiempo al endpoint a recuperarse; `0` = off.
 - **Registro unificado de accounting + outcome (014):** hemodinámica completa de cada request en un JSONL append-only en disco — evento por intento (cada provider probado, con `outcome`/`cause`) + evento terminal (tokens, costo, `error_code`). Fuente de verdad para reportes/fallos por período × provider × modelo × cliente; consumida por un epic externo de consolidación.
+- **Config de clientes sincronizada (016):** `GET /v1/client-config?client=<id>` devuelve el fragmento listo para insertar (opencode/openclaw/zot) con `base_url`, env-ref de la key y los modelos con su metadata — generado desde el catálogo real, no hardcodeado. Knob `client_config:{base_url,key_env}`; la key siempre como referencia a env var, nunca literal.
 - **Seguridad:** auth Bearer con hash SHA-256 + comparación constant-time, errores upstream absorbidos (nunca filtran detalles internos al cliente), keys fuera del YAML.
 
 ## Contexto

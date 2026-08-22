@@ -34,6 +34,10 @@ import (
 	"time"
 
 	"github.com/ofapsaas/mofgw/internal/auth"
+	"github.com/ofapsaas/mofgw/internal/clientconfig"
+	"github.com/ofapsaas/mofgw/internal/clientconfig/openclaw"
+	"github.com/ofapsaas/mofgw/internal/clientconfig/opencode"
+	"github.com/ofapsaas/mofgw/internal/clientconfig/zot"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/health"
 	"github.com/ofapsaas/mofgw/internal/limiter"
@@ -246,6 +250,15 @@ func run() error {
 		meta[model] = md
 	}
 	srv.SetModelMetadata(meta)
+	// Endpoint /v1/client-config (016-001): knobs aditivos, off-safe.
+	// base_url vacío (default) → el endpoint responde 503 en runtime (I4),
+	// no fail-fast de arranque. key_env es la REFERENCIA a la env var.
+	srv.SetClientConfig(cfg.ClientConfig.BaseURL, cfg.ClientConfig.KeyEnv)
+	// Renderers de /v1/client-config (epic 016): opencode, openclaw, zot.
+	// Aditivo: sin esto el endpoint responde 404 (cliente no soportado).
+	clientconfig.Register("opencode", opencode.Renderer{})
+	clientconfig.Register("openclaw", openclaw.Renderer{})
+	clientconfig.Register("zot", zot.Renderer{})
 	budgets := make(map[string]config.BudgetConfig, len(cfg.Clients))
 	for _, cc := range cfg.Clients {
 		if cc.Budget != nil {

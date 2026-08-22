@@ -219,3 +219,18 @@ embeddings:
 registry:
   enabled: false
   # file: "/var/log/mofgw/registry.jsonl"
+
+# Endpoint /v1/client-config (016-001): devuelve el fragmento de
+# configuración del provider mofgw listo para insertar en un cliente
+# soportado (opencode.json, openclaw.conf, zot…), serializado por el
+# renderer de ese cliente. Aditivo y off-safe (I3/I4).
+#   base_url: base pública del proxy (window en el fragmento). Vacío
+#             (default) → el endpoint responde 503 en runtime
+#             "client_config.base_url not set" (NO falla el arranque;
+#             la decisión es runtime, no fail-fast).
+#   key_env:  REFERENCIA a la variable de entorno de la key del cliente.
+#             mofgw NUNCA resuelve ni emite su valor (solo la referencia).
+#             Default "MOFGW_KEY".
+client_config:
+  # base_url: "https://mofgw.example.com/v1"
+  # key_env: "MOFGW_KEY"

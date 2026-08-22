@@ -137,6 +137,14 @@ type Server struct {
 	// (014-001). nil = off (sin emisión de eventos terminal, I3/I6).
 	// Seteado pre-tráfico vía SetRegistry; lectura concurrente segura.
 	registry *registry.Writer
+
+	// clientConfigBaseURL + clientConfigKeyEnv: knobs del endpoint
+	// /v1/client-config (016-001). Inmutables tras SetClientConfig (antes
+	// del tráfico, patrón SetContextAnalysis). BaseURL vacío → el endpoint
+	// responde 503 en runtime (I4: no fallback silencioso, no fail-fast de
+	// arranque). KeyEnv es la REFERENCIA (nombre de env var), nunca el valor.
+	clientConfigBaseURL string
+	clientConfigKeyEnv  string
 }
 
 // New construye el Server. Los parámetros de concurrencia se pasan ya
@@ -366,6 +374,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /v1/context", s.handleContext)
+	mux.HandleFunc("GET /v1/client-config", s.handleClientConfig) // 016-001
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	// rutas no declaradas en el mux → 404 OpenAI-compatible

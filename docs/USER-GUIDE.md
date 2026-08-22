@@ -353,6 +353,20 @@ registry:
 
 La **consolidación/visualización** (por día/semana/mes, por provider × modelo × cliente) es un consumidor externo de este JSONL — no toca mofgw.
 
+### `client_config` — fragmentos de config para clientes (016-001)
+
+Configura el endpoint `GET /v1/client-config` que devuelve el **fragmento del provider `mofgw` listo para insertar** en el config de un cliente soportado — para que la config del cliente quede sincronizada con el catálogo real cuando cambian los modelos upstream.
+
+```yaml
+client_config:
+  base_url: "http://127.0.0.1:3369/v1"   # base pública con la que los clientes llegan a mofgw
+  key_env: "MOFGW_KEY"                   # REFERENCIA (nombre de env var); nunca el valor
+```
+
+- `base_url` **vacío** (default) → el endpoint responde `503 "client_config.base_url not set"` en runtime (NO fail-fast de arranque; aditivo y off-safe).
+- `key_env` es la **referencia** a la variable de entorno de la key del cliente. mofgw **nunca** resuelve ni emite su valor — solo la referencia, en la sintaxis que el cliente usa (`{env:MOFGW_KEY}` en opencode, `${MOFGW_KEY}` en OpenClaw, o sin campo de key en zot, que deriva `MOFGW_API_KEY`).
+- Sin `client_config` en el config → la ruta existe pero responde 503/404 de forma segura.
+
 ## Endpoints
 
 Todos los de `/v1/*` exigen auth Bearer. `/healthz` y `/metrics` son públicos (monitoreo local, bind default loopback). Las rutas no declaradas devuelven 404 OpenAI-compatible.
@@ -396,6 +410,25 @@ Desde 007-002, cada modelo con `model_metadata`/`pricing` en config incluye camp
 ```
 
 Campos que consumen opencode/openclaw (research §3): `context_length` (openclaw 1º), `top_provider.context_length`/`max_completion_tokens` (openclaw 1º), `max_context_length`/`loaded_context_length` (opencode Go), `max_output_tokens`, `max_completion_tokens`, `capabilities.reasoning`, `thinking.levels/default` (prescriptivo), `supported_parameters` (tools/reasoning), `modality`/`architecture` (visión). Modelos sin metadata conservan el formato mínimo.
+
+### `GET /v1/client-config` (auth, epic 016)
+
+Devuelve el **fragmento del provider `mofgw`** listo para insertar en el config del cliente indicado. Generado desde el catálogo real (misma fuente que `/v1/models`), no hardcodeado: cuando agregás/sacás un modelo o cambia su metadata, el fragmento lo refleja al regenerarlo.
+
+```
+GET /v1/client-config?client=opencode
+Authorization: Bearer <client-key>
+```
+
+| client | Formato devuelto | Campo key |
+|---|---|---|
+| `opencode` | JSON para la clave `provider` de `opencode.json` (`npm: "@ai-sdk/openai-compatible"`, `options.baseURL`/`options.apiKey`) | `{env:MOFGW_KEY}` |
+| `openclaw` | JSON5 para `models.providers` de `~/.openclaw/openclaw.json` (`models[]` array, `api: "openai-completions"`) | `${MOFGW_KEY}` |
+| `zot` | JSON para `providers` de `$ZOT_HOME/models.json` (`api: "openai"`) | sin campo de key (zot deriva `MOFGW_API_KEY`) |
+
+La key viaja **siempre como referencia a env var** (o ausente en zot), nunca el valor literal.
+
+**Estados de error (envelope `{"error":{message,type,code}}`):** `401` sin auth válida; `400 invalid_request_error` si falta `client`; `404 not_found_error` si el cliente no está soportado (el mensaje lista los soportados); `503 server_error "client_config.base_url not set"` si `client_config.base_url` no está configurado; `500 server_error` si el renderer falla.
 
 ### `GET /v1/usage` (auth)
 

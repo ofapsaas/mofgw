@@ -274,6 +274,19 @@ type ClientEmbeddingsConfig struct {
 	Model string `yaml:"model"`
 }
 
+// ClientConfigConfig es la configuración del endpoint /v1/client-config
+// (016-001-config-renderer-core). Aditivo y off-safe (I3/I4):
+//   - BaseURL vacío → el endpoint responde 503 en runtime ("client_config.base_url
+//     not set"). NO es fail-fast de arranque: BaseURL vacío es un estado válido
+//     y documentado (el 503 es runtime, no error de carga).
+//   - KeyEnv es la REFERENCIA (nombre de variable de entorno) de la key del
+//     cliente; mofgw NUNCA la resuelve ni emite su valor (I1/P8). Default
+//     "MOFGW_KEY".
+type ClientConfigConfig struct {
+	BaseURL string `yaml:"base_url"` // vacío → endpoint 503 en runtime (NO fail-fast)
+	KeyEnv  string `yaml:"key_env"`  // env-ref de la key; default "MOFGW_KEY"
+}
+
 // ModelMetadata es la metadata declarativa de un modelo para el catálogo
 // (007-001-model-metadata). Alimenta /v1/models (007-002) y, en el futuro,
 // decisiones de ruteo. Datos verificados en research-token-efficiency.md §4.
@@ -319,6 +332,11 @@ type Config struct {
 	// Embeddings: forward de embeddings a Ollama (011-006). Global: un
 	// Ollama por instancia mofgw; el modelo forzado es por cliente.
 	Embeddings EmbeddingsConfig `yaml:"embeddings"`
+
+	// ClientConfig: endpoint /v1/client-config (016-001). Aditivo, off-safe:
+	// bloque ausente/vacío no cambia ningún comportamiento existente (I3);
+	// base_url vacío → 503 en runtime, no fail-fast (I4).
+	ClientConfig ClientConfigConfig `yaml:"client_config"`
 
 	// Efficiency: eficiencia de gateway (010-001).
 	Efficiency EfficiencyConfig `yaml:"efficiency"`
@@ -416,6 +434,10 @@ func defaults() Config {
 			Enabled:    false,
 			MaxResults: 3,
 			Timeout:    0, // 0 = default 10s (lo resuelve el cliente DDG)
+		},
+		ClientConfig: ClientConfigConfig{
+			BaseURL: "",        // vacío → 503 en runtime (I4), no fail-fast
+			KeyEnv:  "MOFGW_KEY",
 		},
 		Efficiency: EfficiencyConfig{
 			SingleFlight: SingleFlightConfig{

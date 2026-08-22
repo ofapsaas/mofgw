@@ -111,6 +111,7 @@ func buildWithLogger(t *testing.T, ups []*upstream, clientKey string, logger *sl
 	authz := auth.New([]auth.Client{{ID: "test", KeySHA256: auth.HashKey(clientKey)}})
 	m := metrics.New()
 	s := proxy.New(r, providers, authz, m, logger, nil, 10<<20, nil, nil, 0)
+	h.proxySrv = s
 	h.srv = httptest.NewServer(s.Handler())
 	t.Cleanup(h.srv.Close)
 	return h
