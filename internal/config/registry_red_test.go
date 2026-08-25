@@ -40,9 +40,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_PROVIDER_A_KEY
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 registry:
   enabled: true
   file: "/tmp/reg.jsonl"
@@ -72,9 +69,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_PROVIDER_A_KEY
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 registry:
   enabled: true
   file: ""

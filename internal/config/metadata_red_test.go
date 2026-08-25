@@ -21,9 +21,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_TEST_A
     models: ["deepseek-v4-flash"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 model_metadata:
   deepseek-v4-flash:
     context_window: 1000000

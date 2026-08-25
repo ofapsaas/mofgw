@@ -36,9 +36,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_TEST_A
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `
 
 // test_postcondition_1_StickyEnabledTrue (C1): YAML con

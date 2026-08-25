@@ -24,9 +24,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_TEST_A
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 telemetry:
   enabled: true
   sample_rate: 0.5
@@ -79,9 +76,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_TEST_A
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `
 	cfg, err := LoadFile(writeTemp(t, minimal))
 	if err != nil {

@@ -47,9 +47,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_010001_TEST_KEY
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 model_metadata:
 ` + metadataBlock
 }
@@ -298,9 +295,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_010001_TEST_KEY
     models: ["plain"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `
 	h := buildWithCatalogYAML(t, []string{"plain"}, yaml, "k1")
 	item := findModel(t, modelsBody(t, h), "plain")

@@ -12,7 +12,11 @@ import (
 	"time"
 )
 
-// testdata mínima inline (evita depender de cwd en la suite)
+// testdata mínima inline (evita depender de cwd en la suite).
+// 017-001-auth-source-refactor: se quita el bloque inline `clients:` (0
+// clientes = config válido, P1). La cobertura de carga de clientes pasa a
+// los tests nuevos (C2/C3) y a los tests migrados a `clients_file`
+// (TestLoadValid, TestLoadInvalidClientHash).
 const validYAML = `
 server:
   addr: "127.0.0.1:3369"
@@ -35,9 +39,14 @@ providers:
     api_key_env: "MOFGW_PROVIDER_B_KEY"
     models: ["qwen3.7-plus"]
     max_tokens: 16384
-clients:
-  - id: ofap-core
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+`
+
+// validClientsYAML: registro de clientes dedicado (017-001 clients_file).
+// Top-level list de entradas de cliente, formato idéntico al bloque inline
+// histórico sin la clave `clients:`.
+const validClientsYAML = `
+- id: ofap-core
+  key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `
 
 func writeTemp(t *testing.T, content string) string {
@@ -50,10 +59,27 @@ func writeTemp(t *testing.T, content string) string {
 	return p
 }
 
+// writeClientsFileYAML escribe un archivo de registro de clientes dedicado
+// (clients_file, 017-001) y devuelve su path (para referenciarlo desde el
+// config.yaml con `clients_file: <path>`).
+func writeClientsFileYAML(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "clients.yaml")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestLoadValid(t *testing.T) {
 	t.Setenv("MOFGW_PROVIDER_A_KEY", "k1")
 	t.Setenv("MOFGW_PROVIDER_B_KEY", "k2")
-	cfg, err := LoadFile(writeTemp(t, validYAML))
+	// 017-001 (P2/C2): el registro de clientes se migra a `clients_file`.
+	// RED: LoadFile aún no lee el archivo dedicado → cfg.Clients queda vacío
+	// → la aserción de abajo falla. GREEN: se puebla desde clients_file.
+	clientsPath := writeClientsFileYAML(t, validClientsYAML)
+	cfg, err := LoadFile(writeTemp(t, validYAML+"clients_file: "+clientsPath+"\n"))
 	if err != nil {
 		t.Fatalf("LoadFile() error: %v", err)
 	}
@@ -80,7 +106,7 @@ func TestLoadValid(t *testing.T) {
 		t.Errorf("MaxTokens = %d", cfg.Providers[0].MaxTokens)
 	}
 	if len(cfg.Clients) != 1 || cfg.Clients[0].ID != "ofap-core" {
-		t.Errorf("clients = %+v", cfg.Clients)
+		t.Errorf("clients = %+v", cfg.Clients) // RED 017-001: requiere carga desde clients_file
 	}
 	// defaults
 	if cfg.Server.Addr == "" {
@@ -168,19 +194,23 @@ providers:
 }
 
 func TestLoadInvalidClientHash(t *testing.T) {
-	// hash no hex
-	bad := `
+	// hash no hex — 017-001 (P2/C3): migrado a `clients_file`. El registro
+	// inválido vive en el archivo dedicado; la validación debe fallar al
+	// cargar ese archivo. RED: LoadFile ignora clients_file (clave nueva) →
+	// no hay clientes → no falla → la aserción de abajo falla.
+	clientsPath := writeClientsFileYAML(t, `
+- id: c
+  key_sha256: "zz"
+`)
+	y := `
 providers:
   - id: p
     base_url: "https://x/v1"
     api_key_env: "K"
     models: ["m"]
-clients:
-  - id: c
-    key_sha256: "zz"
-`
+clients_file: ` + clientsPath + "\n"
 	t.Setenv("K", "key")
-	if _, err := LoadFile(writeTemp(t, bad)); err == nil {
+	if _, err := LoadFile(writeTemp(t, y)); err == nil {
 		t.Error("hash de client inválido debería fallar")
 	}
 }
@@ -220,9 +250,6 @@ providers:
     base_url: "http://localhost:1/v1"
     api_key_env: MOFGW_010001_TEST_KEY
     models: ["m"]
-clients:
-  - id: agent-main
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 model_metadata:
   m:
     context_window: 1000000
@@ -292,9 +319,6 @@ providers:
     base_url: "https://api.example.com/v1"
     api_key_env: "MOFGW_PROVIDER_A_KEY"
     models: ["m"]
-clients:
-  - id: ofap-core
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `
 
 func Test029001_DefaultFirstTokenTimeout(t *testing.T) {
@@ -323,9 +347,6 @@ providers:
     base_url: "https://api.example.com/v1"
     api_key_env: "MOFGW_PROVIDER_A_KEY"
     models: ["m"]
-clients:
-  - id: ofap-core
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -350,9 +371,6 @@ providers:
     base_url: "https://api.example.com/v1"
     api_key_env: "MOFGW_PROVIDER_A_KEY"
     models: ["m"]
-clients:
-  - id: ofap-core
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `))
 	if err == nil {
 		t.Fatal("first_token_timeout negativo debería fallar")
@@ -379,9 +397,6 @@ providers:
     api_key_env: "MOFGW_PROVIDER_B_KEY"
     models: ["m"]
     first_token_timeout: 45s
-clients:
-  - id: ofap-core
-    key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
