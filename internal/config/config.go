@@ -309,7 +309,18 @@ type Config struct {
 	Server    ServerConfig     `yaml:"server"`
 	Fallback  FallbackConfig   `yaml:"fallback"`
 	Providers []ProviderConfig `yaml:"providers"`
-	Clients   []ClientConfig   `yaml:"clients"`
+
+	// Clients: registro de clientes autorizados (001-007-auth). Se puebla
+	// SOLO desde `clients_file` (017-001, SINGLE source): el bloque inline
+	// `clients:` del config.yaml ya no se soporta. 0 clientes = válido.
+	Clients []ClientConfig
+
+	// ClientsFile: path al archivo de registro de clientes (única fuente).
+	// Se usa tal cual (CWD), igual que server.state_file/registry.file/
+	// telemetry.file. Ausente + sin clients inline → sin clientes (válido).
+	// Ausente + clients inline → error de migración fail-fast (P1). Archivo
+	// ausente o inválido → error fail-fast (P2).
+	ClientsFile string `yaml:"clients_file"`
 
 	// ModelMetadata: capabilities por modelo (007-001). Keyed por modelo.
 	ModelMetadata map[string]ModelMetadata `yaml:"model_metadata"`
@@ -490,6 +501,30 @@ func Parse(raw []byte) (*Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("config: YAML inválido: %w", err)
 	}
+	// 017-001 (SINGLE source, P1/P3): el bloque inline `clients:` se eliminó;
+	// la única fuente del registro es `clients_file`. Detectamos la presencia
+	// del key top-level `clients:` para distinguir ausencia (válido) de
+	// presencia (migración pendiente o dual-source → fail-fast).
+	hasInlineClients, err := hasYAMLKey(raw, "clients")
+	if err != nil {
+		return nil, err
+	}
+	if hasInlineClients && cfg.ClientsFile != "" {
+		// P3: anti dual-source.
+		return nil, fmt.Errorf("config: `clients:` inline y `clients_file` a la vez: SINGLE source violado — usá solo clients_file (P3)")
+	}
+	if hasInlineClients {
+		// P1: migración pendiente.
+		return nil, fmt.Errorf("config: `clients:` inline ya no se soporta; mové el bloque a `clients_file` (P1)")
+	}
+	if cfg.ClientsFile != "" {
+		// P2: el registro de clientes se carga y valida del archivo dedicado.
+		clients, err := LoadClientsFile(cfg.ClientsFile)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Clients = clients
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -512,6 +547,68 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// ValidateClients valida un registro de clientes (017-001, extraído de
+// la validación inline de config.go:600-619). Reglas: id obligatorio,
+// ids únicos, key_sha256 de 64 chars hex, concurrencia no negativa.
+// Compartido por el Load() de boot (fail-fast) y por el reloader de
+// 017-002 (fail-soft).
+func ValidateClients(clients []ClientConfig) error {
+	seen := map[string]bool{}
+	for i := range clients {
+		cl := &clients[i]
+		if cl.ID == "" {
+			return fmt.Errorf("config: clients[%d]: id es obligatorio", i)
+		}
+		if seen[cl.ID] {
+			return fmt.Errorf("config: client id %q duplicado", cl.ID)
+		}
+		seen[cl.ID] = true
+		if len(cl.KeySHA256) != 64 {
+			return fmt.Errorf("config: client %q: key_sha256 debe ser sha256 hex (64 chars), got %d", cl.ID, len(cl.KeySHA256))
+		}
+		if _, err := hex.DecodeString(cl.KeySHA256); err != nil {
+			return fmt.Errorf("config: client %q: key_sha256 no es hex válido: %w", cl.ID, err)
+		}
+		if cl.MaxConcurrentRequests < 0 || cl.MaxConcurrentPerAgent < 0 {
+			return fmt.Errorf("config: client %q: max_concurrent_requests/max_concurrent_per_agent no pueden ser negativos", cl.ID)
+		}
+	}
+	return nil
+}
+
+// LoadClientsFile lee y valida un archivo de registro de clientes (017-001).
+// El archivo es una top-level list de mapas con las MISMAS keys del bloque
+// inline `clients:` histórico (id, key_sha256, max_concurrent_requests,
+// max_concurrent_per_agent, budget, embeddings) pero SIN la clave `clients:`.
+// Archivo ausente o inválido → error fail-fast (P2).
+func LoadClientsFile(path string) ([]ClientConfig, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: leer clients_file %s: %w", path, err)
+	}
+	var clients []ClientConfig
+	if err := yaml.Unmarshal(raw, &clients); err != nil {
+		return nil, fmt.Errorf("config: clients_file %s: YAML inválido: %w", path, err)
+	}
+	if err := ValidateClients(clients); err != nil {
+		return nil, fmt.Errorf("config: clients_file %s: %w", path, err)
+	}
+	return clients, nil
+}
+
+// hasYAMLKey reporta si el YAML crudo es un mapping top-level con el key
+// dado presente. Se usa para detectar el bloque inline `clients:` obsoleto
+// (017-001, P1/P3) de forma robusta — distingue ausencia (válido) de
+// presencia (migración pendiente o dual-source → error).
+func hasYAMLKey(raw []byte, key string) (bool, error) {
+	var m map[string]yaml.Node
+	if err := yaml.Unmarshal(raw, &m); err != nil {
+		return false, fmt.Errorf("config: YAML inválido: %w", err)
+	}
+	_, ok := m[key]
+	return ok, nil
 }
 
 func (c *Config) validate() error {
@@ -597,25 +694,8 @@ func (c *Config) validate() error {
 	if c.Fallback.Degradation.MaxRequests < 0 || c.Fallback.Degradation.CooldownGrace < 0 {
 		return fmt.Errorf("config: fallback.degradation con valores negativos")
 	}
-	seenClients := map[string]bool{}
-	for i := range c.Clients {
-		cl := &c.Clients[i]
-		if cl.ID == "" {
-			return fmt.Errorf("config: clients[%d]: id es obligatorio", i)
-		}
-		if seenClients[cl.ID] {
-			return fmt.Errorf("config: client id %q duplicado", cl.ID)
-		}
-		seenClients[cl.ID] = true
-		if len(cl.KeySHA256) != 64 {
-			return fmt.Errorf("config: client %q: key_sha256 debe ser sha256 hex (64 chars), got %d", cl.ID, len(cl.KeySHA256))
-		}
-		if _, err := hex.DecodeString(cl.KeySHA256); err != nil {
-			return fmt.Errorf("config: client %q: key_sha256 no es hex válido: %w", cl.ID, err)
-		}
-		if cl.MaxConcurrentRequests < 0 || cl.MaxConcurrentPerAgent < 0 {
-			return fmt.Errorf("config: client %q: max_concurrent_requests/max_concurrent_per_agent no pueden ser negativos", cl.ID)
-		}
+	if err := ValidateClients(c.Clients); err != nil {
+		return err
 	}
 	if c.Server.MaxSessionsRetained < 0 {
 		// 008-003 external review (Major): tope negativo no tiene sentido.

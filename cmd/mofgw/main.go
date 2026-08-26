@@ -33,11 +33,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ofapsaas/mofgw/internal/auth"
 	"github.com/ofapsaas/mofgw/internal/clientconfig"
 	"github.com/ofapsaas/mofgw/internal/clientconfig/openclaw"
 	"github.com/ofapsaas/mofgw/internal/clientconfig/opencode"
 	"github.com/ofapsaas/mofgw/internal/clientconfig/zot"
+	"github.com/ofapsaas/mofgw/internal/clientregistry"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/health"
 	"github.com/ofapsaas/mofgw/internal/limiter"
@@ -163,11 +163,17 @@ func run() error {
 		StickyMaxEntries: cfg.Server.MaxSessionsRetained,
 	})
 
-	authClients := make([]auth.Client, 0, len(cfg.Clients))
-	for _, cc := range cfg.Clients {
-		authClients = append(authClients, auth.Client{ID: cc.ID, KeySHA256: cc.KeySHA256})
+	// 017-001 (P3-(a)): el registro de clientes se construye una vez al boot
+	// desde `clients_file` (SINGLE source) y queda expuesto vía
+	// Registry.Current(). Los consumidores (auth, keyed limiter, budget,
+	// embeddings) leen del snapshot inmutable. 017-002 solo agregará el
+	// poller + re-punteo atómico, sin volver a tocar este wiring.
+	reg, err := clientregistry.New(&clientregistry.Source{Path: cfg.ClientsFile}, logger)
+	if err != nil {
+		return err
 	}
-	authz := auth.New(authClients)
+	snapshot := reg.Current()
+	authz := snapshot.Authenticator()
 	m := metrics.New()
 
 	// TECHDEBT #13: persistencia del registro de accounting. Si el
@@ -191,9 +197,9 @@ func run() error {
 		logger.Info("límite de concurrencia global activo", "max_concurrent_requests", cfg.Server.MaxConcurrentRequests, "backpressure_timeout", cfg.Server.BackpressureTimeout.String())
 	}
 	var keyedLimiter *limiter.Keyed
-	if anyClientLimit(cfg.Clients) {
-		budgets := make(map[string]limiter.ClientBudget, len(cfg.Clients))
-		for _, cc := range cfg.Clients {
+	if anyClientLimit(snapshot.Clients) {
+		budgets := make(map[string]limiter.ClientBudget, len(snapshot.Clients))
+		for _, cc := range snapshot.Clients {
 			budgets[cc.ID] = limiter.ClientBudget{
 				MaxConcurrent: cc.MaxConcurrentRequests,
 				MaxPerAgent:   cc.MaxConcurrentPerAgent,
@@ -259,8 +265,8 @@ func run() error {
 	clientconfig.Register("opencode", opencode.Renderer{})
 	clientconfig.Register("openclaw", openclaw.Renderer{})
 	clientconfig.Register("zot", zot.Renderer{})
-	budgets := make(map[string]config.BudgetConfig, len(cfg.Clients))
-	for _, cc := range cfg.Clients {
+	budgets := make(map[string]config.BudgetConfig, len(snapshot.Clients))
+	for _, cc := range snapshot.Clients {
 		if cc.Budget != nil {
 			budgets[cc.ID] = *cc.Budget
 		}
@@ -311,7 +317,7 @@ func run() error {
 	if cfg.Embeddings.BaseURL != "" {
 		srv.SetEmbeddings(cfg.Embeddings.BaseURL, cfg.Embeddings.APIKey)
 	}
-	for _, cc := range cfg.Clients {
+	for _, cc := range snapshot.Clients {
 		if cc.Embeddings != nil && cc.Embeddings.Model != "" {
 			srv.SetClientEmbeddingsModel(cc.ID, cc.Embeddings.Model)
 		}
