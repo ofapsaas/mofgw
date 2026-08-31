@@ -624,3 +624,113 @@ func TestRED_Review_SinDisplayNameOmiteName(t *testing.T) {
 		t.Fatalf("sin display_name no debe emitir name: %v", entry)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fix 002 — variants (nativo opencode) + modalities/attachment nativos +
+// x-thinking prescriptivo. Shape real del IR: Meta = objeto /v1/models
+// (modelCatalogEntry) → thinking llega como OBJETO {"levels":[...], "default":"..."}.
+// Schema verificado 31 Ago 2026 (opencode.ai/config.json):
+//   variants: object, additionalProperties: object
+//   modalities: {input: [string], output: [string]} ambos required
+//   attachment: boolean
+// ---------------------------------------------------------------------------
+
+func TestFix002_VariantsDesdeThinkingObjeto(t *testing.T) {
+	entry, _ := renderModelMeta(t, map[string]any{
+		"thinking": map[string]any{
+			"levels":  []any{"low", "high"},
+			"default": "high",
+		},
+	})
+
+	variants, ok := entry["variants"].(map[string]any)
+	if !ok {
+		t.Fatalf("models.m1.variants ausente o no-objeto: %v", entry)
+	}
+	if _, ok := variants["low"]; !ok {
+		t.Fatalf("variants sin nivel low: %v", variants)
+	}
+	if _, ok := variants["high"]; !ok {
+		t.Fatalf("variants sin nivel high: %v", variants)
+	}
+
+	// prescriptivo en x-thinking (metadata para el agente)
+	xt, ok := entry["x-thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("models.m1.x-thinking ausente: %v", entry)
+	}
+	if got := xt["default"]; got != "high" {
+		t.Fatalf("x-thinking.default = %v, want \"high\"", got)
+	}
+}
+
+func TestFix002_VariantsDesdeThinkingArray(t *testing.T) {
+	entry, _ := renderModelMeta(t, map[string]any{
+		"thinking": []any{"always"},
+	})
+	variants, ok := entry["variants"].(map[string]any)
+	if !ok {
+		t.Fatalf("variants ausente (shape array): %v", entry)
+	}
+	if _, ok := variants["always"]; !ok {
+		t.Fatalf("variants sin nivel always: %v", variants)
+	}
+}
+
+func TestFix002_SinThinkingSinVariants(t *testing.T) {
+	entry, _ := renderModelMeta(t, map[string]any{"object": "model"})
+	if _, has := entry["variants"]; has {
+		t.Fatalf("sin thinking no debe emitir variants: %v", entry)
+	}
+	if _, has := entry["x-thinking"]; has {
+		t.Fatalf("sin thinking no debe emitir x-thinking: %v", entry)
+	}
+}
+
+func TestFix002_ModalitiesMultimodal(t *testing.T) {
+	entry, _ := renderModelMeta(t, map[string]any{
+		"modality": "text+image+video->text",
+	})
+	mods, ok := entry["modalities"].(map[string]any)
+	if !ok {
+		t.Fatalf("models.m1.modalities ausente o no-objeto: %v", entry)
+	}
+	ins, ok := mods["input"].([]any)
+	if !ok || len(ins) != 3 {
+		t.Fatalf("modalities.input = %v, want [text image video]", mods["input"])
+	}
+	if ins[0] != "text" || ins[1] != "image" || ins[2] != "video" {
+		t.Fatalf("modalities.input = %v, want [text image video]", ins)
+	}
+	outs, ok := mods["output"].([]any)
+	if !ok || len(outs) != 1 || outs[0] != "text" {
+		t.Fatalf("modalities.output = %v, want [text]", mods["output"])
+	}
+	if at, ok := entry["attachment"].(bool); !ok || !at {
+		t.Fatalf("attachment = %v, want true (multimodal)", entry["attachment"])
+	}
+}
+
+func TestFix002_TextOnlySinModalitiesNiAttachment(t *testing.T) {
+	entry, _ := renderModelMeta(t, map[string]any{
+		"modality": "text->text",
+	})
+	if _, has := entry["modalities"]; has {
+		t.Fatalf("text->text no debe emitir modalities: %v", entry)
+	}
+	if _, has := entry["attachment"]; has {
+		t.Fatalf("text->text no debe emitir attachment: %v", entry)
+	}
+	if md, _ := entry["x-modality"].(string); md != "text->text" {
+		t.Fatalf("x-modality = %v, want \"text->text\" (referencia)", entry["x-modality"])
+	}
+}
+
+func TestFix002_SinModalityNada(t *testing.T) {
+	entry, _ := renderModelMeta(t, map[string]any{"object": "model"})
+	for _, k := range []string{"modalities", "attachment", "x-modality"} {
+		if _, has := entry[k]; has {
+			t.Fatalf("sin modality no debe emitir %s: %v", k, entry)
+		}
+	}
+}

@@ -113,77 +113,107 @@ func modelFragment(m clientconfig.ModelEntry) map[string]any {
 	if hasReasoning(m.Meta) {
 		frag["reasoning"] = true
 	}
+	// variants (nativo opencode): cada nivel de thinking como key {nivel: {}}.
+	if v := buildVariants(m.Meta); v != nil {
+		frag["variants"] = v
+	}
+	// x-thinking: default prescriptivo (ADR-003) — metadata para el agente.
 	if t := buildThinking(m.Meta); t != nil {
 		frag["x-thinking"] = t
 	}
-	if at := buildAttachment(m.Meta); at != nil {
-		frag["x-attachment"] = at
-	}
-	if md, ok := metaString(m.Meta, "modality"); ok && md != "" {
-		frag["x-modality"] = md
+	// modalities/attachment (nativos): solo multimodal; x-modality como referencia.
+	if mod, ins, outs := buildModalities(m.Meta); mod != "" {
+		if len(ins) > 1 {
+			frag["modalities"] = map[string]any{"input": ins, "output": outs}
+			frag["attachment"] = true
+		}
+		frag["x-modality"] = mod
 	}
 
 	return frag
 }
 
-func buildThinking(meta map[string]any) map[string]any {
-	var levels []string
-	if v, ok := meta["thinking"]; ok {
-		switch s := v.(type) {
-		case []any:
-			for _, e := range s {
-				if str, ok := e.(string); ok {
-					levels = append(levels, str)
-				}
-			}
-		case []string:
-			levels = append(levels, s...)
-		}
+// thinkingLevels extrae los niveles de thinking del Meta en cualquiera de los
+// dos shapes: objeto {"levels":[...], "default":...} (shape real del IR desde
+// modelCatalogEntry) o array crudo ["low","high",...].
+func thinkingLevels(meta map[string]any) []string {
+	switch tv := meta["thinking"].(type) {
+	case map[string]any:
+		return toStrings(tv["levels"])
+	case []any:
+		return toStrings(tv)
+	case []string:
+		return tv
+	default:
+		return nil
 	}
+}
+
+func toStrings(v any) []string {
+	switch s := v.(type) {
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, e := range s {
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	case []string:
+		return s
+	default:
+		return nil
+	}
+}
+
+// buildVariants mapea thinking.levels → variants {nivel: {}} (schema opencode:
+// cada key es el nombre del nivel). El default lo elige el usuario con la key
+// "variant" de config/agent; la metadata prescriptiva viaja en x-thinking.
+func buildVariants(meta map[string]any) map[string]any {
+	levels := thinkingLevels(meta)
+	if len(levels) == 0 {
+		return nil
+	}
+	variants := make(map[string]any, len(levels))
+	for _, l := range levels {
+		variants[l] = map[string]any{}
+	}
+	return variants
+}
+
+// buildThinking normaliza el thinking prescriptivo para x-thinking:
+// {levels: [...], default: "..."} — desde el shape objeto del IR o
+// (robustez) el shape array + thinking_default flat.
+func buildThinking(meta map[string]any) map[string]any {
+	levels := thinkingLevels(meta)
 	if len(levels) == 0 {
 		return nil
 	}
 	m := map[string]any{"levels": levels}
+	if tv, ok := meta["thinking"].(map[string]any); ok {
+		if d, ok := tv["default"].(string); ok && d != "" {
+			m["default"] = d
+		}
+		return m
+	}
 	if d, ok := metaString(meta, "thinking_default"); ok && d != "" {
 		m["default"] = d
-	}
-	// también soporta Meta["thinking_default"] anidado en objeto thinking
-	if _, has := m["default"]; !has {
-		if tv, ok := meta["thinking"]; ok {
-			_ = tv
-		}
-		if th, ok := meta["thinking_obj"]; ok {
-			if tm, ok := th.(map[string]any); ok {
-				if d, ok := tm["default"].(string); ok && d != "" {
-					m["default"] = d
-				}
-			}
-		}
 	}
 	return m
 }
 
-func buildAttachment(meta map[string]any) []string {
+// buildModalities deriva input/output modalities desde la cadena modality
+// ("text+image->text" → in [text,image], out [text]).
+func buildModalities(meta map[string]any) (string, []string, []string) {
 	mod, ok := metaString(meta, "modality")
 	if !ok || mod == "" {
-		return nil
+		return "", nil, nil
 	}
-	// modality formato "text+image+video->text" — lado izquierdo son inputs
-	parts := mod
+	in, out := mod, ""
 	if idx := indexOf(mod, "->"); idx >= 0 {
-		parts = mod[:idx]
+		in, out = mod[:idx], mod[idx+2:]
 	}
-	var at []string
-	for _, p := range splitPlus(parts) {
-		p = trimSpace(p)
-		if p == "image" || p == "video" || p == "audio" || p == "pdf" {
-			at = append(at, p)
-		}
-	}
-	if len(at) == 0 {
-		return nil
-	}
-	return at
+	return mod, splitPlus(in), splitPlus(out)
 }
 
 func indexOf(s, sep string) int {
@@ -208,18 +238,6 @@ func splitPlus(s string) []string {
 	}
 	out = append(out, cur)
 	return out
-}
-
-func trimSpace(s string) string {
-	// sin importar strings para mantener import mínimo
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
 }
 
 func buildCost(meta map[string]any) map[string]any {
@@ -273,17 +291,8 @@ func hasToolCall(meta map[string]any) bool {
 }
 
 func hasReasoning(meta map[string]any) bool {
-	if v, ok := meta["thinking"]; ok {
-		switch s := v.(type) {
-		case []any:
-			if len(s) > 0 {
-				return true
-			}
-		case []string:
-			if len(s) > 0 {
-				return true
-			}
-		}
+	if len(thinkingLevels(meta)) > 0 {
+		return true
 	}
 	if v, ok := meta["capabilities"]; ok {
 		if m, ok := v.(map[string]any); ok {
