@@ -113,8 +113,113 @@ func modelFragment(m clientconfig.ModelEntry) map[string]any {
 	if hasReasoning(m.Meta) {
 		frag["reasoning"] = true
 	}
+	if t := buildThinking(m.Meta); t != nil {
+		frag["thinking"] = t
+	}
+	if at := buildAttachment(m.Meta); at != nil {
+		frag["attachment"] = at
+	}
+	if md, ok := metaString(m.Meta, "modality"); ok && md != "" {
+		frag["modality"] = md
+	}
 
 	return frag
+}
+
+func buildThinking(meta map[string]any) map[string]any {
+	var levels []string
+	if v, ok := meta["thinking"]; ok {
+		switch s := v.(type) {
+		case []any:
+			for _, e := range s {
+				if str, ok := e.(string); ok {
+					levels = append(levels, str)
+				}
+			}
+		case []string:
+			levels = append(levels, s...)
+		}
+	}
+	if len(levels) == 0 {
+		return nil
+	}
+	m := map[string]any{"levels": levels}
+	if d, ok := metaString(meta, "thinking_default"); ok && d != "" {
+		m["default"] = d
+	}
+	// también soporta Meta["thinking_default"] anidado en objeto thinking
+	if _, has := m["default"]; !has {
+		if tv, ok := meta["thinking"]; ok {
+			_ = tv
+		}
+		if th, ok := meta["thinking_obj"]; ok {
+			if tm, ok := th.(map[string]any); ok {
+				if d, ok := tm["default"].(string); ok && d != "" {
+					m["default"] = d
+				}
+			}
+		}
+	}
+	return m
+}
+
+func buildAttachment(meta map[string]any) []string {
+	mod, ok := metaString(meta, "modality")
+	if !ok || mod == "" {
+		return nil
+	}
+	// modality formato "text+image+video->text" — lado izquierdo son inputs
+	parts := mod
+	if idx := indexOf(mod, "->"); idx >= 0 {
+		parts = mod[:idx]
+	}
+	var at []string
+	for _, p := range splitPlus(parts) {
+		p = trimSpace(p)
+		if p == "image" || p == "video" || p == "audio" || p == "pdf" {
+			at = append(at, p)
+		}
+	}
+	if len(at) == 0 {
+		return nil
+	}
+	return at
+}
+
+func indexOf(s, sep string) int {
+	for i := 0; i+len(sep) <= len(s); i++ {
+		if s[i:i+len(sep)] == sep {
+			return i
+		}
+	}
+	return -1
+}
+
+func splitPlus(s string) []string {
+	var out []string
+	cur := ""
+	for _, c := range s {
+		if c == '+' {
+			out = append(out, cur)
+			cur = ""
+		} else {
+			cur += string(c)
+		}
+	}
+	out = append(out, cur)
+	return out
+}
+
+func trimSpace(s string) string {
+	// sin importar strings para mantener import mínimo
+	start, end := 0, len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
+		end--
+	}
+	return s[start:end]
 }
 
 func buildCost(meta map[string]any) map[string]any {
