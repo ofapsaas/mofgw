@@ -103,7 +103,118 @@ func modelFragment(m clientconfig.ModelEntry) map[string]any {
 		frag["limit"] = limit
 	}
 
+	// cost: pricing.*_usd_per_m → cost.{input,output,cache_read} (solo si >0; Meta trae pricing anidado o flat)
+	if cost := buildCost(m.Meta); cost != nil {
+		frag["cost"] = cost
+	}
+	if hasToolCall(m.Meta) {
+		frag["tool_call"] = true
+	}
+	if hasReasoning(m.Meta) {
+		frag["reasoning"] = true
+	}
+
 	return frag
+}
+
+func buildCost(meta map[string]any) map[string]any {
+	// soporta Meta["pricing"] como map y también claves flat "input_usd_per_m" etc.
+	var p map[string]any
+	if v, ok := meta["pricing"]; ok {
+		if pm, ok := v.(map[string]any); ok {
+			p = pm
+		}
+	}
+	cost := map[string]any{}
+	if v, ok := metaFloat(p, "input_usd_per_m"); ok && v > 0 {
+		cost["input"] = v
+	} else if v, ok := metaFloat(meta, "input_usd_per_m"); ok && v > 0 {
+		cost["input"] = v
+	}
+	if v, ok := metaFloat(p, "output_usd_per_m"); ok && v > 0 {
+		cost["output"] = v
+	} else if v, ok := metaFloat(meta, "output_usd_per_m"); ok && v > 0 {
+		cost["output"] = v
+	}
+	if v, ok := metaFloat(p, "cache_hit_usd_per_m"); ok && v > 0 {
+		cost["cache_read"] = v
+	} else if v, ok := metaFloat(meta, "cache_hit_usd_per_m"); ok && v > 0 {
+		cost["cache_read"] = v
+	}
+	if len(cost) == 0 {
+		return nil
+	}
+	return cost
+}
+
+func hasToolCall(meta map[string]any) bool {
+	if v, ok := meta["supported_parameters"]; ok {
+		switch s := v.(type) {
+		case []any:
+			for _, e := range s {
+				if str, ok := e.(string); ok && str == "tools" {
+					return true
+				}
+			}
+		case []string:
+			for _, e := range s {
+				if e == "tools" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasReasoning(meta map[string]any) bool {
+	if v, ok := meta["thinking"]; ok {
+		switch s := v.(type) {
+		case []any:
+			if len(s) > 0 {
+				return true
+			}
+		case []string:
+			if len(s) > 0 {
+				return true
+			}
+		}
+	}
+	if v, ok := meta["capabilities"]; ok {
+		if m, ok := v.(map[string]any); ok {
+			if r, ok := m["reasoning"]; ok {
+				if b, ok := r.(bool); ok && b {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func metaFloat(m map[string]any, key string) (float64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // metaString devuelve el valor string de m[key] si existe y es string.
