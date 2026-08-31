@@ -33,6 +33,14 @@
 
 Fuente: opencode.ai/docs/zen — accedido 06 Ago 2026.
 
+**Tabla opencode.ai Go (APLICA a los providers go-*; acceso 30 Ago 2026):**
+
+| Modelo | Input $/M | Output $/M | Cached Read $/M | Fuente |
+|---|---|---|---|---|
+| glm-5.3-flash | $0.15 | $0.50 | $0.03 | opencode.ai/docs/go (acceso 30 Ago) |
+
+Nota: los 8 modelos agregados al catálogo el 31 Ago (§6.1) no tienen tasa Go publicada en models.dev (provider `opencode-go` sin pricing) → sin entrada en el pricing de mofgw (costo 0, regla declarativa).
+
 ### Hallazgos clave
 
 1. **DeepSeek V4 Pro: discrepancia 4×.** Zen cobra $1.74/$3.48 (list price); DeepSeek directo cobra $0.435/$0.87 (promo, "plans to raise pricing"). **CORRECCIÓN 11 Ago 2026:** los providers go-* apuntan a `opencode.ai/zen/go/v1` = el **servicio GO de opencode** (no Zen), que cobra las tasas Go: deepseek-v4-pro **$0.435/$0.87** (cached $0.003625) y deepseek-v4-flash cache **$0.0028**. Verificado en models.dev opencode-go + opencode.ai/docs/go. Para costos de provider-a/b/c/d (go-*) → usar tasas **Go**, no Zen.
@@ -160,11 +168,79 @@ Fuente: opencode.ai/docs/zen — accedido 06 Ago 2026.
 | deepseek-v4-flash/pro | bailian (qwen) | `reasoning_effort` + `enable_thinking: true` | OFF |
 | glm-5.2 | zen/go | `reasoning_effort` (pass-through) | max |
 | glm-5.2 | bailian | `reasoning_effort` (high/max only) + `enable_thinking: true` | ON (dynamic) |
+| glm-5.3 | zen/go (go-*) | `reasoning_effort` (pass-through) | high (prescriptivo); **rechaza `medium`** [1210] (verificado 16 Ago) |
+| glm-5.3-flash | zen/go (go-*) | `reasoning_effort` (pass-through) | high (prescriptivo); **rechaza `medium`/`none`** [1210] (verificado 30 Ago) |
 | minimax-m3 | zen/go (Anthropic-compat) | zen convierte; thinking type adaptive | adaptive |
 | kimi-k2.7-code | cualquier | **NUNCA inyectar** (`disabled` → ERROR) | always-on |
 | qwen3.7-plus | bailian | `enable_thinking: true` (thinking_budget opcional) | ON |
 
 Regla general: parámetros no soportados se ignoran silenciosamente (OpenAI-compat); única excepción kimi (`disabled` → error). → Decisión 1.3: inyección per-attempt (router, provider-aware).
 
+## 6. Sync catálogo opencode — declaración de endpoints (31 Ago 2026)
+
+> Sincronización del catálogo de mofgw con lo que DECLARAN los endpoints de opencode
+> (acceso 31 Ago 2026): `https://opencode.ai/zen/go/v1/models` (33 modelos) y
+> `https://opencode.ai/zen/v1/models` (catálogo completo; solo `-free` + `big-pickle` gratis).
+> context_window / max_output / modality salen de models.dev/api.json (provider
+> `opencode-go` para GO, `opencode` para free; `hy3-preview` solo presente en `tencent-tokenhub`).
+
+### 6.1 Providers go-*: 33 modelos, todo lo declarado
+
+Los 7 providers `go-*` pasan de 26 a **33 modelos** (listas idénticas; los errores
+transitorios por chat los absorbe el fallback):
+
+- **+8 verificados por chat (200, 31 Ago):** `longcat-2.0`, `deepseek-v4-flash-vision-exp`,
+  `qwen3.7-max` (re-ingreso — excluido 16 Ago por inestable), `qwen3.8-max`,
+  `qwen3.8-flash`, `qwen3.6-plus` (re-ingreso), `qwen3.5-plus` (re-ingreso), `hy4-preview`.
+- **+6 por declaración:** `grok-4.5` (solo `/responses`), `grok-4.6` (solo `/responses`),
+  `mimo-v2-pro`, `mimo-v2-omni`, `hy3-preview`, `muse-spark-1.2-contributor` (errores
+  transitorios por chat el 31 Ago: 400/401/500 — quedan listados por declaración).
+
+| Modelo | ctx | max_output | input modalities |
+|---|---|---|---|
+| longcat-2.0 | 1,000,000 | 131,072 | text |
+| deepseek-v4-flash-vision-exp | 1,000,000 | 384,000 | text+image |
+| qwen3.7-max | 1,000,000 | 65,536 | text |
+| qwen3.8-max | 1,000,000 | 131,072 | text+image+video+pdf |
+| qwen3.8-flash | 1,000,000 | 131,072 | text+image+video |
+| qwen3.6-plus | 1,000,000 | 65,536 | text+image+video |
+| qwen3.5-plus | 1,000,000 | 65,536 | text+image+video |
+| hy4-preview | 1,024,000 | 64,000 | text |
+| grok-4.5 | 500,000 | 500,000 | text+image |
+| grok-4.6 | 500,000 | 500,000 | text+image |
+| mimo-v2-pro | 1,048,576 | 128,000 | text |
+| mimo-v2-omni | 262,144 | 128,000 | text+image+audio+pdf |
+| hy3-preview | 256,000 | 64,000 | text |
+| muse-spark-1.2-contributor | 1,048,576 | 131,072 | text+image+video+pdf+audio |
+
+> Nota longcat-2.0: models.dev declara valores distintos según provider — nano-gpt (1,048,756 / 262,144) vs **opencode-go (1,000,000 / 131,072)**. Como los go-* apuntan al servicio opencode-go, en config/mofgw consta **1,000,000 / 131,072** (31 Ago).
+
+**Thinking:** no declarado por los endpoints → **omitido en la metadata** (fallback rule:
+no se adivina). **Pricing:** sin tasa publicada → **sin entrada (costo 0)**.
+
+### 6.2 Tier free: 8 modelos en los 7 providers go-*-free
+
+`big-pickle` (202,752 / 32,768) + los 7 `-free` de `/zen/v1`:
+`deepseek-v4-flash-free` (200K / 128K), `muse-spark-1.2-contributor-free` (1M / 131K),
+`mimo-v2.5-free` (200K / 32K), `ling-3.0-flash-fin-free` (262K / 32K),
+`nemotron-3-ultra-free` (1M / 128K), `nemotron-3.5-lightning-free` (262K / 262K),
+`laguna-s-2.1-free` (256K / 32K).
+
+⚠️ Verificado 31 Ago: las keys actuales responden `401 "Model is disabled"` para los 7
+`-free` (el plan free depende de la cuenta/workspace) → quedan declarados; el fallback
+los absorbe. Se habilitan solos cuando una cuenta tenga plan free.
+
+### 6.3 GLM-5.3-Flash (ficha completa, verificado 30-31 Ago)
+
+- **Precio Go:** $0.15 / $0.50 input/output, cache-hit $0.03 por 1M (opencode.ai/docs/go, 30 Ago).
+- **Thinking (probe 30 Ago):** acepta `low`/`high`/`max`; **rechaza `medium` y `none`**
+  con error `[1210] "This model always engages in thinking and cannot be disabled; please
+  use low, high, or max"`. En metadata: `thinking: [low, high, max]`, `thinking_default: high`
+  (prescriptivo, ADR-003).
+- **Especificación:** Z.ai blog 26 Ago — 320B params / 18B activos, multimodal nativo, 1M ctx,
+  alias `ox-alpha`. models.dev familia glm-5.3: ctx 1M / max_output 131,072 (confirmar con el
+  primer response grande).
+- **En catálogo:** 7 providers `go-*` + pricing + metadata.
+
 ---
-*Actualizado: 2026-08-10 — §5 (catálogo fiel: consumo OpenClaw detallado, tools/visión por modelo, correcciones vs §4, mapa de activación) verificado con fuentes (ref:brainy-white-narwhal + ref:desirable-tan-seahorse). Discovery EPIC-010 COMPLETO.*
+*Actualizado: 2026-08-31 — §6 (sync catálogo opencode: 33 GO + 8 free declarados 31 Ago; GLM-5.3-Flash pricing + thinking verificado) agregado; §1 (tasa Go glm-5.3-flash) y §5.4 (glm-5.3/glm-5.3-flash) complementados.*
