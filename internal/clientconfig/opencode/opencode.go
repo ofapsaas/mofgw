@@ -114,13 +114,13 @@ func modelFragment(m clientconfig.ModelEntry) map[string]any {
 		frag["reasoning"] = true
 	}
 	if t := buildThinking(m.Meta); t != nil {
-		frag["thinking"] = t
+		frag["x-thinking"] = t
 	}
 	if at := buildAttachment(m.Meta); at != nil {
-		frag["attachment"] = at
+		frag["x-attachment"] = at
 	}
 	if md, ok := metaString(m.Meta, "modality"); ok && md != "" {
-		frag["modality"] = md
+		frag["x-modality"] = md
 	}
 
 	return frag
