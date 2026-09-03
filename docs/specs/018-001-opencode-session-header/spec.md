@@ -1,7 +1,9 @@
 ---
 id: 018-001-opencode-session-header
 title: Header x-opencode-session y User-Agent propio en llamadas upstream
-status: draft
+status: approved
+approved_by: Pablo
+approved_at: 2026-09-03
 created: 2026-09-03
 motivacion_externa: "Anomaly/OpenCode Go: requests sin x-opencode-session pueden error desde 2026-09-06"
 ---
@@ -74,4 +76,4 @@ motivacion_externa: "Anomaly/OpenCode Go: requests sin x-opencode-session pueden
 
 ## Estado
 
-Status: **Draft** — Pendiente aprobación del usuario (Pablo/Ofap HITL — indelegable).
+Status: **Approved** by Pablo on 2026-09-03 (HITL). Desbloquea Etapa 3 (AUDIT → RED).
