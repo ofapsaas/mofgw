@@ -221,7 +221,13 @@ func TestPostcondition3_SanitizeClamp(t *testing.T) {
 		ups := []*upstream{upstreamOK("ses-model", "x"), upstreamOK("plain-model", "x")}
 		h, _ := buildWithConfigProviders(t, ups, []auth.Client{knobAuthClient})
 
-		long := strings.Repeat("a", 100) + strings.Repeat("@", 100)
+		// FIX AP-4 (sesión test-writer post-GREEN, 2026-09-03): el input
+		// original `repeat("a",100)+repeat("@",100)` era un typo —
+		// matemáticamente imposible producir want=128 'a' preservando el
+		// valor (máximo 100 'a' válidas). Intento del test (P3): valor
+		// válido de ≥128 chars que tras sanitizar+clamp quede en 128 chars
+		// conservando el prefijo. Input corregido a 128 'a' + 100 '@'.
+		long := strings.Repeat("a", 128) + strings.Repeat("@", 100)
 		if _, err := h.chatRawHeader(t, "sk-knob-1", chatBody("ses-model"), long); err != nil {
 			t.Fatalf("chat: %v", err)
 		}
@@ -371,7 +377,19 @@ func TestPostcondition7_CacheKeyStable(t *testing.T) {
 	h.proxySrv.SetResponseCache(true, 512, time.Hour)
 
 	// Request 1: sesión "ses_a".
-	resp1, err := h.chatRawHeader(t, "sk-knob-1", chatBody("ses-model"), "ses_a")
+	// FIX AP-4 (sesión test-writer post-GREEN, 2026-09-03): el body de
+	// chatBody (solo model+messages) no es elegible para cache
+	// (isDeterministic=false sin temperature==0/seed, regla 010-001/010-002)
+	// → nunca había MISS/HIT y el assert fallaba independiente de la
+	// feature. Se agrega "temperature": 0 (patrón deterministicBody() de
+	// e2e_010002_test.go). El sentido de P7 se mantiene: mismo body,
+	// distinto X-Session-Id → HIT.
+	cacheBody := map[string]any{
+		"model":       "ses-model",
+		"temperature": 0,
+		"messages":    []map[string]string{{"role": "user", "content": "hi"}},
+	}
+	resp1, err := h.chatRawHeader(t, "sk-knob-1", cacheBody, "ses_a")
 	if err != nil {
 		t.Fatalf("chat 1: %v", err)
 	}
@@ -386,7 +404,7 @@ func TestPostcondition7_CacheKeyStable(t *testing.T) {
 
 	// Request 2: mismo body, distinta sesión → cache HIT exact-match (P7:
 	// la key no depende del header inyectado).
-	resp2, err := h.chatRawHeader(t, "sk-knob-1", chatBody("ses-model"), "ses_b")
+	resp2, err := h.chatRawHeader(t, "sk-knob-1", cacheBody, "ses_b")
 	if err != nil {
 		t.Fatalf("chat 2: %v", err)
 	}
