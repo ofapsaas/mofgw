@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ofapsaas/mofgw/internal/build"
 )
 
 // Client es el contrato del forward de embeddings (011-006): Embed envía el
@@ -66,6 +68,10 @@ func (o *Ollama) Embed(ctx context.Context, body []byte) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// 018-001 P5/P11: User-Agent propio también en embeddings. NO se
+	// inyecta x-opencode-session acá (P11: este cliente no recibe meta
+	// de sesión).
+	req.Header.Set("User-Agent", build.UserAgent)
 	if o.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+o.apiKey)
 	}

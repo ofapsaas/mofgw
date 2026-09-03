@@ -708,6 +708,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// 018-001 D6: el session id (X-Session-Id entrante) y el client_id
+	// autenticado viajan al provider por RequestMeta en el context. El
+	// provider.Client solo usa el valor si el knob opencode_session de
+	// ESE provider está activo (I1/I2); los demás endpoints (responses,
+	// embeddings, health) no pueblan meta → solo reciben el UA (P11).
+	ctx = provider.WithMeta(ctx, provider.RequestMeta{SessionID: sessionID, ClientID: clientID})
+
 	// 009-002 P2: clave sticky = clientID + "|" + sessionID (X-Session-Id
 	// solo lectura, NUNCA upstream). sessionID "" → afinidad por cliente
 	// (clientID|). clientID nunca es vacío (viene del token autenticado)

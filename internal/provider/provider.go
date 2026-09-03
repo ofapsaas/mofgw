@@ -20,10 +20,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ofapsaas/mofgw/internal/build"
 )
 
 // Provider es la interfaz compartida por 001-003/004/005/006 (plan.md).
@@ -230,14 +233,46 @@ type Client struct {
 	models    []string
 	maxTokens int64
 	http      *http.Client
+	logger    *slog.Logger
+
+	// opencodeSession: knob declarativo de config (018-001 D3, I1). true
+	// → Complete/Stream inyectan el header x-opencode-session (P1-P4);
+	// false (default) → jamás se inyecta, aunque el request traiga
+	// X-Session-Id (I2: no leak hacia providers sin knob).
+	opencodeSession bool
+}
+
+// Option modifica un Client en la construcción (patrón funcional, sin
+// romper la firma histórica de NewClient con 6 argumentos).
+type Option func(*Client)
+
+// WithOpenCodeSession activa/desactiva el knob declarativo de inyección
+// del header x-opencode-session (018-001 D3/P10). Lo pasa
+// providerfactory desde config.ProviderConfig.OpenCodeSession.
+func WithOpenCodeSession(b bool) Option {
+	return func(c *Client) { c.opencodeSession = b }
+}
+
+// WithLogger inyecta el logger operativo para los warns de omisión del
+// header (P9). nil → slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Client) {
+		if l != nil {
+			c.logger = l
+		}
+	}
 }
 
 // NewClient construye el cliente HTTP del provider.
-func NewClient(id, baseURL, apiKey string, models []string, maxTokens int64, hc *http.Client) *Client {
+func NewClient(id, baseURL, apiKey string, models []string, maxTokens int64, hc *http.Client, opts ...Option) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 300 * time.Second}
 	}
-	return &Client{id: id, baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, models: models, maxTokens: maxTokens, http: hc}
+	c := &Client{id: id, baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, models: models, maxTokens: maxTokens, http: hc, logger: slog.Default()}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (c *Client) ID() string     { return c.id }
@@ -262,6 +297,7 @@ func (c *Client) Complete(ctx context.Context, body []byte) (*CompleteResult, er
 		return nil, &ErrUpstream{Type: "network", Message: "build request: " + err.Error()}
 	}
 	c.setHeaders(httpReq)
+	c.setSessionHeader(httpReq, ctx)
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -297,6 +333,7 @@ func (c *Client) Stream(ctx context.Context, body []byte) (<-chan StreamEvent, e
 		return nil, &ErrUpstream{Type: "network", Message: "build request: " + err.Error()}
 	}
 	c.setHeaders(httpReq)
+	c.setSessionHeader(httpReq, ctx)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.http.Do(httpReq)
@@ -369,6 +406,100 @@ func (c *Client) Health(ctx context.Context) (time.Duration, error) {
 func (c *Client) setHeaders(r *http.Request) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+c.apiKey)
+	// 018-001 D5/P5: User-Agent propio en TODO request HTTP upstream
+	// (chat, GET models de Health, ...). Nunca el default Go-http-client
+	// ni impersonación del CLI (I4).
+	r.Header.Set("User-Agent", build.UserAgent)
+}
+
+// ---- 018-001: RequestMeta (D6) + inyección de x-opencode-session ----
+
+// RequestMeta es el metadato por request (D6) que viaja del handler de
+// chat al provider por el context: SessionID = header entrante
+// X-Session-Id (si presente y no vacío), ClientID = cliente autenticado
+// (auth.ClientIDFrom). Stateless (I6): vive solo en el context del
+// request, sin mapas ni TTL.
+type RequestMeta struct {
+	SessionID string
+	ClientID  string
+}
+
+// metaKey es la key privada del context (nunca colisiona con otras).
+type metaKey struct{}
+
+// WithMeta ata el RequestMeta al context del request. El handler de chat
+// lo llama; el provider lo lee al armar el request upstream y SOLO usa el
+// valor si el knob opencode_session está activo (I2).
+func WithMeta(ctx context.Context, m RequestMeta) context.Context {
+	return context.WithValue(ctx, metaKey{}, m)
+}
+
+// metaFrom extrae el RequestMeta del context (zero-value si no hay: los
+// endpoints sin meta — responses, health — quedan cubiertos solo por el
+// UA de D5, P11).
+func metaFrom(ctx context.Context) RequestMeta {
+	m, _ := ctx.Value(metaKey{}).(RequestMeta)
+	return m
+}
+
+// sanitizeSessionValue sanitiza el valor del header (018-001 P3): cada
+// byte fuera de [A-Za-z0-9._-] se reemplaza por '_' y el resultado se
+// clampa a 128 caracteres. Un valor que tras el reemplazo queda compuesto
+// solo de separadores se considera VACÍO (B3: "@@@ !!!" → omitir) y un
+// valor vacío devuelve "" → el caller omite el header (P3/P9).
+func sanitizeSessionValue(v string) string {
+	if v == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(v))
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '.', c == '_', c == '-':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	s := b.String()
+	// P3: solo separadores tras el reemplazo → queda vacío (fail loud:
+	// no se envía un header de puros underscores).
+	if strings.Trim(s, "_") == "" {
+		return ""
+	}
+	if len(s) > 128 {
+		s = s[:128]
+	}
+	return s
+}
+
+// setSessionHeader inyecta el header x-opencode-session en el request
+// upstream (018-001 D3/D4/P1-P4/P9). Gate completo: sin knob → no-op
+// (I2: no leak); con knob, precedencia X-Session-Id entrante → fallback
+// client_id (D4, I5: valor estable, nunca aleatorio ni hash de contenido);
+// valor vacío tras sanitizar → header omitido + warn operativo con el
+// nombre, nunca el valor (P9). Stateless: el valor viene del request, sin
+// estado nuevo (I6). El body nunca se toca (I3).
+func (c *Client) setSessionHeader(r *http.Request, ctx context.Context) {
+	if !c.opencodeSession {
+		return // P4/I2: provider sin knob → sin header, aunque haya sesión
+	}
+	m := metaFrom(ctx)
+	raw := m.SessionID
+	if raw == "" {
+		raw = m.ClientID // P2: fallback estable al client_id autenticado
+	}
+	v := sanitizeSessionValue(raw)
+	if v == "" {
+		c.logger.Warn("opencode_session_header_omitido",
+			"provider", c.id,
+			"motivo", "sin X-Session-Id ni client_id (o valor vacío tras sanitizar)",
+		)
+		return // P9: omitir + warn, sin valor en el log
+	}
+	r.Header.Set("X-Opencode-Session", v)
 }
 
 // parseRetryAfter interpreta el header Retry-After (segundos o fecha
