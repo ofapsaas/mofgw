@@ -141,6 +141,15 @@ type ProviderConfig struct {
 	// por patrón de ID (los IDs reales son acct1, go-1/2, qwen...).
 	ThinkingPath string `yaml:"thinking_path"`
 
+	// OpenCodeSession: knob declarativo (018-001 D3). true → mofgw inyecta
+	// el header x-opencode-session en los requests upstream de ESTE
+	// provider (precedencia X-Session-Id entrante → fallback client_id,
+	// P1-P4; valor sanitizado [A-Za-z0-9._-] y clampeado a 128, P3).
+	// Default false (zero value, I7): configs existentes cargan idéntico.
+	// Declarativo, JAMÁS inferido del ID/base_url/modelo (I1); el header
+	// solo sale hacia providers con knob activo (I2: no leak).
+	OpenCodeSession bool `yaml:"opencode_session"`
+
 	// APIKey se puebla al resolver APIKeyEnv (nunca viene del YAML).
 	APIKey string `yaml:"-"`
 
@@ -447,7 +456,7 @@ func defaults() Config {
 			Timeout:    0, // 0 = default 10s (lo resuelve el cliente DDG)
 		},
 		ClientConfig: ClientConfigConfig{
-			BaseURL: "",        // vacío → 503 en runtime (I4), no fail-fast
+			BaseURL: "", // vacío → 503 en runtime (I4), no fail-fast
 			KeyEnv:  "MOFGW_KEY",
 		},
 		Efficiency: EfficiencyConfig{

@@ -34,7 +34,11 @@ func BuildProvider(pc config.ProviderConfig, logger *slog.Logger) (provider.Prov
 	switch pc.Type {
 	case "", "http":
 		// P4 backward compat: byte-idéntico a la construcción HTTP actual.
-		return provider.NewClient(pc.ID, pc.BaseURL, pc.APIKey, pc.Models, pc.MaxTokens, nil), nil
+		// 018-001 (P10/I1): el knob opencode_session viaja declarativo del
+		// config al client; default false → construcción idéntica a la
+		// previa (I7).
+		return provider.NewClient(pc.ID, pc.BaseURL, pc.APIKey, pc.Models, pc.MaxTokens, nil,
+			provider.WithOpenCodeSession(pc.OpenCodeSession)), nil
 	case "subprocess":
 		backend, err := BuildBackend(pc.Backend, pc.Command)
 		if err != nil {
