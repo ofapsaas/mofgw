@@ -1,9 +1,19 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-08-22 (EPIC 016 CERRADO — 4/4 features + integración E2E + closure).
+> Última actualización: 2026-09-03 (feature 018-001 MERGED — x-opencode-session + UA upstream).
 
 ## Decisiones recientes (cronología inversa)
+
+### 03 Sep 2026 — Feature 018-001 (x-opencode-session + UA upstream) MERGED — ciclo CDAD completo en un día
+
+- **Motivación externa con deadline:** Anomaly (OpenCode Go) exige header `x-opencode-session` (valor opaco estable por conversación) — sin él puede error desde 2026-09-06; deepseek-v4-flash vía ruta Go ya daba HTTP 400 (precedente hermes-agent #81584). mofgw era el "Go HTTP client" sin UA propio (`Go-http-client/1.1` = "broad user agent" prohibido por docs de Anomaly).
+- **Solución:** knob declarativo `opencode_session: true` por provider (precedente `thinking_path`, I1 nunca inferir) → inyección de `x-opencode-session` con precedencia `X-Session-Id` entrante → fallback `client_id`, sanitizado `[A-Za-z0-9._-]`→`_`, clamp 128, vacío→omitir+warn (sin valor en log). `User-Agent: mofgw/<version>` global (constante `internal/build.Version`, var para ldflags). Plumbing `RequestMeta` por context (stateless, I6).
+- **Invariantes clave verificadas en review:** I2 no-leak (header solo a providers con knob; responses/health/embeddings jamás inyectan), I3 body intacto, I4 sin impersonar CLI (rechazo comunitario explícito).
+- **Ciclo:** spec aprobado por Pablo → RED (12 AssertionError + B9 build-fail con precedente) → GREEN 10/12 con 2 tests RED defectuosos corregidos por test-writer aislado (AP-4) → POST-AUDIT verde 733/29 -race → review APPROVE_WITH_NITS (0 bloqueantes; nits #1/#2 aplicados: comentario stale + warn silencioso en endpoints sin meta).
+- **Commits:** 8547b3f (spec) → 77b79ae (aprobación) → 16619b9 (RED) → 3d19fc9+3dedb40 (GREEN) → e5ccf1d (POST-AUDIT) → 920472a (review) → 187a318 (nits). Suite final: **733 tests / 29 paquetes -race verde**.
+- **⚠️ Pendiente operativo: DEPLOY antes del 2026-09-06** — la feature no protege hasta que las instancias mofgw en producción carguen config con `opencode_session: true` en los providers de la familia opencode (go-*) y se redeployen. **Deuda registrada:** `docs/progress.md` no existe (bootstrap pendiente desde epic 010).
+- **Nota de proceso:** runtime `delegate` de opencode roto durante el ciclo (3 timeouts, 0 tokens — verificado: ninguna request llegó a mofgw; `task` funciona). Architect/scribe inline con disclosure; reviewer vía agente general read-only conductual. Desviaciones documentadas en spec/review.
 
 ### 22 Ago 2026 — EPIC-016 (mofgw-client-config) CERRADO — 4/4 features done + integración E2E verificada + closure
 
