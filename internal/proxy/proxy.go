@@ -543,8 +543,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// límites por cliente/agente son fast-fail (aislamiento: un cliente
 	// que excede su budget no hace esperar a los demás).
 	clientID := auth.ClientIDFrom(r.Context())
-	// X-Session-Id: solo lectura, NUNCA upstream (008-003 I1) — se usa
-	// para correlacionar requests de una sesión lógica del runtime.
+	// X-Session-Id: solo lectura, nunca crudo upstream (008-003 I1) —
+	// se usa para correlacionar requests de una sesión lógica del runtime.
+	// Excepción 018-001: el valor crudo no viaja, pero se DERIVA como
+	// x-opencode-session hacia providers con opencode_session: true
+	// (setSessionHeader en internal/provider/provider.go: sanitizado +
+	// fallback a client_id, nunca el header entrante tal cual).
 	sessionID := r.Header.Get("X-Session-Id")
 	// Telemetría de descubrimiento (009-000 P3): UN evento por request con
 	// body válido, emitido ANTES de los chequeos de limiter/budget/ventana/

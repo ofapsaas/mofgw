@@ -434,12 +434,14 @@ func WithMeta(ctx context.Context, m RequestMeta) context.Context {
 	return context.WithValue(ctx, metaKey{}, m)
 }
 
-// metaFrom extrae el RequestMeta del context (zero-value si no hay: los
-// endpoints sin meta — responses, health — quedan cubiertos solo por el
-// UA de D5, P11).
-func metaFrom(ctx context.Context) RequestMeta {
-	m, _ := ctx.Value(metaKey{}).(RequestMeta)
-	return m
+// metaFrom extrae el RequestMeta del context (zero-value si no hay). El
+// segundo retorno indica si el context porta meta (WithMeta del handler
+// de chat) o no: los endpoints sin meta — responses, health — quedan
+// cubiertos solo por el UA de D5, P11, y su omisión es silenciosa
+// (review nit 2).
+func metaFrom(ctx context.Context) (RequestMeta, bool) {
+	m, ok := ctx.Value(metaKey{}).(RequestMeta)
+	return m, ok
 }
 
 // sanitizeSessionValue sanitiza el valor del header (018-001 P3): cada
@@ -479,25 +481,30 @@ func sanitizeSessionValue(v string) string {
 // upstream (018-001 D3/D4/P1-P4/P9). Gate completo: sin knob → no-op
 // (I2: no leak); con knob, precedencia X-Session-Id entrante → fallback
 // client_id (D4, I5: valor estable, nunca aleatorio ni hash de contenido);
-// valor vacío tras sanitizar → header omitido + warn operativo con el
-// nombre, nunca el valor (P9). Stateless: el valor viene del request, sin
-// estado nuevo (I6). El body nunca se toca (I3).
+// valor vacío tras sanitizar → header omitido, con warn operativo SOLO si
+// el context porta meta (handler de chat): endpoints sin meta (responses,
+// health) omiten en silencio — warn por-request ahí sería ruido operativo
+// en el path principal de Odoo (review nit 2). Nunca se loguea el valor
+// (P9). Stateless: el valor viene del request, sin estado nuevo (I6).
+// El body nunca se toca (I3).
 func (c *Client) setSessionHeader(r *http.Request, ctx context.Context) {
 	if !c.opencodeSession {
 		return // P4/I2: provider sin knob → sin header, aunque haya sesión
 	}
-	m := metaFrom(ctx)
+	m, hasMeta := metaFrom(ctx)
 	raw := m.SessionID
 	if raw == "" {
 		raw = m.ClientID // P2: fallback estable al client_id autenticado
 	}
 	v := sanitizeSessionValue(raw)
 	if v == "" {
-		c.logger.Warn("opencode_session_header_omitido",
-			"provider", c.id,
-			"motivo", "sin X-Session-Id ni client_id (o valor vacío tras sanitizar)",
-		)
-		return // P9: omitir + warn, sin valor en el log
+		if hasMeta {
+			c.logger.Warn("opencode_session_header_omitido",
+				"provider", c.id,
+				"motivo", "sin X-Session-Id ni client_id (o valor vacío tras sanitizar)",
+			)
+		}
+		return // P9: omitir (warn solo con meta), sin valor en el log
 	}
 	r.Header.Set("X-Opencode-Session", v)
 }
