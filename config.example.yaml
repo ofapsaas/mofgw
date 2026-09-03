@@ -58,6 +58,13 @@ providers:
     #                        # reasoning_effort + enable_thinking (deepseek/glm) o
     #                        # enable_thinking solo (qwen). kimi/minimax nunca se
     #                        # inyectan (thinking siempre-on / nativo == prescriptivo).
+    # opencode_session: true # 018-001: inyecta el header x-opencode-session en los
+    #                        # requests upstream de ESTE provider (requerido por
+    #                        # opencode.ai/zen/go — sin él puede error desde 2026-09-06).
+    #                        # Valor: header X-Session-Id del cliente; fallback estable
+    #                        # client_id. Sanitizado + clamp 128. Default false.
+    #                        # Activarlo SOLO en providers de la familia opencode
+    #                        # (zen/go) — nunca filtra el id a otros upstreams.
     # cooldown: 90s    # override por provider (opcional)
     # timeout: 60s     # override por provider (opcional)
     # first_token_timeout: 45s  # override per-provider del tope TTFB de streaming

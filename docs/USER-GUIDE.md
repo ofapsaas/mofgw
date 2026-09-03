@@ -147,6 +147,7 @@ Cada provider:
 | `models` | ✅ | Lista de modelos que sirve este provider (al menos 1). |
 | `max_tokens` | — | Límite de `max_tokens` del provider. El proxy **clampea** el body por intento contra este límite (efectivo = `min(max_output_modelo, max_tokens_provider)`). |
 | `thinking_path` | — | Path de inyección del `thinking_default` (010-002). Valores: `""` (default, sin inyección) \| `"zen"` \| `"bailian"`. `"zen"` = passthrough de `reasoning_effort`; `"bailian"` = `reasoning_effort` + `enable_thinking` (modelos de razonamiento) o `enable_thinking` solo (modelos tipo qwen). Modelos de thinking siempre-activo o con default nativo == prescriptivo nunca se inyectan. |
+| `opencode_session` | — | `true` → mofgw inyecta el header `x-opencode-session` en los requests upstream de **este** provider (018-001). Requerido por los providers de la familia opencode (`zen`/`go`): sin el header, algunos modelos responden HTTP 400 y desde 2026-09-06 el servicio puede rechazar requests. El valor es opaco y estable: toma el header `X-Session-Id` del cliente; si no viene, usa el `client_id` (estable por cliente). Se sanitiza y clampa a 128 caracteres. **Default: `false`** — activarlo SOLO en providers opencode; jamás envía el id a otros upstreams. |
 | `cooldown` | — | Override del cooldown global (opcional). |
 | `timeout` | — | Override del timeout global (opcional). |
 
@@ -164,6 +165,8 @@ providers:
     models: ["model-a", "model-b"]
     max_tokens: 8192
     # thinking_path: "zen"   # inyección del thinking_default (010-002)
+    # opencode_session: true # header x-opencode-session upstream (018-001)
+    #                        # SOLO para providers de la familia opencode (zen/go)
     # cooldown: 90s    # override por provider (opcional)
     # timeout: 60s     # override por provider (opcional)
   - id: provider-b
@@ -173,6 +176,8 @@ providers:
     max_tokens: 131072
     thinking_path: "bailian"
 ```
+
+> **Headers salientes (018-001):** todo request HTTP upstream de mofgw se identifica con `User-Agent: mofgw/<versión>` (los providers que exigen identificarse — p.ej. opencode.ai — rechazan user agents genéricos como `Go-http-client`). Además, con `opencode_session: true`, el request lleva `x-opencode-session` con un id opaco y estable (sesión del cliente si la declara, `client_id` como fallback). El body jamás se modifica por esta función.
 
 > **Importante:** el orden de la lista define la cadena. Si quieres que `provider-b` se intente antes que `provider-a`, mueve su bloque arriba. Editar el orden **ES** la configuración del fallback.
 
