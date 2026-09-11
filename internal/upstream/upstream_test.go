@@ -177,6 +177,11 @@ func fakeOpts(f *fakeUpstream) []modelscache.Option {
 
 func writeCacheFile(t *testing.T, path string, body []byte) {
 	t.Helper()
+	// El audit (mitigación d) exige subdirs explícitos en los paths de los
+	// fixtures; creamos el directorio destino antes de escribir (bug AP-4).
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir cache fixture dir: %v", err)
+	}
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatalf("write cache fixture: %v", err)
 	}
@@ -185,6 +190,11 @@ func writeCacheFile(t *testing.T, path string, body []byte) {
 // writeSidecar pre-crea el sidecar de digest (D6: <cache-path>.sha256).
 func writeSidecar(t *testing.T, path string, body []byte) {
 	t.Helper()
+	// Mismo patrón que writeCacheFile (bug AP-4): el sidecar vive en el
+	// mismo dir que el cache, que puede no existir aún.
+	if err := os.MkdirAll(filepath.Dir(path+".sha256"), 0o750); err != nil {
+		t.Fatalf("mkdir sidecar dir: %v", err)
+	}
 	sum := sha256.Sum256(body)
 	if err := os.WriteFile(path+".sha256", []byte(hex.EncodeToString(sum[:])), 0o600); err != nil {
 		t.Fatalf("write sidecar: %v", err)
