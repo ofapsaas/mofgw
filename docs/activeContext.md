@@ -1,9 +1,32 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-03 (feature 018-001 MERGED — x-opencode-session + UA upstream).
+> Última actualización: 2026-09-11 (feature 019-001-fetch-modelsdev MERGED — epic 019 provider-sync-automation).
 
 ## Decisiones recientes (cronología inversa)
+
+### 11 Sep 2026 — Feature 019-001-fetch-modelsdev (epic 019-provider-sync-automation) MERGED
+
+### Decisiones relevantes
+
+- **Feature 019-001-fetch-modelsdev MERGED — PRIMERA del epic 019 (regla de la epic: catálogo upstream es copia verificada, no declaración).** Paquete nuevo `internal/modelsdev` (modelsdev.go/fetch.go/store.go): fetch + cache en disco del catálogo de models.dev (`GET https://models.dev/api.json`; payload real verificado 4.59 MB / 213 providers / 7.711 modelos). Cache en `os.UserCacheDir()/mofgw/models-dev.json` (env `MOFGW_CACHE_DIR` overridea el path base → `<dir>/models-dev.json`; fallback `os.TempDir()/mofgw` si `UserCacheDir` falla — review #4, sin test del override por simular HOME roto frágil). TTL default 5m por **mtime**. Lock `syscall.Flock` `LOCK_EX|LOCK_NB` sobre **`<path>.lock` dedicado** (nunca el propio cache: el rename atómico invalidaría locks sobre él, I10), lock-first antes del TTL-check. Sidecar sha256 `<path>.sha256` con skip de writes byte-idénticos (lección externa opencode PR #44282). Escritura atómica temp+rename replicando `internal/metrics/persist.go` — **sidecar primero, cache último (punto de commit)**, decisión B2. Retry **2 intentos** backoff ~500ms SOLO transporte network/5xx; 4xx SIN reintento; **timeout NUNCA reintenta** (B1). Fail-soft con cache / fail-loud sin cache. Knob `MOFGW_DISABLE_MODELS_FETCH=1` → error tipado `ErrFetchDisabled` por llamada (no fetch omitido silencioso). UA `build.UserAgent`. Logs slog (`fetch_ok/fetch_failed/cache_hit/skipped_identical/lock_busy`). Errores tipados `errors.Is`: `ErrFetchDisabled` / `ErrLockBusy` / `FetchError{Type: timeout|network|canceled|status|parse}`.
+- **Decisión review B1 (HITL delegado — Ofap): P4 vs D9 resuelto — `timeout` NUNCA es retryable.** Un intento colgado ya consumió su presupuesto; reintentarlo duplicaría la latencia (2×10s). D9 se reinterpreta: solo errores de transporte `network` (conn refused/reset/5xx) son transitorios. Fijado con RED discriminante (`TestFetch_TimeoutBudget_NoRetry`, c0489bc, falla hits==2) + fix del implementer (65503d4: `retryable timeout→false`, `classifyTransport` distingue `DeadlineExceeded` de `Canceled`).
+- **Decisión review B2 (I6): par cache+sidecar NO atómico cross-file, aceptado.** Se adopta sidecar-first: sidecar temp+rename PRIMERO, cache ÚLTIMO (commit). Fallo del sidecar → cache intacto + `(false, err)` (I6 consistente). Fallo del cache tras sidecar OK → el próximo refresh detecta digest ≠ sidecar y reescribe ambos (auto-cura); interim `Get()` sirve el cache viejo (aceptable). La atomicidad real cross-file queda fuera de alcance (el spec impone 2 archivos).
+- **Cero impacto en el servidor (I1):** el paquete no importa `internal/config`, `internal/proxy`, `internal/router` ni `cmd/*`; `/v1/models` se sigue armando desde `config.yaml` (`SetPricing`/`SetModelMetadata`, main.go:244-258). El binario `cmd/mofgw-sync` NO se construyó acá (D2 lo posterga a 019-004).
+- **Contrato cross-feature congelado:** API pública del paquete (`Fetch(ctx, opts...)` variádico con `WithBaseURL/WithClient/WithLogger`, `ParseCatalog`, `Catalog{Providers map[string]Provider}` tipado, `Store{Path,TTL,Lock}` + `Refresh/Get`, `FetchTimeout=10s`, `DefaultCacheTTL=5m`) queda como interfaz para los specs hermanos 019-002/003/007. Primer uso en el repo de `os.UserCacheDir` y `syscall.Flock`.
+- **Suite final: 763 tests / 30 paquetes `-race` verde**, go vet + gofmt limpios. Commits: `f99c061` RED (19 tests B1-B11, RED por compilación), `226728c` GREEN, `c0489bc` POST-AUDIT RED discriminante (B1), `65503d4` fix review.
+
+### Deuda técnica detectada
+
+- **Test del override `MOFGW_CACHE_DIR` NO escrito** (review #4 parcial): se desestimó por fragilidad (simular HOME roto); el fallback de `DefaultCachePath` a `os.TempDir()` queda cubierto. Documendar en hardening si el path se vuelve crítico.
+- **Sin import-linter en el repo** → I1 verificada manualmente (deuda de tooling, abstención A3 de la review).
+- **Anti-bias degradado (A2):** el arnés corrió el reviewer en `mofgw/deepseek-v4-flash` = **misma familia que el implementer**. La Capa 2 (HITL) validó los bloqueantes B1/B2 por inspección directa del código antes de decidir. *Mejora candidata:* el perfil de `cdad-reviewer` no fija modelo distinto — revisar instalador/routing (process-log 019).
+- **Deuda del epic vigente:** `yaml.v3` no preserva comentarios en round-trip → decisión de regeneración vs. edición estructural adelantada a 019-004; hot-reload del epic 017 sigue pausada → `019-005` default = restart del service systemd.
+- **`docs/progress.md` y `docs/systemPatterns.md` NO existían** (deuda desde epic 010 / 018-001) → **creados en este ciclo** (primer bootstrap del Memory Bank completo).
+
+### Próxima feature en cola
+
+- **019-002-fetch-zen-go** (epic 019-provider-sync-automation): fetch de las listas autorizadas Zen/Go/OpenRouter (condicional a API keys configuradas). Sin dependencias. Backlog 019-003..007 queued. Coordinar vía `cdad-epic`.
 
 ### 03 Sep 2026 — Feature 018-001 (x-opencode-session + UA upstream) MERGED — ciclo CDAD completo en un día
 

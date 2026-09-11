@@ -1,0 +1,41 @@
+# Progress
+
+Estado de features del proyecto mofgw (Memory Bank).
+
+> Archivo **creado el 2026-09-11** — estaba pendiente como deuda desde el epic 010 /
+> feature 018-001 (nunca bootstrapeado). Es el primer artefacto de progreso del repo;
+> el histórico completo vive en `activeContext.md` (entries por fecha) y `TECHDEBT.md`.
+
+## In progress
+
+<!-- features actualmente en alguna etapa del ciclo CDAD -->
+
+_(ninguna — 019-001 done, 019-002 no arrancada todavía)_
+
+## Done
+
+<!-- features cerradas (mergeadas + Memory Bank actualizado) -->
+
+- **019-001-fetch-modelsdev** (epic 019-provider-sync-automation) — fetch + cache en disco del catálogo models.dev (`internal/modelsdev`). Merged 2026-09-11. Suite 763/30 `-race` verde. Commits: `f99c061` RED, `226728c` GREEN, `c0489bc` POST-AUDIT RED discriminante, `65503d4` fix review. Review REQUEST_CHANGES con B1/B2 resueltos (HITL delegado).
+
+## Queued
+
+<!-- features identificadas pero no arrancadas todavía -->
+
+Epic **019-provider-sync-automation** (backlog; plan: `docs/epics/019-provider-sync-automation/plan.md`):
+- 019-002-fetch-zen-go (fetch listas Zen/Go/OpenRouter; condicional a API keys)
+- 019-003-merge-provider-catalog (merge models.dev por IDs autorizados → providers[].models/pricing/model_metadata; deriva supported_parameters)
+- 019-004-atomic-write-validate (write atómico config.yaml + validación `config.Parse` pre-commit + binario `cmd/mofgw-sync`)
+- 019-005-reload-signal (SIGHUP si hot-reload; si no, restart — 017 pausada)
+- 019-006-systemd-timer (timer 60 min + logging estructurado + modo `--once`)
+- 019-007-build-snapshot (snapshot embebido del catálogo en build; fallback offline — depende de 001)
+
+## Blocked
+
+<!-- features que dependen de algo externo -->
+
+_(ninguna — 017-mofgw-client-hot-reload sigue pausada en tdd-audit, referenciada en notes/epic_history)_
+
+---
+
+Última actualización: 2026-09-11
