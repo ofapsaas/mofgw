@@ -77,3 +77,21 @@ cierre de la epic.
 - Contador de tests del harness (rtk) parece contar subtests, no funciones (19 funcs
   → 28 en rtk). *Mejora candidata:* unificar métrica de conteo entre reportes de roles
   y verificación del orquestador.
+
+## 2026-09-11 — Review 019-001 + loop de fixes
+
+- Review REQUEST_CHANGES (premier-red-meerkat): 2 bloqueantes resueltos con loop
+  disciplinado — test-writer RED discriminante (c0489bc: TestFetch_TimeoutBudget_NoRetry
+  falla hits==2) → implementer fix (retryable timeout→false, sidecar-first persist,
+  classifyTransport DeadlineExceeded/Canceled, fallback TempDir) → suite 763/30 -race
+  verde verificada por orquestador (bash de subagentes bloqueado en ambos roles,
+  2do y 3er incidente del mismo matcher).
+- **Hallazgo de valor del reviewer:** el spec era internamente contradictorio (P4 vs
+  D9) y el test del audit no discriminaba (falso negativo). La revisión independiente
+  valió el costo — evitó perpetuar 2 intentos de 10s en producción. *Mejora candidata:*
+  regla del framework — todo par "postcondición + decisión D" debe cruzarse explícito
+  (matriz P↔D) en la auto-revisión del spec; la contradicción se detectó tarde.
+- Anti-bias degradado (A2): reviewer corrió en deepseek-v4-flash, misma familia que el
+  implementer. Capa 2 (HITL) validó los bloqueantes por inspección directa antes de
+  decidir. *Mejora candidata:* el profile de cdad-reviewer no fija modelo distinto —
+  revisar instalador/routing.
