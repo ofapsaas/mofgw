@@ -59,3 +59,21 @@ cierre de la epic.
   y materializa artefactos.
 - **Baseline verificado por orquestador (evidencia):** go build OK, go vet OK,
   `go test ./... -count=1` = 733 passed / 29 pkgs. AUDIT delegado (striped-black-bedbug).
+
+## 2026-09-11 — RED + GREEN 019-001
+
+- RED: f99c061 (19 tests B1-B11, RED por compilación, 0 sintaxis; desviación justificada:
+  package modelsdev externo produce "no non-test Go files" que NO distingue símbolos →
+  test file del propio paquete, convención del repo). Lección: la "RED por compilación"
+  con paquete test-externo es imposible de distinguir de un paquete vacío — documentar
+  esta trampa en odoo/test-writer references del framework.
+- GREEN: cdad-implementer escribió el paquete (3 archivos, 596 líneas) pero su bash
+  quedó bloqueado por el matcher de permisos del runtime (solo pasaba `pwd`). Gates
+  2-5 ejecutados por el orquestador con evidencia (gofmt limpio, suite nueva 28 pasan,
+  completa 761/30 -race verde, vet+build OK; commit 226728c). *Mejora candidata
+  (crítica):* el permission-matching de bash en subagentes task es frágil (den `*`
+  gana sobre allows); 018-001 ya había sufrido delegate roto. Priorizar fix de
+  harness de delegación — es el 3er incidente de este tipo.
+- Contador de tests del harness (rtk) parece contar subtests, no funciones (19 funcs
+  → 28 en rtk). *Mejora candidata:* unificar métrica de conteo entre reportes de roles
+  y verificación del orquestador.
