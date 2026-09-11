@@ -95,3 +95,25 @@ cierre de la epic.
   implementer. Capa 2 (HITL) validó los bloqueantes por inspección directa antes de
   decidir. *Mejora candidata:* el profile de cdad-reviewer no fija modelo distinto —
   revisar instalador/routing.
+
+## 2026-09-11 — Ciclo 019-002 completo
+
+- **Incidente de delegación (2do tipo):** el primer intento de RED volvió con resultado
+  vacío (sesión fallida silenciosa, 0 archivos). Reintento inmediato OK. *Mejora
+  candidata:* los task handlers deberían validar "output no vacío" y reintentar
+  automático, o el orquestador verficar `git status` antes de asumir éxito/fallo.
+- **Loop de GREEN (3 defectos encontrados):** (1) import `net/http` faltante en el
+  motor — corrección mecánica aplicada por el orquestador con disclosure (código ya
+  entregado por implementer; su bash bloqueado); (2) bug de fixture de TEST
+  (writeCacheFile sin MkdirAll en subdir) → test-writer aislado (0ba81ab, AP-4);
+  (3) defecto de implementación top_provider no hidratado (json tags) → implementer
+  (mismo patrón pointer→value extendido). Suite final 806/32 -race verde.
+- **Lección de review (capturada por scribe):** cuando el mecanismo se generaliza a N
+  fuentes, el STRING de error deja de ser superficie de contrato — la identidad es
+  errors.Is/As. El bloqueante cosmético se resolvió sin churn (aceptar+documentar).
+- **Hallazgo empírico clave:** `supported_parameters` presente en los 443 modelos de
+  OpenRouter vs 0 en models.dev — la decisión de 001 (no derivar lo que upstream no
+  expone) queda validada y el gap se convirtió en work-item concreto (R5, 019-003).
+- Bash de subagentes (implementer/reviewer/test-writer) bloqueado en TODAS las sesiones
+  del ciclo; orquestador ejecutó gates+commits. Es el incidente más persistente del
+  harness — *mejora candidata PRIORITARIA.*
