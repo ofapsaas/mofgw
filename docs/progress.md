@@ -10,13 +10,14 @@ Estado de features del proyecto mofgw (Memory Bank).
 
 <!-- features actualmente en alguna etapa del ciclo CDAD -->
 
-_(ninguna — 019-001 done, 019-002 no arrancada todavía)_
+_(ninguna — 019-002 done, 019-003 no arrancada todavía)_
 
 ## Done
 
 <!-- features cerradas (mergeadas + Memory Bank actualizado) -->
 
 - **019-001-fetch-modelsdev** (epic 019-provider-sync-automation) — fetch + cache en disco del catálogo models.dev (`internal/modelsdev`). Merged 2026-09-11. Suite 763/30 `-race` verde. Commits: `f99c061` RED, `226728c` GREEN, `c0489bc` POST-AUDIT RED discriminante, `65503d4` fix review. Review REQUEST_CHANGES con B1/B2 resueltos (HITL delegado).
+- **019-002-fetch-zen-go** (epic 019-provider-sync-automation) — motor genérico `internal/modelscache` (extraído de 019-001, generics `Fetch[T]`/`Store[T]`, retry/lock/digest/atomic/TTL idénticos) + fuentes `internal/upstream` (FetchZen/FetchGo: 70/37 items reales; FetchOpenRouter: 443 modelos + auth condicional). Merged 2026-09-11. Suite 806/32 `-race` verde. Commits: `1eddbed` RED, `0ba81ab` fix fixture (AP-4), `7baa598` GREEN, `648188f` review. Review 15/15 P PASS; bloqueante cosmético resuelto por HITL (identidad contractual = errors.Is/As).
 
 ## Queued
 
@@ -38,4 +39,4 @@ _(ninguna — 017-mofgw-client-hot-reload sigue pausada en tdd-audit, referencia
 
 ---
 
-Última actualización: 2026-09-11
+Última actualización: 2026-09-11 (019-002 merged)

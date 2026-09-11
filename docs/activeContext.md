@@ -1,9 +1,30 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-11 (feature 019-001-fetch-modelsdev MERGED — epic 019 provider-sync-automation).
+> Última actualización: 2026-09-11 (feature 019-002-fetch-zen-go MERGED — epic 019 provider-sync-automation).
 
 ## Decisiones recientes (cronología inversa)
+
+### 11 Sep 2026 — Feature 019-002-fetch-zen-go (epic 019-provider-sync-automation) MERGED
+
+### Decisiones relevantes
+
+- **Feature 019-002-fetch-zen-go MERGED — SEGUNDA del epic 019 (regla: catálogo upstream es copia verificada por fuente, no declaración).** Dos fases: **Fase A (refactor, P1-P3)** extrae el mecanismo de 019-001 a paquete genérico `internal/modelscache` (`Spec{BaseURL, Parse, AuthEnv, KnobEnv, Source}`, `Fetch[T]`/`Store[T]` con generics, retry/lock/digest/atomic/TTL **idénticos** incl. decisiones HITL B1/B2 de 019-001: timeout NO reintenta, sidecar-first con rename atómico); `internal/modelsdev` quedó como facade con API bit a bit (aliases de tipo, Spec compuesto, gate: suite byte-intacto verificado). **Fase B (fuentes, P4-P15):** paquete `internal/upstream` con `FetchZen`/`FetchGo` (ModelList fiel por índice; **70 y 37 items reales verificados**), `FetchOpenRouter` (`OpenRouterCatalog`: **443 modelos**, pricing strings→float64, `supported_parameters` presente en todos — complementa la deuda de models.dev para 019-003, `architecture.modality`, `top_provider`, **16 aliases `~` verbatim**), auth condicional OpenRouter (env `OPENROUTER_API_KEY` por llamada, valor jamás en logs), caches separados por fuente (`zen-models.json`/`go-models.json`/`openrouter-models.json`), knob `MOFGW_DISABLE_UPSTREAM_FETCH` aislado.
+- **Decisión review (HITL aceptada): prefijo de errores `modelscache:` aceptado y documentado.** El bloqueante cosmético de la review quedó resuelto no cambiando el string sino reencuadrando el contrato de identidad: la identidad contractual de errores tipados es `errors.Is`/`errors.As`, no el prefijo textual. N.1 (conteo stale del audit) aplicado. **15/15 P PASS.**
+- **Suite final: 806 tests / 32 paquetes `-race` verde.** Commits: `1eddbed` RED, `0ba81ab` fix fixture (AP-4, sesión aislada test-writer), `7baa598` GREEN (+fix top_provider), `648188f` review. `modelsdev_test.go` intacto (gate byte-idéntico).
+- **Cero impacto servidor (I1 de 019-001 se mantiene):** `modelscache` + `upstream` no importan `config/proxy/router/cmd`; `/v1/models` sigue armándose desde `config.yaml`. El contrato cross-feature se GENERALIZA: consumidores 019-003/007 dependen del motor genérico, no de models.dev específico.
+
+### Deuda técnica detectada
+
+- **OpenRouter anónimo vs autenticado SIN contrastar** (sin key en entorno): la rama con key (`OPENROUTER_API_KEY`) está implementada y no-loguea el valor, pero no hay evidencia empírica de la diferencia de shape/catálogo. Verificar en 019-003 (mapeo real con key configurada).
+- **Vocabulario `supported_parameters` de OpenRouter ≠ models.dev:** OpenRouter lo trae en los 443 modelos; models.dev lo omite (0 ocurrencias). El mapeo/normalización es trabajo concreto de **019-003 (R5)**.
+- **Rate limits OpenRouter por monitorear** en **019-006** (systemd-timer + observabilidad).
+- **Sin import-linter en el repo** (deuda de tooling vigente): I1 sigue verificándose manualmente.
+- **Anti-bias degradado (A2 vigente):** el arnés mantiene reviewer e implementer en la misma familia (`mofgw/deepseek-v4-flash`). Revisar instalador/routing (process-log 019).
+
+### Próxima feature en cola
+
+- **019-003-merge-provider-catalog** (epic 019): merge de models.dev por IDs autorizados → providers[].models/pricing/model_metadata; deriva `supported_parameters`. **Dependencias resueltas por 019-002:** fuente de IDs (70/37/443 reales verificados) + catálogo rico OpenRouter que complementa el vacío de models.dev. Incluye el mapeo R5 de vocabulario. Backlog 019-004..007 queued.
 
 ### 11 Sep 2026 — Feature 019-001-fetch-modelsdev (epic 019-provider-sync-automation) MERGED
 
