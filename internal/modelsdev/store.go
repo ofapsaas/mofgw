@@ -57,12 +57,16 @@ func NewStore(path string, ttl time.Duration, lock bool, opts ...Option) *Store 
 
 // DefaultCachePath devuelve el path default del cache (D8):
 // MOFGW_CACHE_DIR (directorio base, override) o os.UserCacheDir()/mofgw,
-// siempre + models-dev.json.
+// siempre + models-dev.json. Si UserCacheDir falla (p.ej. HOME/XDG rotas)
+// y no hay override → os.TempDir()/mofgw (#4: nunca CWD relativo, que
+// dejaría el path dependiente del directorio de ejecución).
 func DefaultCachePath() string {
 	base := os.Getenv("MOFGW_CACHE_DIR")
 	if base == "" {
 		if userCache, err := os.UserCacheDir(); err == nil {
 			base = filepath.Join(userCache, "mofgw")
+		} else {
+			base = filepath.Join(os.TempDir(), "mofgw")
 		}
 	}
 	return filepath.Join(base, "models-dev.json")
@@ -133,6 +137,13 @@ func (s *Store) Get() (*Catalog, error) {
 // persist aplica I4 (digest antes de escribir) y D6: body byte-idéntico al
 // digest del sidecar → ni cache ni sidecar se reescriben (P8). Primer
 // write exitoso sin sidecar previo → cache + sidecar, changed=true.
+//
+// Orden de commit (decisión HITL B2 2026-09-11, review 019-001): sidecar
+// PRIMERO, cache ÚLTIMO — el cache es el punto de commit. Fallo del
+// sidecar → cache byte-intacto + (false, err) (I6 consistente). Fallo del
+// cache tras sidecar OK → sidecar adelantado; el próximo refresh detecta
+// digest ≠ sidecar y reescribe ambos (auto-cura); en el interim Get()
+// sirve el cache viejo (aceptable).
 func (s *Store) persist(raw []byte) (bool, error) {
 	sum := sha256.Sum256(raw)
 	digest := hex.EncodeToString(sum[:])
@@ -143,10 +154,10 @@ func (s *Store) persist(raw []byte) (bool, error) {
 		return false, nil
 	}
 
-	if err := writeFileAtomic(s.Path, raw); err != nil {
+	if err := writeFileAtomic(s.Path+sidecarExt, []byte(digest)); err != nil {
 		return false, fmt.Errorf("modelsdev: persist: %w", err)
 	}
-	if err := writeFileAtomic(s.Path+sidecarExt, []byte(digest)); err != nil {
+	if err := writeFileAtomic(s.Path, raw); err != nil {
 		return false, fmt.Errorf("modelsdev: persist: %w", err)
 	}
 	return true, nil

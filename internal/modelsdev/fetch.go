@@ -6,8 +6,9 @@ package modelsdev
 
 // Fetch HTTP contra models.dev (D1/D9): GET anónimo con solo User-Agent
 // propio (I7), timeout de 10s por intento sobre el ctx del llamador (D9),
-// retry transitorio de exactamente 2 intentos totales (5xx/timeout/network;
-// 4xx no reintenta, P4) y knob de deshabilitación leído POR LLAMADA (D5/R4).
+// retry transitorio de exactamente 2 intentos totales (5xx/network;
+// timeout y 4xx no reintentan, P4/HITL 2026-09-11) y knob de
+// deshabilitación leído POR LLAMADA (D5/R4).
 
 import (
 	"context"
@@ -58,7 +59,7 @@ var (
 // ErrUpstream de provider.go (D9): timeout / network / status / parse.
 type FetchError struct {
 	Attempt int
-	Type    string // "timeout" | "network" | "status" | "parse"
+	Type    string // "timeout" | "network" | "canceled" | "status" | "parse"
 	Status  int    // solo Type == "status"; 0 en el resto
 	Message string
 }
@@ -190,18 +191,27 @@ func attemptFetch(ctx context.Context, o Options, attempt int) (*Catalog, []byte
 	return cat, raw, nil
 }
 
-// classifyTransport distingue timeout (deadline del intento vencido) de
-// network (resto de errores de transporte), a la manera de provider.go.
+// classifyTransport clasifica el error de transporte del intento (#5):
+// DeadlineExceeded → timeout (deadline del intento vencido), Canceled →
+// canceled (cancelación del llamador; precisión semántica hacia 019-004;
+// no reintenta — queda en el default de retryable), resto → network.
 func classifyTransport(attemptCtx context.Context) string {
-	if attemptCtx.Err() != nil {
+	err := attemptCtx.Err()
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
 	}
 	return "network"
 }
 
-// retryable decide si un intento fallido justifica el reintento (D9/P4):
-// 5xx y errores de transporte sí (con el ctx del llamador aún vivo);
-// 4xx y errores de parseo no; un ctx ya cancelado tampoco.
+// retryable decide si un intento fallido justifica el reintento. Decisión
+// HITL 2026-09-11 (B1/P4, review 019-001): timeout NUNCA reintenta — un
+// intento colgado ya consumió su presupuesto (reintentarlo duplicaría la
+// latencia a 2×10s); D9 se reinterpreta: solo errores de transporte
+// network y 5xx son transitorios. 4xx y errores de parseo no; un ctx ya
+// cancelado tampoco.
 func retryable(callerCtx context.Context, fe *FetchError) bool {
 	if callerCtx.Err() != nil {
 		return false
@@ -209,9 +219,11 @@ func retryable(callerCtx context.Context, fe *FetchError) bool {
 	switch fe.Type {
 	case "status":
 		return fe.Status >= 500
-	case "timeout", "network":
+	case "network":
 		return true
-	default: // "parse" y futuros: no transitorios
+	case "timeout":
+		return false // P4/HITL 2026-09-11: presupuesto de intento ya consumido
+	default: // "parse", "canceled" y futuros: no transitorios
 		return false
 	}
 }
