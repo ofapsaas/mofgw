@@ -22,3 +22,25 @@ cierre de la epic.
   decisión de 019-004 (regeneración acotada vs. edición estructural) adelantada al plan.
 - **Digest/anti-rewrite:** lección externa (opencode PR #44282) incorporada al plan:
   comparar sha256 del body para no reescribir caches ni señalizar cambios byte-idénticos.
+
+## 2026-09-11 — Discovery 019-001 (cdad-architect, ses_f6ef80bacffenVeaKRKGjl7Vfn)
+
+- **Corrección al contexto recibido (importante):** `-check-config` NO existe en el
+  binario mofgw — el skill `mofgw-provider-sync` lo anuncia aspiracionalmente (línea 72).
+  Deuda registrada; la validación real hoy es `config.Parse` en proceso. *Mejora
+  candidata:* auditar skills vs. binario real antes de especificar (los skills pueden
+  documentar aspiraciones).
+- **Hallazgo de datos:** `models.dev/api.json` real = 4.59 MB, 213 providers, 7.711
+  modelos; `supported_parameters` y `variants` NO vienen (0 ocurrencias) — opencode los
+  deriva mecánicamente de tool_call/structured_output/temperature/reasoning. La
+  derivación queda para el spec de 019-003.
+- **Delegación:** primer intento con `delegate` falló (cdad-architect es write-capable
+  → requiere `task`). *Mejora candidata:* el contracto "read-only vía delegate" choca
+  con cómo están definidos los perfiles instalados de cdad-architect; ajustar
+  `references/opencode-delegation.md` o los perfiles de agente.
+- **Decisiones HITL lockeadas (delegado):** D1 cache en `~/.cache/mofgw` vía
+  os.UserCacheDir (env override `MOFGW_CACHE_DIR`); D2 binario nuevo `cmd/mofgw-sync`;
+  D3 paquete `internal/modelsdev`; D4 fail-soft en runtime / exit-code al final; D5
+  env `MOFGW_DISABLE_MODELS_FETCH` + flag `--no-fetch`; D6 digest sha256 sidecar
+  `.sha256`; D7 logs slog con eventos fetch_ok/fetch_failed/cache_hit/skipped_identical;
+  D8 TTL default 5m.
