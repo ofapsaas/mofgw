@@ -338,6 +338,44 @@ func TestFetch_Timeout(t *testing.T) {
 	}
 }
 
+// TestFetch_TimeoutBudget_NoRetry es el test DISCRIMINANTE de B1/P4 (review
+// docs/specs/019-001-fetch-modelsdev/review.md, commit 5482e97): el escenario
+// real de P4 es que se AGOTA el presupuesto del intento (FetchTimeout)
+// mientras el ctx del LLAMADOR sigue vivo. TestFetch_Timeout NO discrimina:
+// usa un ctx de 200ms del llamador, y el código actual evita el retry solo
+// porque callerCtx.Err() != nil en retryable — no porque "timeout" no deba
+// reintentar. Aquí el llamador es context.Background() sin deadline: la única
+// señal de corte es el presupuesto de CADA intento.
+//
+// COSTO (documentado, R1): el handler bloquea hasta que el cliente corta
+// (r.Context().Done()), así que cada intento consume FetchTimeout (10s) real
+// — FetchTimeout es const, no se puede acelerar sin tocar el paquete (que
+// está fuera de alcance del test-writer). Por tanto:
+//   - contra el código actual ("timeout" retryable → RED esperado):
+//     2 intentos ≈ 20s antes del assert;
+//   - contra el código corregido (timeout NUNCA retryable → GREEN):
+//     1 intento ≈ 10s.
+func TestFetch_TimeoutBudget_NoRetry(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-r.Context().Done() // upstream colgado: nunca responde; solo corta el budget del intento
+	}))
+	t.Cleanup(srv.Close)
+
+	// Decisión HITL (review 5482e97, B1): P4 manda — un intento colgado ya
+	// consumió su presupuesto; reintentarlo duplicaría la latencia (2×10s).
+	// D9 reinterpretado: solo network/5xx son transitorios; timeout NO
+	// reintenta. El código actual reintentaría → hits==2 (RED esperado).
+	_, _, err := Fetch(context.Background(), WithBaseURL(srv.URL), WithClient(srv.Client()))
+	if err == nil {
+		t.Fatal("timeout del presupuesto de intento no surfaced como error")
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("hits = %d, want 1 (un intento colgado ya consumió su presupuesto: timeout NO reintenta, P4)", n)
+	}
+}
+
 func TestFetch_RetryTransient(t *testing.T) {
 	f := newFakeUpstream(t, func(hit int64) (int, []byte) {
 		if hit == 1 {
@@ -477,6 +515,17 @@ func TestRefresh_SkipsIdenticalBody(t *testing.T) {
 	writeSidecar(t, path, fixtureBytes)
 	beforeCache := readBytes(t, path)
 	beforeSide := readBytes(t, path+".sha256")
+	// Oráculo mtime (review 5482e97, opcional #3): la byte-igualdad no prueba
+	// "no reescribe" — una reescritura con el mismo contenido pasaría el
+	// assert de bytes. El mtime de cache y sidecar debe quedar intacto (P8).
+	beforeCacheInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat cache pre-Refresh: %v", err)
+	}
+	beforeSideInfo, err := os.Stat(path + ".sha256")
+	if err != nil {
+		t.Fatalf("stat sidecar pre-Refresh: %v", err)
+	}
 	store := newTestStore(t, path, DefaultCacheTTL, false, f)
 
 	// force=true garantiza que HAYA fetch aunque el mtime esté fresco: así el
@@ -497,6 +546,22 @@ func TestRefresh_SkipsIdenticalBody(t *testing.T) {
 	}
 	if !bytes.Equal(readBytes(t, path+".sha256"), beforeSide) {
 		t.Fatal("sidecar fue reescrito con body idéntico (viola I4)")
+	}
+	afterCacheInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat cache post-Refresh: %v", err)
+	}
+	afterSideInfo, err := os.Stat(path + ".sha256")
+	if err != nil {
+		t.Fatalf("stat sidecar post-Refresh: %v", err)
+	}
+	if !afterCacheInfo.ModTime().Equal(beforeCacheInfo.ModTime()) {
+		t.Fatalf("mtime del cache cambió con body idéntico (%v → %v): reescritura, viola P8",
+			beforeCacheInfo.ModTime(), afterCacheInfo.ModTime())
+	}
+	if !afterSideInfo.ModTime().Equal(beforeSideInfo.ModTime()) {
+		t.Fatalf("mtime del sidecar cambió con body idéntico (%v → %v): reescritura, viola P8",
+			beforeSideInfo.ModTime(), afterSideInfo.ModTime())
 	}
 }
 
@@ -690,6 +755,21 @@ func TestFetchDisabled_Knob(t *testing.T) {
 		}
 		if n := f.hits.Load(); n != 1 {
 			t.Fatalf("hits = %d, want 1 (knob=0 fetchea)", n)
+		}
+	})
+
+	t.Run("knob_vacio_es_comportamiento_normal", func(t *testing.T) {
+		t.Setenv(knob, "") // P13/I8 + review 5482e97 nit #6: "" → fetch-on
+		f := newFakeUpstream(t, constResp(200, fixtureBytes))
+		cat, _, err := Fetch(ctx, WithBaseURL(f.srv.URL), WithClient(f.srv.Client()))
+		if err != nil {
+			t.Fatalf("Fetch con knob vacío: %v, want comportamiento normal", err)
+		}
+		if cat == nil {
+			t.Fatal("catálogo nil con knob vacío")
+		}
+		if n := f.hits.Load(); n != 1 {
+			t.Fatalf("hits = %d, want 1 (knob vacío fetchea)", n)
 		}
 	})
 }
