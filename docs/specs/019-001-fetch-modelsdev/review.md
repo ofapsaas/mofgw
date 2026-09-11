@@ -58,4 +58,4 @@ P1-P17: 16/17 PASS. **P4 FAIL parcial** (B1). Test sobrante: 0. Test faltante: 1
 
 ## Estado
 
-Status: **Reviewed** — REQUEST_CHANGES; fixes en loop (test-writer RED → implementer GREEN) el 2026-09-11.
+Status: **Reviewed** — REQUEST_CHANGES; bloqueantes B1/B2 resueltos (c0489bc test discriminante + 65503d4 fix), suite 763/30 -race verde. Gate 4->5 cerrado el 2026-09-11.
