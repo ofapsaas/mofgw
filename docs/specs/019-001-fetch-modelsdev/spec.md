@@ -21,7 +21,7 @@ motivacion_externa: "Epic 019: mofgw mantiene config.yaml a mano; opencode resue
   var ErrFetchDisabled, ErrLockBusy error        // errores tipados
 
   type Catalog struct{ Providers map[string]Provider } // tipado, ver P15
-  func Fetch(ctx context.Context) (*Catalog, []byte, error)
+  func Fetch(ctx context.Context, opts ...Option) (*Catalog, []byte, error) // E1: opts variádico (resolución test-audit 2026-09-11, fiel a D3)
   func ParseCatalog(raw []byte) (*Catalog, error)
 
   type Store struct{ Path string; TTL time.Duration; Lock bool /* + campos privados */ }
