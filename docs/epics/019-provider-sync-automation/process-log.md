@@ -44,3 +44,18 @@ cierre de la epic.
   env `MOFGW_DISABLE_MODELS_FETCH` + flag `--no-fetch`; D6 digest sha256 sidecar
   `.sha256`; D7 logs slog con eventos fetch_ok/fetch_failed/cache_hit/skipped_identical;
   D8 TTL default 5m.
+
+## 2026-09-11 — Etapa 2 (spec 019-001) + inicio TDD
+
+- Spec draft materializado y committeado (9a4f1ee) desde output del arquitecto; aprobado
+  como HITL delegado (837639a). 17 P / 10 I / 12 C; RED por compilación.
+- **Hallazgo de routing (nuevo):** los perfiles instalados de agentes invierten el
+  contrato CDAD: `cdad-architect` es write-capable (requiere task) y `cdad-test-writer`
+  es read-only con bash DENIED (requiere delegate, no puede ni correr la suite).
+  *Mejora candidata (importante):* alinear perfiles instalados con el contrato de roles
+  (architect read-only; test-writer write en tests/** + bash para run de tests) o
+  documentar en references/opencode-delegation.md la matriz real instalada. Workaround
+  actual: role-work conductual + orquestador ejecuta las verificaciones (build/vet/test)
+  y materializa artefactos.
+- **Baseline verificado por orquestador (evidencia):** go build OK, go vet OK,
+  `go test ./... -count=1` = 733 passed / 29 pkgs. AUDIT delegado (striped-black-bedbug).
