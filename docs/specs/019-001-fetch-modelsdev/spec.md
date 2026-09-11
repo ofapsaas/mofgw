@@ -1,7 +1,7 @@
 ---
 id: 019-001-fetch-modelsdev
 title: Fetch + cache en disco del catálogo models.dev (paquete internal/modelsdev)
-status: draft
+status: approved
 epic: 019-provider-sync-automation
 date: 2026-09-11
 created: 2026-09-11
@@ -126,4 +126,4 @@ motivacion_externa: "Epic 019: mofgw mantiene config.yaml a mano; opencode resue
 
 ## Estado
 
-Status: **Draft** — Pendiente aprobación del usuario (HITL delegado: Ofap)
+Status: **Approved** by Ofap (HITL delegado, pedido explícito de Pablo — goal mode) on 2026-09-11
