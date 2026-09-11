@@ -30,7 +30,7 @@ Suite completa 763/30 `-race` verde, build/vet OK (post-merge 019-001).
 | B9 | P14 | TestEngineLog_SourceAttribute | 4 specs: upstream → source presente; modelsdev (Source="") → ausencia (complemento del P17 de 001) |
 | B10 | P15 | TestZenStore_Wiring, TestGoStore_Wiring, TestOpenRouterStore_Wiring | por fuente: fetch+changed, Get tipado, digest skip (force), fail-soft |
 
-Total: **14 tests nuevos** en un archivo. Fixtures definidos (OpenRouter mínimo representativo + zen/go 2 items) inline en el audit.
+Total: **16 tests nuevos** en un archivo. Fixtures definidos (OpenRouter mínimo representativo + zen/go 2 items) inline en el audit.
 
 ## Riesgos RED y mitigaciones
 
