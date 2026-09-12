@@ -52,6 +52,15 @@ type Model struct {
 	Modalities Modalities
 	Limit      Limit
 	Cost       Cost
+	// StructuredOutput: capability derivada a supported_parameters
+	// (019-003 B11; additive zero-value, campo ausente → false).
+	StructuredOutput bool
+	// Temperature: capability derivada a supported_parameters (019-003 B11).
+	Temperature bool
+	// ReasoningEffort: values de reasoning_options[{type:"effort"}] tal cual
+	// (019-003 B10/P9). Schema variable upstream (strings u objetos): se
+	// extrae solo cuando hay objects {type,values}; si no, nil sin error.
+	ReasoningEffort []string
 }
 
 // Provider es un provider del catálogo; Models está keyed por id del
@@ -82,13 +91,16 @@ type rawProvider struct {
 }
 
 type rawModel struct {
-	Name       string         `json:"name"`
-	Attachment *bool          `json:"attachment"`
-	Reasoning  *bool          `json:"reasoning"`
-	ToolCall   *bool          `json:"tool_call"`
-	Modalities *rawModalities `json:"modalities"`
-	Limit      *rawLimit      `json:"limit"`
-	Cost       *rawCost       `json:"cost"`
+	Name             string          `json:"name"`
+	Attachment       *bool           `json:"attachment"`
+	Reasoning        *bool           `json:"reasoning"`
+	ToolCall         *bool           `json:"tool_call"`
+	Modalities       *rawModalities  `json:"modalities"`
+	Limit            *rawLimit       `json:"limit"`
+	Cost             *rawCost        `json:"cost"`
+	StructuredOutput *bool           `json:"structured_output"`
+	Temperature      *bool           `json:"temperature"`
+	ReasoningOptions json.RawMessage `json:"reasoning_options"`
 }
 
 type rawModalities struct {
@@ -140,10 +152,13 @@ func ParseCatalog(raw []byte) (*Catalog, error) {
 // (values, P15).
 func (r rawModel) toModel() Model {
 	m := Model{
-		Name:       r.Name,
-		Attachment: deref(r.Attachment),
-		Reasoning:  deref(r.Reasoning),
-		ToolCall:   deref(r.ToolCall),
+		Name:             r.Name,
+		Attachment:       deref(r.Attachment),
+		Reasoning:        deref(r.Reasoning),
+		ToolCall:         deref(r.ToolCall),
+		StructuredOutput: deref(r.StructuredOutput),
+		Temperature:      deref(r.Temperature),
+		ReasoningEffort:  extractEffortValues(r.ReasoningOptions),
 	}
 	if r.Modalities != nil {
 		m.Modalities = Modalities{Input: r.Modalities.Input, Output: r.Modalities.Output}
@@ -162,4 +177,31 @@ func deref(b *bool) bool {
 		return false
 	}
 	return *b
+}
+
+// rawReasoningOption es un item de reasoning_options de models.dev (schema
+// variable: a veces array de strings, a veces array de objects con
+// {type,values}). Solo los objects con type "effort" aportan levels (P9).
+type rawReasoningOption struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values"`
+}
+
+// extractEffortValues extrae las values de reasoning_options[{type:
+// "effort"}], tal cual (019-003 B10/P9). Cualquier otro shape (array de
+// strings, vacío, ausente) → nil sin error (P14/I9).
+func extractEffortValues(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var opts []rawReasoningOption
+	if err := json.Unmarshal(raw, &opts); err != nil {
+		return nil
+	}
+	for _, o := range opts {
+		if o.Type == "effort" && len(o.Values) > 0 {
+			return o.Values
+		}
+	}
+	return nil
 }

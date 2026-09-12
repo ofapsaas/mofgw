@@ -49,6 +49,9 @@ type OpenRouterModel struct {
 	SupportedParameters []string
 	Architecture        OpenRouterArchitecture
 	TopProvider         OpenRouterTopProvider
+	// AliasTargetSlug es el slug del target de un alias "~" (019-003 D3):
+	// `alias_target.slug` del raw, pointer→string tolerante (schema variable).
+	AliasTargetSlug string
 }
 
 // OpenRouterPricing es el precio por token (P7): upstream sirve strings;
@@ -95,6 +98,11 @@ type rawOpenRouterModel struct {
 	SupportedParameters []string                   `json:"supported_parameters"`
 	Architecture        *rawOpenRouterArchitecture `json:"architecture"`
 	TopProvider         *rawOpenRouterTopProvider  `json:"top_provider"`
+	AliasTarget         *rawAliasTarget            `json:"alias_target"`
+}
+
+type rawAliasTarget struct {
+	Slug string `json:"slug"`
 }
 
 type rawOpenRouterPricing struct {
@@ -161,6 +169,9 @@ func (r rawOpenRouterModel) toOpenRouterModel() OpenRouterModel {
 			ContextLength:       derefInt(r.TopProvider.ContextLength),
 			MaxCompletionTokens: derefInt(r.TopProvider.MaxCompletionTokens),
 		}
+	}
+	if r.AliasTarget != nil {
+		m.AliasTargetSlug = r.AliasTarget.Slug
 	}
 	return m
 }

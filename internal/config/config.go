@@ -150,6 +150,17 @@ type ProviderConfig struct {
 	// solo sale hacia providers con knob activo (I2: no leak).
 	OpenCodeSession bool `yaml:"opencode_session"`
 
+	// SyncSource: knob declarativo de asociación provider→fuente (019-003
+	// D2/P14): ""|zen|go|openrouter|modelsdev. "" (default) = auto
+	// determinístico por base_url (I3: declarativo jamás inferido; el auto
+	// es una regla exacta publicada). Valor inválido → error de carga
+	// fail-fast (P14).
+	SyncSource string `yaml:"sync_source"`
+	// SyncMirror: id de provider de models.dev usado como espejo de verdad
+	// de metadata/pricing (019-003 D4). Free-string al cargar; la validación
+	// de existencia es warning del merge, no de carga (P14).
+	SyncMirror string `yaml:"sync_mirror"`
+
 	// APIKey se puebla al resolver APIKeyEnv (nunca viene del YAML).
 	APIKey string `yaml:"-"`
 
@@ -672,6 +683,9 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("config: provider %q: unknown provider type %q", p.ID, p.Type)
 		}
+		if p.SyncSource != "" && !validSyncSource(p.SyncSource) {
+			return fmt.Errorf("config: provider %q: sync_source %q inválido (zen|go|openrouter|modelsdev)", p.ID, p.SyncSource)
+		}
 		if len(p.Models) == 0 {
 			return fmt.Errorf("config: provider %q: al menos un model es obligatorio", p.ID)
 		}
@@ -810,4 +824,14 @@ func (c *Config) resolveKeys() error {
 		c.Embeddings.APIKey = v
 	}
 	return nil
+}
+
+// validSyncSource reporta si el valor de sync_source pertenece al
+// vocabulario (019-003 P14).
+func validSyncSource(v string) bool {
+	switch v {
+	case "zen", "go", "openrouter", "modelsdev":
+		return true
+	}
+	return false
 }
