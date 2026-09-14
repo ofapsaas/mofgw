@@ -20,6 +20,7 @@ Uso:
   python3 projects/mofgw/scripts/burn-component.py              # últimos 7 días
   python3 projects/mofgw/scripts/burn-component.py --days 14
   python3 projects/mofgw/scripts/burn-component.py --json
+  python3 projects/mofgw/scripts/burn-component.py --save docs/burn-component-weekly.md
   python3 projects/mofgw/scripts/burn-component.py --selftest   # suite interna
 
 Read-only. Aproximaciones v1 documentadas en el output.
@@ -168,6 +169,24 @@ def selftest():
     print(f'--selftest: OK ({len(got)} componentes sintéticos)')
 
 
+def render(days, comp, total, windows):
+    now = datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')
+    lines = [f'## Burn por componente — ventana {days} días (corte {now})\n']
+    lines += ['| Componente | USD | % |', '|---|---|---|']
+    for k, v in sorted(comp.items(), key=lambda x: -x[1]):
+        pct = f'{100 * v / total:.1f}%' if total else '—'
+        lines.append(f'| {k} | ${v:.2f} | {pct} |')
+    lines.append(f'| **TOTAL propio** | **${total:.2f}** | 100% |')
+    lines.append('\nAproximaciones v1: (1) split ofap-openclaw por arranque de cron '
+                 'en el intervalo del delta (~1h); (2) guardias corren dentro de '
+                 'ciclos HB — no separables aún; (3) excludes blovx-*.')
+    lines.append('\n### Cross-check: tokens por cron job (ventana)\n')
+    lines += ['| Cron job | runs | tokens |', '|---|---|---|']
+    for name, runs, tokens in cron_tokens_by_job(days):
+        lines.append(f'| {name} | {runs} | {tokens or 0:,} |')
+    return '\n'.join(lines) + '\n'
+
+
 def main():
     if '--selftest' in sys.argv:
         selftest()
@@ -187,22 +206,13 @@ def main():
                           'cron_runs': len(windows)}, indent=2))
         return
 
-    now = datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')
-    print(f'## Burn por componente — ventana {days} días (corte {now})\n')
-    print('| Componente | USD | % |')
-    print('|---|---|---|')
-    for k, v in sorted(comp.items(), key=lambda x: -x[1]):
-        pct = f'{100 * v / total:.1f}%' if total else '—'
-        print(f'| {k} | ${v:.2f} | {pct} |')
-    print(f'| **TOTAL propio** | **${total:.2f}** | 100% |')
-    print('\nAproximaciones v1: (1) split ofap-openclaw por arranque de cron '
-          'en el intervalo del delta (~1h); (2) guardias corren dentro de '
-          'ciclos HB — no separables aún; (3) excludes blovx-*.')
-    print('\n### Cross-check: tokens por cron job (ventana)\n')
-    print('| Cron job | runs | tokens |')
-    print('|---|---|---|')
-    for name, runs, tokens in cron_tokens_by_job(days):
-        print(f'| {name} | {runs} | {tokens or 0:,} |')
+    text = render(days, comp, total, windows)
+    if '--save' in sys.argv:
+        out = Path(sys.argv[sys.argv.index('--save') + 1]).expanduser()
+        out.write_text(text)
+        print(f'saved: {out} ({len(text)} bytes)')
+        return
+    print(text, end='')
 
 
 if __name__ == '__main__':
