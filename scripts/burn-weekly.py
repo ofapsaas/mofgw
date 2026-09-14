@@ -120,7 +120,46 @@ def main():
             '%s $%.2f' % (c, v) for c, v in
             sorted(per_client_total.items(), key=lambda kv: -kv[1])))
     lines.append('')
+    component_section(lines, days)
     print('\n'.join(lines))
+
+
+def component_section(lines, days):
+    """Apéndice: burn por componente (Bet G, S42) vía burn_component.
+
+    Best-effort: si el módulo o sus fuentes fallan, la sección se omite
+    con una nota (el reporte semanal no debe romperse por el addon).
+    """
+    try:
+        import importlib.util
+        mod_path = Path(__file__).resolve().parent / 'burn-component.py'
+        spec = importlib.util.spec_from_file_location('burn_component', mod_path)
+        bc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bc)
+    except Exception as exc:  # noqa: BLE001 — addon informativo
+        lines.append('> (burn por componente omitido: %s)' % exc)
+        return
+    try:
+        intervals = bc.load_burn_intervals(days)
+        windows = bc.load_cron_windows(days)
+        comp = bc.attribute(intervals, windows)
+    except Exception as exc:  # noqa: BLE001 — addon informativo
+        lines.append('> (burn por componente omitido: %s)' % exc)
+        return
+    total = sum(comp.values())
+    lines.append('')
+    lines.append('## 🔬 Burn por componente (misma ventana)')
+    lines.append('')
+    lines.append('| Componente | USD | % |')
+    lines.append('|------------|-----|---|')
+    for k, v in sorted(comp.items(), key=lambda x: -x[1]):
+        pct = ('%.1f%%' % (100 * v / total)) if total else '—'
+        lines.append('| %s | $%.2f | %s |' % (k, v, pct))
+    lines.append('| **TOTAL propio** | **$%.2f** | 100%% |' % total)
+    lines.append('')
+    lines.append('_Aprox v1: split ofap-openclaw por arranque de cron en el '
+                 'intervalo (~1h); guardias no separables de heartbeat; '
+                 'excluye blovx-*. Detalle: burn-component.py._')
 
 
 if __name__ == '__main__':
