@@ -10,7 +10,7 @@ Estado de features del proyecto mofgw (Memory Bank).
 
 <!-- features actualmente en alguna etapa del ciclo CDAD -->
 
-_(ninguna — 019-002 done, 019-003 no arrancada todavía)_
+_(ninguna — 019-003 done, 019-004 no arrancada todavía)_
 
 ## Done
 
@@ -18,14 +18,13 @@ _(ninguna — 019-002 done, 019-003 no arrancada todavía)_
 
 - **019-001-fetch-modelsdev** (epic 019-provider-sync-automation) — fetch + cache en disco del catálogo models.dev (`internal/modelsdev`). Merged 2026-09-11. Suite 763/30 `-race` verde. Commits: `f99c061` RED, `226728c` GREEN, `c0489bc` POST-AUDIT RED discriminante, `65503d4` fix review. Review REQUEST_CHANGES con B1/B2 resueltos (HITL delegado).
 - **019-002-fetch-zen-go** (epic 019-provider-sync-automation) — motor genérico `internal/modelscache` (extraído de 019-001, generics `Fetch[T]`/`Store[T]`, retry/lock/digest/atomic/TTL idénticos) + fuentes `internal/upstream` (FetchZen/FetchGo: 70/37 items reales; FetchOpenRouter: 443 modelos + auth condicional). Merged 2026-09-11. Suite 806/32 `-race` verde. Commits: `1eddbed` RED, `0ba81ab` fix fixture (AP-4), `7baa598` GREEN, `648188f` review. Review 15/15 P PASS; bloqueante cosmético resuelto por HITL (identidad contractual = errors.Is/As).
+- **019-003-merge-provider-catalog** (epic 019-provider-sync-automation) — paquete puro `internal/catalogmerge` (Plan/ProviderPlan/Merge): IR de sync determinístico con matching strip-vendor/alias-2-saltos, espejo de pricing/metadata (defaults zen→opencode, go→opencode-go), derivación de Thinking/supported_parameters (extensión aditiva modelsdev), fail-soft por fuente + knobs `sync_source`/`sync_mirror`. Merged 2026-09-16. Suite 836/33 `-race` verde (re-corrida fresca de merge; 1 flake preexistente `TestE2E010002_TTLExpiry` documentado). Commits: `b73694a` RED, `0b9d9fc` GREEN, `0f0fa33` review (APPROVE 0 bloqueantes), `047a064` sign-off HITL S1/S2. Findings S1 (enmienda I7) y S2 (aclaración P2) resueltos y documentados por HITL.
 
 ## Queued
 
 <!-- features identificadas pero no arrancadas todavía -->
 
 Epic **019-provider-sync-automation** (backlog; plan: `docs/epics/019-provider-sync-automation/plan.md`):
-- 019-002-fetch-zen-go (fetch listas Zen/Go/OpenRouter; condicional a API keys)
-- 019-003-merge-provider-catalog (merge models.dev por IDs autorizados → providers[].models/pricing/model_metadata; deriva supported_parameters)
 - 019-004-atomic-write-validate (write atómico config.yaml + validación `config.Parse` pre-commit + binario `cmd/mofgw-sync`)
 - 019-005-reload-signal (SIGHUP si hot-reload; si no, restart — 017 pausada)
 - 019-006-systemd-timer (timer 60 min + logging estructurado + modo `--once`)

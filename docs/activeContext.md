@@ -1,9 +1,31 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-11 (feature 019-002-fetch-zen-go MERGED — epic 019 provider-sync-automation).
+> Última actualización: 2026-09-16 (feature 019-003-merge-provider-catalog MERGED — epic 019 provider-sync-automation).
 
 ## Decisiones recientes (cronología inversa)
+
+### 16 Sep 2026 — Feature 019-003-merge-provider-catalog (epic 019-provider-sync-automation) MERGED
+
+### Decisiones relevantes
+
+- **Feature 019-003-merge-provider-catalog MERGED — TERCERA del epic 019 (entrega el IR de sync que 019-004 escribirá en config.yaml).** Paquete nuevo **`internal/catalogmerge` puro** (sin red, sin disco, sin `config.Load`; todo inyectado por parámetro, D9/P13): `Merge(...) → Plan{Providers, SourcesUsed, Warnings}` con `ProviderPlan{ProviderID, Source, Models, Pricing, Metadata, Warnings}` — pricing/metadata keyed por ID de acceso (I2). Asociación provider→fuente con **knobs declarativos `sync_source`/`sync_mirror`** (convención repo: declarativo, jamás inferido; default `""` = auto determinística por `base_url` contra consts de `upstream`; verificado contra el config vivo: 8×go, 8×zen, 1×openrouter, resto→modelsdev). Matching: strip de vendor OpenRouter + **alias de 2 saltos** vía `alias_target.slug` (extensión aditiva única en `internal/upstream`: `AliasTargetSlug`). Espejo de verdad pricing/metadata: defaults `zen→opencode`, `go→opencode-go`, `openrouter→modelsdev directo`; fallback alfabético-con-cost determinístico. **Extensión aditiva de `modelsdev`** (`StructuredOutput`/`Temperature`/`ReasoningEffort`, zero-value) para derivar `Thinking` y `supported_parameters` (P9/P10). **Determinismo byte a byte** (P11, deep-equal 2 corridas) y **fail-soft por fuente** (P12; `SourcesUsed`/`Warnings` exponen la degradación para que 004 decida).
+- **Findings S1/S2 de la review resueltos por HITL (Pablo/Ofap, sign-off 2026-09-16 — gate 4→5 desbloqueado).** **S1 (L2-I7):** enmienda I7 en spec.md — `modelsdev` permite extensión aditiva zero-value requerida por P9/P10 (la implementación GREEN ya la materializó; suite 001 verde sin cambios de comportamiento). **S2 (L2-P2):** aclaración en P2 — `Models`(zen/go) = lista declarada en config (`prov.Models`) **enriquecida** con pricing/metadata; la paridad del set de IDs upstream compete a **019-004**. **L2-P7** queda como limitación documentada (`tiers`/`context_over_200k` no tipados en modelsdev → warning de descarte solo alcanzable vía `cache_write≠0`; candidato a extensión en 019-hardening).
+- **Review: APPROVE, 0 bloqueantes** (2026-09-12). Verificación P1-P14 por postcondición; auditoría test↔postcondición C1-C14 completa (17 tests nuevos B1-B13, RED `b73694a` → GREEN `0b9d9fc` sin tocar tests). Anti-bias degradado (A2) nuevamente disclosado: reviewer corrió en la misma familia (deepseek-v4-flash) que el implementer — mitigaciones estructurales presentes, validación externa recomendada antes de deploy.
+- **Suite final del merge: 836 tests / 33 paquetes `-race` verde** (re-corrida fresca del orquestador 2026-09-16, build OK + vet limpio; 1er run registró 1 flake de `TestE2E010002_TTLExpiry` del epic 010 — preexistente, pasa 5/5 aislado y el suite completo pasa de corrida). Commits: `b73694a` RED (17 tests B1-B13), `0b9d9fc` GREEN, `0f0fa33` review, `047a064` sign-off HITL S1/S2. Evidencia de no-regresión: `git diff --stat 0b9d9fc..HEAD` sin archivos `.go` antes del merge.
+- **Cero impacto servidor (I1):** `catalogmerge` importa solo `internal/config` (tipos + 2 knobs), `internal/modelsdev`, `internal/upstream` y stdlib; jamás `proxy`/`router`/`cmd`/`modelscache`; el servidor no importa el paquete. Cambio a `internal/config` exclusivamente aditivo (P14: knobs nuevos, configs sin knobs cargan idéntico).
+
+### Deuda técnica detectada
+
+- **L2-P7 (limitación documentada):** warning de descarte de `tiers`/`context_over_200k` solo parcialmente satisfacible (los campos se pierden en el parse de modelsdev) — extensión aditiva candidata en 019-hardening.
+- **Paridad del set de IDs a upstream NO cubierta:** el merge enriquece el subset declarado sin ampliarlo (S2 aclarado) — decisión pendiente en el spec de **019-004**.
+- **OpenRouter anónimo vs autenticado sigue SIN contrastar** (deuda heredada de 002; pendiente de evidencia con key configurada).
+- **Anti-bias degradado (A2, 3ª recurrencia en el epic):** reviewer e implementer en la misma familia de modelo — revisar instalador/routing de perfiles.
+- **Flake `TestE2E010002_TTLExpiry`:** test TTL del epic 010 sensible a carga bajo `-race` en suite completa (pasa aislado y en re-corrida). Candidato a hardening.
+
+### Próxima feature en cola
+
+- **019-004-atomic-write-validate** (epic 019): serialización del IR `catalogmerge.Plan` → config.yaml con write atómico + validación `config.Parse` pre-commit + binario `cmd/mofgw-sync`. Decide: regeneración acotada vs. edición estructural (yaml.v3 no preserva comentarios). Backlog 019-005..007 queued. Epic 020 planificado y en cola tras el cierre de 019.
 
 ### 11 Sep 2026 — Feature 019-002-fetch-zen-go (epic 019-provider-sync-automation) MERGED
 
