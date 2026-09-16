@@ -31,6 +31,10 @@ Epic **019-provider-sync-automation** (backlog; plan: `docs/epics/019-provider-s
 - 019-006-systemd-timer (timer 60 min + logging estructurado + modo `--once`)
 - 019-007-build-snapshot (snapshot embebido del catálogo en build; fallback offline — depende de 001)
 
+Epic **020-mofgw-consumption-report** (planificado 16 Sep 2026, arranca cuando 019-003 libere el epic 019; plan: `docs/epics/020-mofgw-consumption-report/plan.md`):
+- 020-001-registry-cost-model (model + cost_usd_src + cost_usd_up nullable en TerminalEvent; captura usage.cost de OpenRouter — verificado empíricamente)
+- 020-002-metrics-summary-html (GET /v1/metrics/summary?date= → HTML streaming sobre registry.jsonl + rotados)
+
 ## Blocked
 
 <!-- features que dependen de algo externo -->
@@ -39,4 +43,4 @@ _(ninguna — 017-mofgw-client-hot-reload sigue pausada en tdd-audit, referencia
 
 ---
 
-Última actualización: 2026-09-11 (019-002 merged)
+Última actualización: 2026-09-16 (epic 020 planificado y en cola)
