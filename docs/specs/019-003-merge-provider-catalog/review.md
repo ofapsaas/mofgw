@@ -92,4 +92,13 @@ Toda postcondición P1-P14 tiene al menos un test (C1-C13); C13 pureza implícit
 
 Implementación de alta calidad, determinística, pura, aditiva y no-regresiva; suite completa verde con evidencia. **APPROVE con 0 bloqueantes.** Los 2 findings S1 (I7 enmienda) y S2 (P2 claridad) requieren sign-off/documentedación explícita del HITL antes de merge, y el reviewer recomienda registro en `.cdad-state.json`. Próximo paso: merge + memory bank (etapa 5, cdad-scribe).
 
+## Sign-off HITL (2026-09-16)
+
+Pablo/Ofap (HITL — owner técnico mofgw) aprobó el desbloqueo del gate 4→5:
+
+- **S1/L2-I7 — ACEPTADO + documentado.** Enmienda I7 en `spec.md`: `modelsdev` ahora permite extensión aditiva zero-value (`StructuredOutput`/`Temperature`/`ReasoningEffort`), requerida por P9/P10. La implementación GREEN es correcta y aditiva; el contrato la refleja.
+- **S2/L2-P2 — CONFIRMADO + documentado.** Aclaración en P2 del `spec.md`: `Models`(zen/go) = lista declarada en config (`prov.Models`) enriquecida con pricing/metadata; la paridad del set de IDs upstream compete a 019-004.
+- **L2-P7** queda como limitación documentada (candidato a extensión en 019-hardening).
+
 Status: Review **APPROVE** by cdad-reviewer on 2026-09-12
+Status: **Sign-off S1/S2 (HITL)** by Pablo/Ofap on 2026-09-16 — gate 4→5 DESBLOQUEADO, avanza a merge + memory bank (etapa 5)

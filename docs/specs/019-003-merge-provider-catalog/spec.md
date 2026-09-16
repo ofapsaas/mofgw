@@ -41,7 +41,7 @@ motivacion_externa: "Epic 019: config.yaml se mantiene a mano y diverge del upst
 ## Contrato (postcondiciones)
 
 - **P1 — Asociación de fuente.** (a) `sync_source` seteado → gana (sin importar base_url). (b) `sync_source: ""` → auto determinística: base_url (trim `/`) match exacto contra consts de `upstream` sin sufijo `/models` → esa fuente; sin match → `modelsdev`; `type: subprocess` → `modelsdev`. Casos del config vivo como test.
-- **P2 — Matching corto directo.** Los IDs de la lista de acceso de zen/go se machean contra las keys de `modelsdev.Catalog.Providers`: presentes → entran al `ProviderPlan`; `Models` es **la lista de acceso completa** (zen/go) o **el subset declarado** (openrouter/modelsdev — nunca se agregan IDs).
+- **P2 — Matching corto directo.** Los IDs de la lista de acceso de zen/go se machean contra las keys de `modelsdev.Catalog.Providers`: presentes → entran al `ProviderPlan`; `Models` es **la lista de acceso completa** (zen/go) o **el subset declarado** (openrouter/modelsdev — nunca se agregan IDs). **Aclaración HITL 2026-09-16 (review S2/L2-P2):** la "lista de acceso" de zen/go es el `models[]` declarado en config.yaml (`prov.Models`) — los tests la congelan así; el merge **enriquece** pricing/metadata del subset declarado y **NO amplía el set a paridad upstream**. Si 019-004 requiere que el set crezca a paridad upstream, compete a su spec.
 - **P3 — Strip de vendor OpenRouter.** Un modelo OR `z-ai/glm-5.3-flash` presente en models.dev como key `glm-5.3-flash` produce un plan cuyo `Models` contiene `z-ai/glm-5.3-flash` (el ID de ACCESO) y cuyo `Pricing`/`Metadata` están keyed por ese mismo ID (el strip es SOLO para encontrar la metadata, I2).
 - **P4 — Alias de 2 saltos.** `~deepseek/deepseek-v4-flash-latest` con `alias_target.slug == "deepseek/deepseek-v4-flash-0731"` → strip vendor → `deepseek-v4-flash-0731` en models.dev (sin espejo → fallback D4) → pricing/metadata resueltos; el ID en el plan sigue siendo `~deepseek/deepseek-v4-flash-latest`. Alias sin `alias_target` → omitido + warning.
 - **P5 — Ausencia en models.dev.** ID que no existe en ninguna key de models.dev → NO entra a `Pricing`/`Metadata`, con `Warning` del provider; el merge NO falla.
@@ -63,7 +63,7 @@ motivacion_externa: "Epic 019: config.yaml se mantiene a mano y diverge del upst
 - **I4 — Fail-soft de fuente, fail-loud de datos.** Fuente ausente → warning + plan parcial; entrada ilegal → error (los catálogos llegan ya parseados).
 - **I5 — No inventar.** Solo se derivan campos con regla mecánica determinística; lo no derivable se omite o se preserva (ThinkingDefault → 004).
 - **I6 — Sin mutación de entradas.** Catálogos/providers tratados como inmutables.
-- **I7 — Cambios a 001/002 mínimos y aditivos.** `upstream`: SOLO `AliasTargetSlug`; `modelsdev`: sin cambios; suites de ambas intactas y verdes (gates).
+- **I7 — Cambios a 001/002 mínimos y aditivos.** `upstream`: SOLO `AliasTargetSlug`; `modelsdev`: **SOLO extensión aditiva zero-value** (`StructuredOutput`, `Temperature`, `ReasoningEffort` — campos ausentes → false/nil, sin cambio de comportamiento existente; enmienda HITL 2026-09-16 vía review S1/L2-I7, requerida por P9/P10); suites de ambas intactas y verdes (gates).
 
 ## Criterios de aceptación (con mapeo test)
 
