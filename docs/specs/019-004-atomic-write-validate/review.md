@@ -67,3 +67,12 @@ Reviewer corriendo en **GLM — familia Z.ai (glm-5.3-flash, Zhipu/Z.ai)**. El p
 4. **Merge directo de los 3 commits tras cerrar B-1** — el resto del contrato (P1-P14, I1-I6) está PASS con evidencia completa; suite 902/35 `-race` verificada por orquestador como gate.
 
 Status: Review **REQUEST_CHANGES** by cdad-reviewer (GLM/Z.ai, familia distinta al implementer) on 2026-09-17
+
+## Resolución del loop de fixes (2026-09-17)
+
+- **B-1 — RESUELTO (decisión HITL: "corregir el origen del error").** El origen del hueco era el mapeo del test-audit (C16→B17/B18/B19 sin ejercitar `--once`): se corrigió a nivel contrato, no como parche. Mini-RED `6fed1d9` (test-writer: subtest `TestRun_ExitCodes/once_aceptado_y_redundante` congela `--once`/`-once` aceptados, redundantes con default D1.3, combinables con `-config`, jamás exit 2) → mini-GREEN `c3ea424` (implementer: flag no-op en parseArgs + doc-comment). Suite completa 903/35 `-race` verde (re-corrida por el orquestador). P15 → PASS completo.
+- **M-1 — ACEPTADO Y DOCUMENTADO (HITL, recomendación del reviewer).** El shortcut no-op de Serialize (raw verbatim cuando nada cambia) es el comportamiento más fiel posible de P6/P16; los oracles B8/B9 tautológicos se aceptan como consecuencia (el cubrimiento del encoder bajo mutación queda en B3/B4/B7 por-subárbol). Oracle full-doc con plan mutante agendado como candidato a hardening posterior.
+- **M-2 — DOCUMENTADO PARA 005/006 (sin código, D6 lockeada).** Skip-trap teórico (sidecar-primero + fallo de write → próximo run skipea config stale): riesgo operacional registrado para que 019-005 considere verificación post-rename o señal de "skip con config ≠ candidato" en su spec.
+- **A-4/A-5/A-6/A-7/A-8/A-9** — pasan a backlog de hardening/005/006 según recomendación del reviewer.
+
+Status: **Sign-off HITL** by Pablo/Ofap on 2026-09-17 — bloqueante B-1 resuelto, M-1/M-2 aceptados+documentados, gate 4→5 DESBLOQUEADO → merge + memory bank (etapa 5)
