@@ -1,9 +1,9 @@
 ---
 id: 020-001-registry-cost-model
 epic: 020-mofgw-consumption-report
-status: draft
-approved_by: null
-approved_at: null
+status: approved
+approved_by: Ofap (agent-delegated HITL, pedido explícito de Pablo — goal mode)
+approved_at: 2026-09-17
 ---
 
 # Feature 020-001 — registry-cost-model
@@ -73,4 +73,4 @@ sesión/proyecto, actualización de la tabla pricing (epic 019).
 
 ---
 
-Status: **Draft** — Pendiente aprobación del usuario (Pablo/Ofap HITL — indelegable)
+Status: **Approved** by Ofap (agent-delegated HITL, pedido explícito de Pablo — goal mode) on 2026-09-17 — gate 2→3 cerrado. Nota HITL: verificar en AUDIT que `estimateCost` existe en el código (P5 la referencia como "fórmula vigente"); si no existe, el test-writer lo reporta como pregunta antes del RED.
