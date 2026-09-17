@@ -674,11 +674,11 @@ func TestSerialize_PricingMetadataMerge(t *testing.T) {
 func TestSerialize_ThinkingMergeBack(t *testing.T) {
 	raw := fixtureRaw(t)
 
-	t.Run("thinking_presente_sobrescribe_default_preserva", func(t *testing.T) {
+	t.Run("thinking_presente_compatible_sobrescribe_default_preserva", func(t *testing.T) {
 		plan := planWithGoModelChange(t, raw)
 		pp := planFor(t, plan, "go-cuenta-1")
 		pp.Metadata = map[string]config.ModelMetadata{
-			"glm-5.2": {Thinking: []string{"medium", "max"}}, // toggle de niveles
+			"glm-5.2": {Thinking: []string{"low", "max"}}, // toggle: default "low" SIGUE válido
 		}
 		plan.Providers[0] = pp
 
@@ -697,16 +697,53 @@ func TestSerialize_ThinkingMergeBack(t *testing.T) {
 				for _, it := range v.Content {
 					got = append(got, it.Value)
 				}
-				if want := []string{"medium", "max"}; !reflect.DeepEqual(got, want) {
+				if want := []string{"low", "max"}; !reflect.DeepEqual(got, want) {
 					t.Errorf("thinking = %v, want %v (P4a: presente en plan sobrescribe)", got, want)
 				}
 			}
 			if v := mapValue(e.Value, "thinking_default"); v == nil || v.Value != "low" {
-				t.Errorf("thinking_default = %v, want \"low\" (P4c: JAMÁS se toca)", v)
+				t.Errorf("thinking_default = %v, want \"low\" (P4c: default compatible se preserva)", v)
 			}
 			if got := scalarFloat(t, e.Value, "context_window"); got != 200000 {
 				t.Errorf("context_window = %v, want 200000 (P4b: campo ausente en plan preserva)", got)
 			}
+		}
+	})
+
+	t.Run("thinking_presente_incompatible_default_stale_se_omite_con_warning", func(t *testing.T) {
+		// Enmienda E3 (qwen3.8-flash real): niveles nuevos del plan que NO
+		// contienen el default manual → el default se OMITE (no produciría
+		// un candidato válido) + warning en el reporte.
+		plan := planWithGoModelChange(t, raw)
+		pp := planFor(t, plan, "go-cuenta-1")
+		pp.Metadata = map[string]config.ModelMetadata{
+			"glm-5.2": {Thinking: []string{"medium", "max"}}, // default "low" del raw queda stale
+		}
+		plan.Providers[0] = pp
+
+		candidate, rep, err := Serialize(raw, plan)
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		for _, e := range sectionEntries(t, candidate, "model_metadata") {
+			if e.Key != "glm-5.2" {
+				continue
+			}
+			if v := mapValue(e.Value, "thinking"); v == nil {
+				t.Fatal("thinking desapareció")
+			}
+			if v := mapValue(e.Value, "thinking_default"); v != nil {
+				t.Errorf("thinking_default debió OMITIRSE (default stale fuera de [medium max], enmienda P4c E3), got %q", v.Value)
+			}
+		}
+		found := false
+		for _, w := range rep.Warnings {
+			if strings.Contains(w, "thinking_default") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("reporte sin warning de default stale (P4c E3): %v", rep.Warnings)
 		}
 	})
 

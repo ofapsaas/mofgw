@@ -31,8 +31,9 @@ import (
 // Report es el resultado observable de Serialize/Apply (contrato del
 // test-writer, test-audit §3): Applied/Skipped los llena Apply (Serialize
 // deja false); Digest es el sha256 hex del candidato (siempre); Warnings es
-// passthrough VERBATIM de plan.Warnings (P11/P12 — ya llega sorted+dedup del
-// IR de 003, sin reordenar).
+// plan.Warnings VERBATIM al inicio (P11/P12 — ya llega sorted+dedup del IR
+// de 003, sin reordenar) + warnings de merge-back appendeados después
+// (P4c E3: default stale omitido).
 type Report struct {
 	Applied  bool
 	Skipped  bool
@@ -88,15 +89,17 @@ func Serialize(raw []byte, plan catalogmerge.Plan) ([]byte, Report, error) {
 		}
 	}
 
-	m, err := mergeKeyedSection(root, "pricing", pricingEntries(plan))
+	m, w, err := mergeKeyedSection(root, "pricing", pricingEntries(plan))
 	if err != nil {
 		return nil, Report{}, err
 	}
+	report.Warnings = append(report.Warnings, w...)
 	mutated = mutated || m
-	m, err = mergeKeyedSection(root, "model_metadata", metadataEntries(plan))
+	m, w, err = mergeKeyedSection(root, "model_metadata", metadataEntries(plan))
 	if err != nil {
 		return nil, Report{}, err
 	}
+	report.Warnings = append(report.Warnings, w...)
 	mutated = mutated || m
 
 	if !mutated {
@@ -349,14 +352,17 @@ func mergeFields(base, add []kvField) []kvField {
 // sección keyed del raw (pricing | model_metadata), P4: (a) campo presente
 // sobrescribe (solo si el valor cambia — byte-stable, P6); (b) campo
 // ausente/zero preserva; (c) thinking_default jamás tocado (no llega del
-// plan); (d) entry nueva con solo los campos provistos, insertada en
-// posición alfabética; (e) entry no cubierta intocada; (f) NINGUNA key se
-// borra. Comentarios de keys/entries sobreviven (P5: las keys no se
-// reemplazan; los scalars transferidos llevan los comentarios del nodo viejo).
-func mergeKeyedSection(root *yaml.Node, section string, entries []planEntry) (bool, error) {
+// plan) SALVO la excepción de consistencia E3 (abajo); (d) entry nueva con
+// solo los campos provistos, insertada en posición alfabética; (e) entry no
+// cubierta intocada; (f) NINGUNA key se borra. Comentarios de keys/entries
+// sobreviven (P5: las keys no se reemplazan; los scalars transferidos llevan
+// los comentarios del nodo viejo).
+// Retorna además los warnings de merge-back (P4c E3) para el reporte.
+func mergeKeyedSection(root *yaml.Node, section string, entries []planEntry) (bool, []string, error) {
 	mutated := false
+	var warns []string
 	if len(entries) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 	sectionNode := mapNodeGet(root, section)
 	if sectionNode == nil {
@@ -366,7 +372,7 @@ func mergeKeyedSection(root *yaml.Node, section string, entries []planEntry) (bo
 		mutated = true
 	}
 	if sectionNode.Kind != yaml.MappingNode {
-		return mutated, fmt.Errorf("configsync: serialize: sección %q no es un mapping", section)
+		return mutated, nil, fmt.Errorf("configsync: serialize: sección %q no es un mapping", section)
 	}
 	for _, e := range entries {
 		if len(e.fields) == 0 {
@@ -376,6 +382,8 @@ func mergeKeyedSection(root *yaml.Node, section string, entries []planEntry) (bo
 		if idx < 0 {
 			// P4d: entry nueva con SOLO los campos provistos, posición
 			// alfabética dentro del mapa (las existentes NO se reordenan).
+			// (Las entries nuevas jamás traen thinking_default: no llega
+			// del plan — sin chequeo de consistencia acá.)
 			entry := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 			for _, f := range e.fields {
 				entry.Content = append(entry.Content, keyScalar(f.key), f.value)
@@ -387,9 +395,13 @@ func mergeKeyedSection(root *yaml.Node, section string, entries []planEntry) (bo
 		}
 		entryNode := sectionNode.Content[idx+1]
 		if entryNode.Kind != yaml.MappingNode {
-			return mutated, fmt.Errorf("configsync: serialize: entry %q de %q no es un mapping (P4)", e.id, section)
+			return mutated, nil, fmt.Errorf("configsync: serialize: entry %q de %q no es un mapping (P4)", e.id, section)
 		}
+		touchedThinking := false
 		for _, f := range e.fields {
+			if section == "model_metadata" && f.key == "thinking" {
+				touchedThinking = true
+			}
 			vi := keyIndex(entryNode, f.key)
 			if vi < 0 {
 				// P4a: campo derivable presente en el plan y ausente en la
@@ -413,8 +425,51 @@ func mergeKeyedSection(root *yaml.Node, section string, entries []planEntry) (bo
 			entryNode.Content[vi+1] = &neu
 			mutated = true
 		}
+		// E3 (P4c consistencia): si el plan proveyó `thinking` para esta
+		// entry y el `thinking_default` preservado YA NO está en esos
+		// niveles → el default es stale y produciría un candidato que
+		// validate() rechaza (caso real qwen3.8-flash: niveles nuevos sin
+		// el default manual): se OMITE + warning. Si el plan no proveyó
+		// thinking → el default se preserva como antes (era válido).
+		if section == "model_metadata" && touchedThinking {
+			if di := keyIndex(entryNode, "thinking_default"); di >= 0 {
+				def := entryNode.Content[di+1].Value
+				levels := seqValues(mapNodeGet(entryNode, "thinking"))
+				if !containsString(levels, def) {
+					entryNode.Content = removePair(entryNode.Content, di)
+					warns = append(warns, fmt.Sprintf("model_metadata %s: thinking_default %q fuera de thinking %v — omitido (default stale, enmienda P4c E3)", e.id, def, levels))
+					mutated = true
+				}
+			}
+		}
 	}
-	return mutated, nil
+	return mutated, warns, nil
+}
+
+// seqValues: valores string de un nodo secuencia (o nil si no es secuencia).
+func seqValues(n *yaml.Node) []string {
+	if n == nil || n.Kind != yaml.SequenceNode {
+		return nil
+	}
+	out := make([]string, 0, len(n.Content))
+	for _, it := range n.Content {
+		out = append(out, it.Value)
+	}
+	return out
+}
+
+func containsString(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// removePair elimina el par key/value en el índice par di de un mapping.
+func removePair(content []*yaml.Node, di int) []*yaml.Node {
+	return append(content[:di], content[di+2:]...)
 }
 
 // ---- helpers de yaml.Node ----
