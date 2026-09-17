@@ -65,7 +65,9 @@ providers:
 `
 
 // syncConfigFantasma: igual + un id declarado ausente en models.dev →
-// warning garantizado "id ausente en models.dev" (003, MissingIDSoftSkip).
+// warning garantizado del IR (003, lockeado en catalogmerge.go:126, I3):
+// "<providerID>/<modelID>: no encontrado en models.dev — sin pricing/metadata"
+// → "zen-acc/id-fantasma: no encontrado en models.dev — sin pricing/metadata".
 const syncConfigFantasma = `
 server:
   addr: "127.0.0.1:3369"
@@ -195,9 +197,15 @@ func envKeySet(t *testing.T) {
 // TestRun_LogsWarnings congela P12: todos los warnings del Plan (+ per-provider)
 // se loguean (slog, uno por warning) ANTES de escribir; no afectan el exit
 // code (fail-soft de 003). El id declarado "id-fantasma" ausente en models.dev
-// produce el warning determinista "id ausente en models.dev".
+// produce el warning del IR "zen-acc/id-fantasma: no encontrado en
+// models.dev — sin pricing/metadata" (texto lockeado, catalogmerge.go:126);
+// el aserto usa el sufijo estable "no encontrado en models.dev".
 func TestRun_LogsWarnings(t *testing.T) {
 	envKeySet(t)
+
+	// warnIdAusenteSuffix: fragmento estable del warning real del IR —
+	// describe el par provider/modelo ausente y el efecto (sin pricing).
+	const warnIdAusenteSuffix = "no encontrado en models.dev"
 
 	t.Run("loguea_una_vez_por_warning_y_exit_0", func(t *testing.T) {
 		dir := t.TempDir()
@@ -216,8 +224,8 @@ func TestRun_LogsWarnings(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit code con warnings = %d, want 0 (P12: fail-soft, salvo error de Merge)", code)
 		}
-		if got := strings.Count(buf.String(), "id ausente en models.dev"); got != 1 {
-			t.Errorf("warning %q logueado %d veces, want exactamente 1 (P12: uno por warning)", "id ausente en models.dev", got)
+		if got := strings.Count(buf.String(), warnIdAusenteSuffix); got != 1 {
+			t.Errorf("warning %q logueado %d veces, want exactamente 1 (P12: uno por warning)", warnIdAusenteSuffix, got)
 		}
 	})
 
@@ -247,7 +255,7 @@ func TestRun_LogsWarnings(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("exit code con write fallido = %d, want 1 (P15: I/O)", code)
 		}
-		if !strings.Contains(buf.String(), "id ausente en models.dev") {
+		if !strings.Contains(buf.String(), warnIdAusenteSuffix) {
 			t.Error("warnings NO logueados a pesar del abort de escritura (P12: logueados ANTES de escribir)")
 		}
 	})

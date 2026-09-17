@@ -105,8 +105,8 @@ func declaredOf(t *testing.T, raw []byte) []declaredProvider {
 func planNoOp(t *testing.T, raw []byte) catalogmerge.Plan {
 	t.Helper()
 	decl := declaredOf(t, raw)
-	providers := make([]catalogmerge.ProviderPlan, 0, len(decl.Providers))
-	for _, d := range decl.Providers {
+	providers := make([]catalogmerge.ProviderPlan, 0, len(decl))
+	for _, d := range decl {
 		models := append([]string(nil), d.Models...)
 		providers = append(providers, catalogmerge.ProviderPlan{ProviderID: d.ID, Models: models})
 	}
@@ -178,32 +178,6 @@ func providerIDsInOrder(t *testing.T, raw []byte) []string {
 		ids = append(ids, mapValue(p, "id").Value)
 	}
 	return ids
-}
-
-// providerBlock extrae el subdocumento crudo (bytes) de un provider del src:
-// desde su línea "- id:" hasta antes del siguiente provider o sección
-// top-level. Es el oráculo byte-a-byte de P3/P2 ("byte-intacto").
-func providerBlock(t *testing.T, src []byte, id string) string {
-	t.Helper()
-	pn := providerNode(t, src, id)
-	lines := strings.SplitAfter(string(src), "\n") // conserva el \n
-	start := pn.Line - 1                           // pn.Line es 1-based
-	if start < 0 || start >= len(lines) {
-		t.Fatalf("línea del provider %q fuera de rango: %d", id, pn.Line)
-	}
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		l := lines[i]
-		if strings.HasPrefix(l, "  - id:") {
-			end = i
-			break
-		}
-		if strings.TrimSpace(l) != "" && l[0] != ' ' && l[0] != '\t' {
-			end = i
-			break
-		}
-	}
-	return strings.Join(lines[start:end], "")
 }
 
 // scalarOf devuelve el float de un scalar de una entry (pricing/metadata).
@@ -447,6 +421,14 @@ func TestSerialize_ProviderFieldsUntouched(t *testing.T) {
 // nil → el nodo del provider queda byte-idéntico al raw (ni models ni nada).
 // Discriminante: el plan NO está vacío (otros providers tocados), así que un
 // impl que "toque por las dudas" falla.
+//
+// Oracle coherente con D2 (HITL): la normalización cosmética de estilo
+// (p.ej. el espaciado de columna de un LineComment en el re-encode del
+// documento) es ACEPTADA por D2 — el contrato byte-fiel se define sobre el
+// fixture normalizado. El subárbol del degradado se compara bajo re-encode
+// (como B3), que conserva dientes completos: un touch semántico (models:
+// null, valor cambiado, quoting cambiado, item reordenado, comentario
+// perdido) cambia el encode → test rojo.
 func TestSerialize_DegradedProviderUntouched(t *testing.T) {
 	raw := fixtureRaw(t)
 	plan := planWithGoModelChange(t, raw)
@@ -468,9 +450,17 @@ func TestSerialize_DegradedProviderUntouched(t *testing.T) {
 	if bytes.Equal(candidate, raw) {
 		t.Fatal("el candidato completo es idéntico al raw: el plan no aplicó — test no discrimina")
 	}
-	block := providerBlock(t, raw, "auto-sin-match")
-	if !strings.Contains(string(candidate), block) {
-		t.Errorf("provider degradado %q fue tocado (P3):\n--- bloque del raw ---\n%s", "auto-sin-match", block)
+
+	rawEnc, err := yaml.Marshal(providerNode(t, raw, "auto-sin-match"))
+	if err != nil {
+		t.Fatalf("encode del subárbol raw: %v", err)
+	}
+	candEnc, err := yaml.Marshal(providerNode(t, candidate, "auto-sin-match"))
+	if err != nil {
+		t.Fatalf("encode del subárbol del candidato: %v", err)
+	}
+	if !bytes.Equal(rawEnc, candEnc) {
+		t.Errorf("P3: el subárbol del provider degradado %q difiere del raw:\n--- raw ---\n%s\n--- candidato ---\n%s", "auto-sin-match", rawEnc, candEnc)
 	}
 }
 

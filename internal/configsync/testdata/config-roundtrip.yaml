@@ -19,6 +19,7 @@
 # paquete, cómo lo lee LoadClientsFile). Para el round-trip de Serialize es
 # un string INERTE (Serialize jamás abre el archivo); solo config.
 # ParseForValidation lo lee, y solo en los happy-paths de Apply (P13a/D5).
+# HeadComment nivel documento (P5a) — marcador de B7 (preservación de comentarios)
 server:
   addr: "127.0.0.1:3369"        # LineComment nivel key (P5a)
   max_body_bytes: 10485760
