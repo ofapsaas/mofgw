@@ -431,8 +431,8 @@ func TestRun_ExitCodesReload(t *testing.T) {
 		if code := run(runOpts{ConfigPath: configPath, NoFetch: true, CachePaths: cachePaths{ModelsDev: mdPath, Zen: zenPath}}, captureLoggerOnly(t)); code != 0 {
 			t.Fatalf("1ra corrida = %d, want 0", code)
 		}
-		hooks, sys, p := rHappyHooks(t)
-		hooks.FS = rTamperFS{configPath: configPath} // M-2 ve bytes tamperados
+		hooks, sys, _ := rHappyHooks(t)
+		hooks.FS = rTamperFS{FS: osFS{}, configPath: configPath} // M-2 ve bytes tamperados
 		_, logger := captureLogs()
 		code := run(runOpts{
 			ConfigPath: configPath,

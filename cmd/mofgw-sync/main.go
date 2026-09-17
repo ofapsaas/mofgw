@@ -24,22 +24,43 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/ofapsaas/mofgw/internal/catalogmerge"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/configsync"
 	"github.com/ofapsaas/mofgw/internal/modelsdev"
+	"github.com/ofapsaas/mofgw/internal/reloadsig"
 	"github.com/ofapsaas/mofgw/internal/upstream"
 )
 
 // runOpts es la inyección del ciclo (contrato del test-writer, main_test.go).
+// Extensión ADITIVA de 005 (test-audit §2.4): los campos nuevos en
+// zero-value DESHABILITAN la fase de reload (los tests de 004 congelan solo
+// la fase 004); main() siempre cablea hooks reales en producción.
 type runOpts struct {
-	ConfigPath string     // -config (precedencia idéntica a config.Load)
-	NoFetch    bool       // --no-fetch: cache-only, sin red (P14)
-	CachePaths cachePaths // inyección de paths de cache por fuente (tests)
+	ConfigPath string      // -config (precedencia idéntica a config.Load)
+	NoFetch    bool        // --no-fetch: cache-only, sin red (P14)
+	CachePaths cachePaths  // inyección de paths de cache por fuente (tests)
+	NoReload   bool        // --no-reload (D12): aplica config sin restartear
+	Reload     reloadHooks // inyección de la fase reload (tests); nil hooks = disabled
+}
+
+// reloadHooks: implementaciones de la fase de reload (019-005). Zero-value
+// (Systemd nil) ⇒ NINGUNA fase de reload/verificación/rollback corre (P1)
+// — ni siquiera el chequeo M-2. VerifyKey "" → resuelta de env (D7).
+type reloadHooks struct {
+	Systemd   reloadsig.SystemdCtl
+	Prober    reloadsig.Prober
+	Clock     reloadsig.Clock
+	VerifyKey string
+	FS        reloadsig.FS
 }
 
 // cachePaths inyecta el path de cache por fuente; vacío → Default*CachePath.
@@ -67,11 +88,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "mofgw-sync:", err)
 		os.Exit(2) // P15: flags/uso inválido
 	}
+	// main() SIEMPRE cablea hooks reales (nil-disabled es exclusivo de
+	// tests — test-audit §2.4/R3). --no-reload lo respeta run() por opts.
+	opts.Reload = realReloadHooks()
 	os.Exit(run(opts, slog.Default()))
 }
 
-// parseArgs parsea -config/--no-fetch/--once con ContinueOnError (el mapeo
-// a exit 2 vive en main; el flag pkg no vuelca usage a stderr).
+// parseArgs parsea -config/--no-fetch/--once/--no-reload con ContinueOnError
+// (el mapeo a exit 2 vive en main; el flag pkg no vuelca usage a stderr).
 func parseArgs(args []string) (runOpts, error) {
 	fs := flag.NewFlagSet("mofgw-sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -81,10 +105,13 @@ func parseArgs(args []string) (runOpts, error) {
 	// (el timer/scheduling es 006), así que el flag es redundante con el
 	// default — se acepta por paridad de uso y no cambia el comportamiento.
 	_ = fs.Bool("once", false, "no-op: el ciclo es once por diseño (D1.3, el scheduling es 006)")
+	// --no-reload (D12 de 019-005): aplica el config pero NO restartea ni
+	// verifica ni rolea back (streams en curso / testing / 006).
+	noReload := fs.Bool("no-reload", false, "no restartear mofgw tras aplicar el config (D12)")
 	if err := fs.Parse(args); err != nil {
 		return runOpts{}, fmt.Errorf("mofgw-sync: flags inválidos: %w", err)
 	}
-	return runOpts{ConfigPath: *configPath, NoFetch: *noFetch}, nil
+	return runOpts{ConfigPath: *configPath, NoFetch: *noFetch, NoReload: *noReload}, nil
 }
 
 // run ejecuta el ciclo --once (P15). logger nil → slog.Default(). Retorna el
@@ -131,7 +158,42 @@ func run(opts runOpts, logger *slog.Logger) int {
 		"digest", report.Digest,
 		"sources", sortedSourceNames(plan.SourcesUsed),
 	)
-	return 0
+
+	// ---- Fase de reload (019-005, P1) ----
+	// Solo si 004 terminó con exit 0 (este punto) y hooks no-nil (tests de
+	// 004 con hooks zero-value jamás llegan acá). --no-reload → NINGUNA
+	// fase (ni siquiera M-2); exit = exit de 004 (P1).
+	if opts.NoReload || opts.Reload.Systemd == nil {
+		return 0
+	}
+	// Wiring de defaults (D7/D9): VerifyKey del env si quedó vacía; FS y
+	// Clock reales si no fueron inyectados.
+	hooks := opts.Reload
+	if hooks.VerifyKey == "" {
+		if v, ok := os.LookupEnv("MOFGW_SYNC_VERIFY_KEY"); ok {
+			hooks.VerifyKey = v
+		}
+	}
+	if hooks.FS == nil {
+		hooks.FS = osFS{}
+	}
+	if hooks.Clock == nil {
+		hooks.Clock = realClock{}
+	}
+	return reloadsig.Run(reloadsig.Input{
+		Stash:      raw, // P15: los bytes leídos al inicio del run (un solo read, P1 de 004)
+		ConfigPath: configPath,
+		Applied:    report.Applied,
+		Skipped:    report.Skipped,
+		Digest:     report.Digest,
+		Unit:       "mofgw.service", // D4: constante
+		VerifyKey:  hooks.VerifyKey,
+		Systemd:    hooks.Systemd,
+		Prober:     hooks.Prober,
+		FS:         hooks.FS,
+		Clock:      hooks.Clock,
+		Logger:     logger,
+	})
 }
 
 // loadRawConfig lee el config RAW (jamás parseado acá) con la precedencia
@@ -217,6 +279,80 @@ func pathOr(injected, def string) string {
 	}
 	return def
 }
+
+// realReloadHooks: hooks de producción (main() los cablea siempre — el
+// nil-disabled de runOpts es exclusivo de tests, test-audit §2.4/R3).
+func realReloadHooks() reloadHooks {
+	return reloadHooks{
+		Systemd: execSystemdCtl{},
+		Prober:  httpProber{},
+		Clock:   realClock{},
+		FS:      osFS{},
+	}
+}
+
+// execSystemdCtl: implementación real de reloadsig.SystemdCtl vía
+// systemctl --user (D4: deploy user unit verificado en el discovery).
+type execSystemdCtl struct{}
+
+func (execSystemdCtl) Available() error {
+	// Detección de systemd user manager disponible (P10): consulta barata
+	// previa a cualquier restart.
+	return exec.Command("systemctl", "--user", "is-active", "--quiet", "mofgw.service").Run()
+}
+
+func (execSystemdCtl) Restart(unit string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TimeoutStartSec=30 del unit real
+	defer cancel()
+	return exec.CommandContext(ctx, "systemctl", "--user", "restart", unit).Run()
+}
+
+func (execSystemdCtl) IsActive(unit string) bool {
+	out, err := exec.Command("systemctl", "--user", "is-active", unit).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "active"
+}
+
+// httpProber: implementación real de reloadsig.Prober (net/http). Los
+// timeouts de request (2s healthz / 5s paridad) viven en el wiring (R2 del
+// audit: el Prober no lleva timeout por llamada — el client genérico usa 5s,
+// suficiente para ambos paths; el discriminante exacto queda en review/C14).
+type httpProber struct {
+	Client *http.Client
+}
+
+func (p httpProber) Get(url, bearer string) (int, []byte, error) {
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("mofgw-sync: request %s: %w", url, err)
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("mofgw-sync: GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, fmt.Errorf("mofgw-sync: leer body %s: %w", url, err)
+	}
+	return resp.StatusCode, body, nil
+}
+
+// realClock: reloj real (Sleep duerme — solo producción; los tests inyectan
+// fakeClock que avanza el reloj lógico, R1).
+type realClock struct{}
+
+func (realClock) Now() time.Time        { return time.Now() }
+func (realClock) Sleep(d time.Duration) { time.Sleep(d) }
 
 func sortedSourceNames(used map[string]bool) []string {
 	out := make([]string, 0, len(used))
