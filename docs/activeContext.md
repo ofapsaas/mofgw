@@ -1,9 +1,31 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-16 (feature 019-003-merge-provider-catalog MERGED — epic 019 provider-sync-automation).
+> Última actualización: 2026-09-17 (feature 019-004-atomic-write-validate MERGED — epic 019 provider-sync-automation).
 
 ## Decisiones recientes (cronología inversa)
+
+### 17 Sep 2026 — Feature 019-004-atomic-write-validate (epic 019-provider-sync-automation) MERGED
+
+### Decisiones relevantes
+
+- **Feature 019-004-atomic-write-validate MERGED — CUARTA del epic 019 (entrega el escritor de config.yaml que consume el IR `catalogmerge.Plan` de 019-003).** Paquete nuevo **`internal/configsync` puro** (sin red; disco solo vía parámetro, D9/P13): edición estructural de `config.yaml` vía **`yaml.Node`** (comentarios preservados, orden in-place = cadena fallback, merge-back — `thinking_default` jamás tocado), **validación pre-commit** con API aditiva **`config.ParseForValidation`** (vía `parseCommon`, sin resolución de env keys — el YAML en disco ya está materializado) y **write atómico temp+rename** solo si la validación pasa. Binario nuevo **`cmd/mofgw-sync`**: `--no-fetch` (cache-only), `--once` (no-op — el ciclo es once por diseño; el scheduling es 006), exit 0 (éxito) / 1 (fallo de sync o validación) / 2 (error de uso). **Skip byte-idéntico** con sidecar `config.yaml.sha256` (lección 019-001/002 replicada; auto-cura: digest ≠ sidecar → reescribe).
+- **Decisión HITL D2 lockeada en el spec:** edición estructural yaml.Node **sobre** regeneración completa (yaml.v3 round-trip pierde comentarios) — el config.yaml del operador es territorio sagrado: comentarios, orden y claves ajenas al sync sobreviven intactos. Contrato clave: el único territorio mutable de `providers[]` es lo que el IR dicta (models/pricing/metadata); el resto del documento es read-only por construcción.
+- **Review: REQUEST_CHANGES → resuelto** (2026-09-17). **B-1 bloqueante real: hueco de mapeo del audit — la postcondición de `--once` no tenía test.** Resuelto vía corrección del ORIGEN (contract-primero): mini-RED `6fed1d9` (test que castiga la ausencia de la postcondición) → mini-GREEN `c3ea424` (implementación), sin toquetear tests post-RED. **Anti-bias SATISFECHO por primera vez en el epic** (reviewer GLM/Z.ai vs implementer deepseek — deuda A2 recurrente mitigada).
+- **Menores aceptados con fundamento:** M-1 oracles B8/B9 tautológicos — el serializer no-op devuelve raw verbatim (comportamiento más fiel que un oracle artificial); M-2 skip-trap sidecar-primero documentado como input del spec de **019-005/006** (D6 lockeada). Advisories A-4..A-9 al backlog de hardening.
+- **Suite final del merge: 903 tests / 35 paquetes `-race` verde** (re-corrida fresca del orquestador 2026-09-17; build OK, vet limpio). Commits: `e6ba734` spec, `1ac13ea` spec aprobado, `3764b29` test-audit, `211f2d7` audit aprobado, `6d63adf` RED (21 tests B1-B21 + 2 fixtures testdata), `98d1826` GREEN (configsync + ParseForValidation + cmd/mofgw-sync), `eb29036` fixes AP-4, `7401710` review, `6fed1d9` mini-RED --once, `c3ea424` mini-GREEN --once, `efae476` sign-off.
+- **Cero impacto servidor (I1 se mantiene):** `configsync` no toca el proxy/router; el servidor sigue cargando su config al arranque — `mofgw-sync` es una herramienta offline que prepara el archivo que 019-005/006 harán recargar.
+
+### Deuda técnica detectada
+
+- **Advisories A-4..A-9 de la review** al backlog de hardening (019-hardening): detalles en `docs/specs/019-004-atomic-write-validate/review.md`.
+- **M-1 (aceptado, documentado):** oracles B8/B9 tautológicos — el raw verbatim del no-op es la semántica, no un bug; si el serializer gana lógica futura, reevaluar los oracles.
+- **Deuda de tooling vigente (5º incidente de harness en el epic):** bash de los subagentes quedó bloqueado durante el ciclo (roles no pudieron correr `go`/`git`) → el orquestador ejecutó todas las verificaciones y materializó los fixtures `testdata` (permisos). Los roles razonaron y editaron; la ejecución fue del orquestador. Registrar en process-log del epic.
+- **AP-4 (fix-back de tests):** 2 defectos del test-writer corregidos por fix-back (compile bug `declaredOf`, warning text B16, marker B7) — patrón AP-4 recurrente del epic.
+
+### Próxima feature en cola
+
+- **019-005-reload-signal** (epic 019): aplicar la config escrita — SIGHUP si hot-reload está disponible; si no, **restart del service systemd** (epic 017 sigue pausada → default restart). Verificación post-reload: `GET /v1/models` refleja el catálogo. **Inputs lockeados:** M-2 de esta feature (skip-trap sidecar-primero, D6) como input de su spec. Después: 019-006 (systemd-timer + observabilidad) y 019-007 (build-snapshot). Epic 020 en cola tras el cierre de 019.
 
 ### 16 Sep 2026 — Feature 019-003-merge-provider-catalog (epic 019-provider-sync-automation) MERGED
 
