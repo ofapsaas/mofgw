@@ -421,6 +421,40 @@ func TestRun_ExitCodes(t *testing.T) {
 		}
 	})
 
+	t.Run("once_aceptado_y_redundante", func(t *testing.T) {
+		// Corrección del review B-1 (etapa 4): el flag `--once` de D1.3 no
+		// estaba congelado por ningún test (hueco de mapeo del audit:
+		// C16→B17/B18/B19, ninguno pasaba --once). Congelado acá PRIMERO
+		// (mini-RED); el implementer agrega el flag después.
+		//
+		// D1.3/P15: --once = ciclo completo, ÚNICO modo de 004 (el
+		// timer/scheduling es 006) → el flag es REDUNDANTE con el default:
+		// aceptado y NO cambia el comportamiento. Jamás exit 2. Congelamos
+		// la aceptación del parseo (`-once` y `--once`, paridad con
+		// `-config`; Go flag acepta ambos) — si el flag materializa o no
+		// como campo de runOpts es detalle del impl (D1.3: absorbido como
+		// no-op). El ciclo completo ya lo congela B18; el ciclo con flag
+		// explícito es equivalente por D1.3.
+		//
+		// Contrato parseArgs (establecido por este suite): recibe los argv
+		// de flags SIN el argv[0] del binario (flag.Parse(os.Args[1:])).
+		for _, args := range [][]string{
+			{"--once"},
+			{"-once"},
+			{"--once", "-config", configPath},
+		} {
+			opts, err := parseArgs(args)
+			if err != nil {
+				t.Fatalf("parseArgs(%v) debería aceptar --once (D1.3/P15: redundante con el default, NO es uso inválido); got: %v", args, err)
+			}
+			if args[len(args)-1] == "-config" || len(args) == 3 {
+				if opts.ConfigPath != configPath {
+					t.Errorf("parseArgs(%v) perdió el -config: ConfigPath = %q, want %q", args, opts.ConfigPath, configPath)
+				}
+			}
+		}
+	})
+
 	t.Run("exit2_flag_desconocido", func(t *testing.T) {
 		// El mapeo a exit 2 vive en main(): os.Exit(2) cuando parseArgs
 		// falla. El contrato del test-writer congela que parseArgs rechaza
