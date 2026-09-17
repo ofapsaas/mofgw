@@ -10,7 +10,11 @@ Estado de features del proyecto mofgw (Memory Bank).
 
 <!-- features actualmente en alguna etapa del ciclo CDAD -->
 
-_(ninguna — epic 019 loop completo 7/7; sigue integración E3)_
+_(ninguna — epic 019 cerrado 7/7; sigue epic 020)_
+
+## Done (epics)
+
+- **019-provider-sync-automation** — sync automatizado del catálogo (7/7 features + integración E3). Cerrado 2026-09-17. Closure: `docs/epics/019-provider-sync-automation/closure.md`. Pendiente de deploy (operador): install timer + paridad live (integration.md §4).
 
 ## Done
 

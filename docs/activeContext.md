@@ -1,9 +1,19 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-17 (feature 019-007-build-snapshot MERGED — epic 019 provider-sync-automation COMPLETO 7/7).
+> Última actualización: 2026-09-17 (epic 019-provider-sync-automation CERRADO — 7/7 + integración E3).
 
 ## Decisiones recientes (cronología inversa)
+
+### 17 Sep 2026 — EPIC 019-provider-sync-automation CERRADO
+
+### Decisiones relevantes
+
+- **Epic CERRADO con 7/7 features mergeadas + E3 verificado** (closure: `docs/epics/019-provider-sync-automation/closure.md`; integración: `integration.md`). Suite final **974/37 `-race`** + harness **48/48**.
+- **El ciclo sync completo existe y funciona contra datos reales:** `mofgw-sync --once` = fetch (001/002) → merge determinístico (003) → write atómico (004) → restart+verify+rollback (005), agendado por timer (006), con fallback offline (007).
+- **Lecciones registradas en el closure** (obligatorias para próximos epics): E3 con datos reales es obligatorio (el bug P4c solo apareció contra upstreams vivos); test-audit commiteado antes del GREEN preserva TDD sin aislamiento; corregir el origen nunca el síntoma (B-1, P4c); el instalador es código de producción (harness de 6→16 tests); enmendar el plan cuando el descubrimiento lo refuta.
+- **Pendiente de deploy (operador):** `./scripts/install.sh` + `enable --now` del timer + `MOFGW_SYNC_VERIFY_KEY` en env (integration.md §4). R2 (tolerancia a corte de streams) sin definir.
+- **Siguiente:** epic 020-mofgw-consumption-report (planificado, spec draft 020-001 pendiente de aprobación HITL).
 
 ### 17 Sep 2026 — Feature 019-007-build-snapshot (epic 019-provider-sync-automation) MERGED — EPIC 7/7
 
