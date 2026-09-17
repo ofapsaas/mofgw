@@ -34,9 +34,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -480,4 +483,239 @@ func TestRun_ExitCodes(t *testing.T) {
 			t.Error("NoFetch = false, want true (--no-fetch parseado)")
 		}
 	})
+}
+
+// ---- 019-007-build-snapshot (B3-B8) — fallback offline por snapshot ----
+//
+// Los tests de esta sección congelan P1/P2/P5-P9/P11: el fallback solo ante
+// AUSENCIA de cache (corruption ≠ ausencia), parse con el parser de 001,
+// disco byte-intacto, warnings sintéticos, staleness, y comportamiento
+// pre-007 con Available=false. Corren con `runSnapshot` INYECTADO (tiny
+// sintético) — jamás con el api.json real ni con red (I4).
+
+// snapshotTiny: catálogo sintético mínimo (shape real de api.json, fuente
+// catalogmerge_test.go mdShared): espejo "opencode" con cost para derivar
+// pricing de glm-5.2, y minimax-m3 SIN limit/cost + campo desconocido
+// (tolerancia P14 de 001, B4).
+const snapshotTiny = `{
+  "opencode": {
+    "name": "OpenCode",
+    "models": {
+      "glm-5.2": {
+        "name": "GLM 5.2",
+        "limit": {"context": 200000, "output": 128000},
+        "cost": {"input": 1.4, "output": 4.4}
+      },
+      "minimax-m3": {
+        "name": "MiniMax M3",
+        "campo_desconocido": 42
+      }
+    }
+  }
+}`
+
+// snapshotOpts: runOpts con fallback inyectado hacia un cache modelsdev
+// INEXISTENTE (ausencia, D4) + Zen/Go/OpenRouter también ausentes (P10).
+func snapshotOpts(mdPath string) runOpts {
+	return runOpts{
+		NoFetch:    true,
+		CachePaths: cachePaths{ModelsDev: mdPath, Zen: mdPath + ".zen", Go: mdPath + ".go", OpenRouter: mdPath + ".or"},
+		Snapshot: runSnapshot{
+			Raw:       []byte(snapshotTiny),
+			FetchedAt: time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC),
+			SHA256:    "tiny-sha-para-tests",
+			Available: true,
+		},
+	}
+}
+
+// ---- B3 (C1, P1+P6) — fallback por ausencia sirve el tiny, disco intacto ----
+
+// TestLoadSources_SnapshotFallback congela P1: Get ausente + snapshot
+// disponible → catalog parseado del tiny (providers/models por clave); las
+// otras fuentes nil (P10). Y P6: el directorio de cache queda byte-intacto
+// (el snapshot se sirve en memoria, jamás se persiste).
+func TestLoadSources_SnapshotFallback(t *testing.T) {
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
+
+	before := readdirNames(t, dir)
+	catalog, zenList, goList, orCatalog := loadSources(snapshotOpts(mdPath))
+
+	if catalog == nil {
+		t.Fatal("catalog nil con cache ausente + snapshot disponible (P1: fallback por ausencia)")
+	}
+	op, ok := catalog.Providers["opencode"]
+	if !ok {
+		t.Fatalf("provider opencode ausente del fallback (P1)")
+	}
+	if got := op.Models["glm-5.2"].Limit.Context; got != 200000 {
+		t.Errorf("opencode/glm-5.2 context = %v, want 200000 (P1: providers/models por clave)", got)
+	}
+	if _, ok := op.Models["minimax-m3"]; !ok {
+		t.Errorf("opencode/minimax-m3 ausente del fallback (P1)")
+	}
+	if zenList != nil || goList != nil || orCatalog != nil {
+		t.Errorf("fuentes sin snapshot deben quedar nil (P10): zen=%v go=%v or=%v", zenList != nil, goList != nil, orCatalog != nil)
+	}
+
+	after := readdirNames(t, dir)
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("directorio de cache modificado por el fallback (P6: servir ≠ persistir)\nbefore: %v\nafter:  %v", before, after)
+	}
+	if _, err := os.Stat(mdPath); !os.IsNotExist(err) {
+		t.Errorf("el fallback creó %s (P6/I3: jamás se escribe cache del snapshot)", mdPath)
+	}
+	if _, err := os.Stat(mdPath + ".sha256"); !os.IsNotExist(err) {
+		t.Errorf("el fallback creó sidecar (P6/I3)")
+	}
+}
+
+func readdirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(dir, path)
+			out = append(out, rel)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+// ---- B4 (C1, P2) — schema variable tolerante ----
+
+// TestLoadSources_SnapshotTolerantShape congela P2: el tiny con schema
+// variable (sin limit, sin cost, campo desconocido) parsea sin error con
+// zero-values — misma semántica que P14 de 001.
+func TestLoadSources_SnapshotTolerantShape(t *testing.T) {
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
+
+	catalog, _, _, _ := loadSources(snapshotOpts(mdPath))
+	if catalog == nil {
+		t.Fatal("catalog nil (P1)")
+	}
+	mm, ok := catalog.Providers["opencode"].Models["minimax-m3"]
+	if !ok {
+		t.Fatal("minimax-m3 ausente (P2)")
+	}
+	if mm.Cost.Input != 0 || mm.Cost.Output != 0 {
+		t.Errorf("cost de modelo sin cost = %v, want zero-value (P2)", mm.Cost)
+	}
+}
+
+// ---- B5 (C3, P5) — cache corrupto NO cae a snapshot ----
+
+// TestLoadSources_CorruptCacheNoSnapshotMask congela P5: cache PRESENTE con
+// JSON inválido + snapshot disponible → catalog == nil (error de
+// corruption, no ausencia). El snapshot NO enmascara corrupción.
+func TestLoadSources_CorruptCacheNoSnapshotMask(t *testing.T) {
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
+	writeCacheFile(t, mdPath, []byte("{json roto"))
+
+	opts := snapshotOpts(mdPath)
+	catalog, _, _, _ := loadSources(opts)
+	if catalog != nil {
+		t.Errorf("catalog servido desde snapshot con cache CORRUPTO (P5: corruption ≠ ausencia)")
+	}
+}
+
+// ---- B6 (C5, P7) — log del evento + warning sintético en el plan ----
+
+// TestSnapshotFallback_WarningAndLog congela P7: fallback servido → evento
+// `snapshot_fallback{source,fetched_at,sha256,age_days}` en el log + el
+// warning sintético (substring `catálogo snapshot embebido`, binario-added
+// post-Merge) en los warnings logueados del run.
+func TestSnapshotFallback_WarningAndLog(t *testing.T) {
+	envKeySet(t)
+	dir := t.TempDir()
+	configPath := writeSyncConfig(t, dir, syncConfigTemplate)
+	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
+	zenPath := filepath.Join(dir, "cache", "zen.json")
+	seedZenCache(t, zenPath)
+
+	opts := snapshotOpts(mdPath)
+	opts.ConfigPath = configPath
+	opts.CachePaths.Zen = zenPath
+	buf, logger := captureLogs()
+	code := run(opts, logger)
+	if code != 0 {
+		t.Fatalf("run con fallback = %d, want 0", code)
+	}
+	if !strings.Contains(buf.String(), "snapshot_fallback") {
+		t.Errorf("log sin evento snapshot_fallback (P7)\nlog: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "catálogo snapshot embebido") {
+		t.Errorf("warnings del run sin el substring sintético (P7: binario-added post-Merge)\nlog: %s", buf.String())
+	}
+}
+
+// ---- B7 (C6, P8) — staleness: warn con edad, exit intacto ----
+
+// TestSnapshotFallback_StalenessWarn congela P8: FetchedAt de hace 31 días
+// → warning de staleness en el log con exit intacto (0); FetchedAt de hace
+// 5 días → sin warning de staleness.
+func TestSnapshotFallback_StalenessWarn(t *testing.T) {
+	envKeySet(t)
+	newSnapshot := func(days int) func() runOpts {
+		return func() runOpts {
+			dir := t.TempDir()
+			configPath := writeSyncConfig(t, dir, syncConfigTemplate)
+			mdPath := filepath.Join(dir, "cache", "modelsdev.json")
+			zenPath := filepath.Join(dir, "cache", "zen.json")
+			seedZenCache(t, zenPath)
+			opts := snapshotOpts(mdPath)
+			opts.ConfigPath = configPath
+			opts.CachePaths.Zen = zenPath
+			opts.Snapshot.FetchedAt = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC).AddDate(0, 0, -days)
+			return opts
+		}
+	}
+
+	buf, logger := captureLogs()
+	if code := run(newSnapshot(31)(), logger); code != 0 {
+		t.Fatalf("run con snapshot viejo = %d, want 0 (P8: staleness no cambia exit)", code)
+	}
+	if !strings.Contains(buf.String(), "stale") {
+		t.Errorf("log sin warning de staleness con age 31d (P8)\nlog: %s", buf.String())
+	}
+
+	buf2, logger2 := captureLogs()
+	if code := run(newSnapshot(5)(), logger2); code != 0 {
+		t.Fatalf("run con snapshot fresco = %d, want 0", code)
+	}
+	if strings.Contains(buf2.String(), "stale") {
+		t.Errorf("log CON warning de staleness con age 5d (P8: solo > 30d)\nlog: %s", buf2.String())
+	}
+}
+
+// ---- B8 (C7, P9/P11) — Available=false ⇒ comportamiento pre-007 ----
+
+// TestLoadSources_NoSnapshotBehavesAsBefore congela P9/P11: sin snapshot
+// disponible y sin cache (+ NoFetch) → catalog nil; a nivel run() completo
+// → exit 1 (Merge sin fuentes, contrato P12d/P15 de 003/004 intacto).
+func TestLoadSources_NoSnapshotBehavesAsBefore(t *testing.T) {
+	envKeySet(t)
+	dir := t.TempDir()
+	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
+
+	opts := snapshotOpts(mdPath)
+	opts.Snapshot = runSnapshot{Available: false}
+	catalog, _, _, _ := loadSources(opts)
+	if catalog != nil {
+		t.Errorf("catalog no-nil con Available=false y sin cache (P9: comportamiento pre-007)")
+	}
+
+	configPath := writeSyncConfig(t, dir, syncConfigTemplate)
+	opts2 := snapshotOpts(mdPath)
+	opts2.Snapshot = runSnapshot{Available: false}
+	opts2.ConfigPath = configPath
+	opts2.CachePaths.Zen = filepath.Join(dir, "cache", "zen.json") // ausente también
+	if code := run(opts2, captureLoggerOnly(t)); code != 1 {
+		t.Errorf("run sin fuentes = %d, want 1 (P11: fail-loud intacto)", code)
+	}
 }
