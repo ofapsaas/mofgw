@@ -517,6 +517,29 @@ func Load(explicit string) (*Config, string, error) {
 
 // Parse valida y resuelve un YAML crudo.
 func Parse(raw []byte) (*Config, error) {
+	cfg, err := parseCommon(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.resolveKeys(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// ParseForValidation valida un YAML crudo SIN resolver keys (019-004 P13a):
+// idéntico a Parse excepto resolveKeys — no consulta env vars jamás (I5:
+// las keys no pasan por el sync). La usa el candidato de configsync antes de
+// escribir (D5) y ParseForValidation(raw) == Parse(raw) salvo APIKey (P13b).
+func ParseForValidation(raw []byte) (*Config, error) {
+	return parseCommon(raw)
+}
+
+// parseCommon es el pipeline compartido de Parse/ParseForValidation (019-004
+// P13, cambio estilo P14: extracción privada, cero cambio de comportamiento
+// de Parse): unmarshal + anti-dual-source `clients:` + clients_file +
+// validate() + defaults subprocess.
+func parseCommon(raw []byte) (*Config, error) {
 	cfg := defaults()
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("config: YAML inválido: %w", err)
@@ -562,9 +585,6 @@ func Parse(raw []byte) (*Config, error) {
 		if p.SessionDir == "" {
 			p.SessionDir = DefaultSessionDir
 		}
-	}
-	if err := cfg.resolveKeys(); err != nil {
-		return nil, err
 	}
 	return &cfg, nil
 }
