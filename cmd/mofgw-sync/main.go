@@ -11,7 +11,7 @@
 // loguea (I1). Los warnings del plan son fail-soft (P12); los errores de
 // datos son fail-loud sin escribir (P15).
 //
-//	mofgw-sync [-config <path>] [--no-fetch]
+//	mofgw-sync [-config <path>] [--no-fetch] [--once]
 //
 // Exit codes (P15): 0 = escrito OK o skipped byte-idéntico; 1 = fail-loud
 // (config vigente inválido, validación del candidato falla, Merge sin
@@ -70,13 +70,17 @@ func main() {
 	os.Exit(run(opts, slog.Default()))
 }
 
-// parseArgs parsea -config/--no-fetch con ContinueOnError (el mapeo a exit 2
-// vive en main; el flag pkg no vuelca usage a stderr).
+// parseArgs parsea -config/--no-fetch/--once con ContinueOnError (el mapeo
+// a exit 2 vive en main; el flag pkg no vuelca usage a stderr).
 func parseArgs(args []string) (runOpts, error) {
 	fs := flag.NewFlagSet("mofgw-sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configPath := fs.String("config", "", "path explícito de config.yaml (flag > ~/.config/mofgw/config.yaml > /etc/mofgw/config.yaml)")
 	noFetch := fs.Bool("no-fetch", false, "cache-only: usar los caches de disco sin red (P14)")
+	// --once es no-op (D1.3): el ciclo completo es el ÚNICO modo de 004
+	// (el timer/scheduling es 006), así que el flag es redundante con el
+	// default — se acepta por paridad de uso y no cambia el comportamiento.
+	_ = fs.Bool("once", false, "no-op: el ciclo es once por diseño (D1.3, el scheduling es 006)")
 	if err := fs.Parse(args); err != nil {
 		return runOpts{}, fmt.Errorf("mofgw-sync: flags inválidos: %w", err)
 	}
