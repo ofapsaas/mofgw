@@ -356,3 +356,14 @@ Reglas del seed: scalars quoted/unquoted mezclados; flow vs block style en `mode
 - Tests untouched: **836** (baseline completo, verde con `-race`; 112 listados explícitamente en el blast radius — §2)
 - Tests nuevos: **21** (B1-B21, mapeo completo P1-P16 → C1-C16 — §3)
 - Regression risks: **5** — extracción de helper en `internal/config` (gate P13c), materialización cosmética del golden (protocolo D8/HITL), contrato de firmas nuevas que el implementer debe respetar, suites 001/002/003 bajo I3 con CERO cambios, `TestRoundTrip_LiveConfig` opt-in nunca dependiente de `/home/ofap` para CI. (Detalle §7.)
+
+---
+
+## Sign-off HITL (2026-09-17)
+
+Pablo/Ofap (HITL — owner técnico mofgw) aprobó el test-audit **con ambas propuestas**:
+
+- **§4-A — RESUELTO:** `Apply` vive en `internal/configsync` con **filesystem inyectado** (interfaz `FS` mínima definida en el paquete; el binario le cablea la implementación `os`-backed; los tests B12-B15 usan wrappers FS reales sobre `t.TempDir()` + wrappers de fallo). I1 se respeta literal ("no `os.*`" en el paquete); "único que toca disco" se sostiene a nivel runtime (el binario invoca).
+- **§4-B — RESUELTO:** mecanismo de "candidato roto forzado" para C10/B12: plan con `ProviderPlan.Models` **non-nil vacía** → candidato con `models: []` → `validate()` rechaza ("al menos un model es obligatorio") → abort sin escribir. Oráculo determinista sin hooks ni mocks.
+
+Status: **Approved** by Pablo/Ofap (HITL) on 2026-09-17 — gate 3.0 cerrado, arranca RED (3.1)
