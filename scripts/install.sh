@@ -8,12 +8,19 @@
 #   1. Copia el binario mofgw a $MOFGW_BIN_DIR/mofgw (755)
 #   2. Instala mofgw.service (unit user) en $MOFGW_UNIT_DIR
 #   3. Copia config.example.yaml → config real SOLO si no existe
-#   4. systemctl --user daemon-reload + enable --now
-#   5. Verifica: systemctl --user is-active mofgw + TCP/curl 127.0.0.1:3369
+#   4. Copia el binario mofgw-sync a $MOFGW_BIN_DIR/mofgw-sync (755) [epic 019]
+#   5. Instala mofgw-sync.{service,timer} desde scripts/systemd/ [epic 019]
+#   6. systemctl --user daemon-reload + enable --now (+ timer)
+#   7. Verifica: systemctl --user is-active mofgw + TCP/curl 127.0.0.1:3369
+#      (+ list-timers del sync)
 #
 # Idempotente: re-correr no duplica units ni pisa config existente.
-# --uninstall: stop + disable, borra unit y binario; la config existente se
-#              conserva como config.yaml.bak.<timestamp>.
+# Units divergidos (reales, del operador) se protegen con
+# <unit>.bak.<timestamp> ANTES de sobrescribirlos (D6 de 019-006: re-correr
+# install.sh JAMÁS destruye la config del operador).
+# --uninstall: stop + disable, borra units y binarios (sync incluido); la
+#              config existente se conserva como config.yaml.bak.<timestamp>.
+#              Los .bak.* de units jamás se borran.
 #
 # Seguridad: si el puerto 3369 ya está ocupado por OTRO proceso al instalar,
 # el script falla con mensaje claro y NO mata procesos ajenos.
@@ -26,6 +33,8 @@
 #   MOFGW_CONFIG          ruta explícita del config (si apunta a /etc → nivel sistema)
 #   MOFGW_SKIP_SYSTEMCTL=1  dry-run: hace los pasos de archivos pero NO toca systemd
 #   MOFGW_BIN_SRC         binario prebuilt a copiar (si no, ver install_binary)
+#   MOFGW_SYNC_BIN_SRC    binario prebuilt mofgw-sync a copiar (si no, ver
+#                           install_sync_binary — espejo de MOFGW_BIN_SRC)
 #
 # Origen del binario (decisión documentada en install_binary):
 #   $MOFGW_BIN_SRC si está set → ./mofgw prebuilt en el repo si existe →
@@ -45,11 +54,19 @@ MOFGW_CONFIG_DIR="${MOFGW_CONFIG_DIR:-$MOFGW_HOME/.config/mofgw}"
 MOFGW_UNIT_DIR="${MOFGW_UNIT_DIR:-$MOFGW_HOME/.config/systemd/user}"
 MOFGW_SKIP_SYSTEMCTL="${MOFGW_SKIP_SYSTEMCTL:-0}"
 MOFGW_BIN_SRC="${MOFGW_BIN_SRC:-}"
+MOFGW_SYNC_BIN_SRC="${MOFGW_SYNC_BIN_SRC:-}"
 
 BIN="$MOFGW_BIN_DIR/mofgw"
 UNIT="$MOFGW_UNIT_DIR/mofgw.service"
 EXAMPLE_CONFIG="$REPO_ROOT/config.example.yaml"
 CONFIG_TARGET="${MOFGW_CONFIG:-$MOFGW_CONFIG_DIR/config.yaml}"
+
+# Epic 019-006: artefactos del sync (fuente única en scripts/systemd/).
+SYNC_BIN="$MOFGW_BIN_DIR/mofgw-sync"
+SYNC_SERVICE="$MOFGW_UNIT_DIR/mofgw-sync.service"
+SYNC_TIMER="$MOFGW_UNIT_DIR/mofgw-sync.timer"
+SYNC_SERVICE_SRC="$REPO_ROOT/scripts/systemd/mofgw-sync.service"
+SYNC_TIMER_SRC="$REPO_ROOT/scripts/systemd/mofgw-sync.timer"
 
 # ---------------------------------------------------------------------------
 # Utilidades
@@ -135,13 +152,59 @@ TimeoutStartSec=30
 [Install]
 WantedBy=default.target
 EOF
-  if [[ -f "$UNIT" ]] && cmp -s "$tmp" "$UNIT"; then
-    rm -f "$tmp"
-    log "unit ya instalada (contenido idéntico): $UNIT"
-  else
-    mv "$tmp" "$UNIT"
-    log "unit instalada: $UNIT"
+  install_unit_file "$tmp" "$UNIT"
+  rm -f "$tmp"
+}
+
+# install_unit_file: copia un unit con backup-on-overwrite (D6/P4 de 019-006).
+# El trap que corrige: el viejo patrón cmp→mv pisaba sin rescate cualquier
+# unit real divergido del operador → hoy produce <unit>.bak.<ts> ANTES de
+# instalar. Los .bak son inmortales para install.sh (espejo de config.bak).
+install_unit_file() {
+  local src="$1" dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  if [[ ! -f "$dst" ]]; then
+    cp "$src" "$dst"
+    log "unit instalada: $dst"
+    return 0
   fi
+  if cmp -s "$src" "$dst"; then
+    log "unit ya instalada (contenido idéntico): $dst"
+    return 0
+  fi
+  local ts
+  ts="$(date +%Y%m%d%H%M%S)"
+  mv "$dst" "${dst}.bak.${ts}"
+  log "unit existente divergida, protegida como backup: ${dst}.bak.${ts}"
+  cp "$src" "$dst"
+  log "unit instalada: $dst"
+}
+
+# install_sync_binary: espejo de install_binary para mofgw-sync (019-006 D5).
+install_sync_binary() {
+  mkdir -p "$MOFGW_BIN_DIR"
+  if [[ -n "$MOFGW_SYNC_BIN_SRC" ]]; then
+    [[ -f "$MOFGW_SYNC_BIN_SRC" ]] || die "MOFGW_SYNC_BIN_SRC apunta a un archivo inexistente: $MOFGW_SYNC_BIN_SRC"
+    cp "$MOFGW_SYNC_BIN_SRC" "$SYNC_BIN"
+    log "binario sync copiado desde MOFGW_SYNC_BIN_SRC: $MOFGW_SYNC_BIN_SRC"
+  elif [[ -f "$REPO_ROOT/mofgw-sync" ]]; then
+    cp "$REPO_ROOT/mofgw-sync" "$SYNC_BIN"
+    log "binario sync copiado desde $REPO_ROOT/mofgw-sync (prebuilt)"
+  else
+    log "construyendo binario sync (go build -o $SYNC_BIN ./cmd/mofgw-sync)…"
+    (cd "$REPO_ROOT" && go build -o "$SYNC_BIN" ./cmd/mofgw-sync)
+    log "binario sync construido en $SYNC_BIN"
+  fi
+  chmod 755 "$SYNC_BIN"
+}
+
+# install_sync_units: copia los units commiteados (fuente única en
+# scripts/systemd/ — I7 de 019-006, jamás heredocs re-generados).
+install_sync_units() {
+  [[ -f "$SYNC_SERVICE_SRC" ]] || die "no encuentro el unit commiteado: $SYNC_SERVICE_SRC"
+  [[ -f "$SYNC_TIMER_SRC" ]] || die "no encuentro el unit commiteado: $SYNC_TIMER_SRC"
+  install_unit_file "$SYNC_SERVICE_SRC" "$SYNC_SERVICE"
+  install_unit_file "$SYNC_TIMER_SRC" "$SYNC_TIMER"
 }
 
 start_service() {
@@ -185,6 +248,23 @@ start_service() {
   fi
 }
 
+# start_sync_timer: agenda el sync DESPUÉS de un server sano (P6 de 019-006:
+# si start_service muere, este paso JAMÁS corre — el timer no se agenda
+# sobre un install fallido).
+start_sync_timer() {
+  if [[ "$MOFGW_SKIP_SYSTEMCTL" == "1" ]]; then
+    log "dry-run: systemctl --user daemon-reload + enable --now mofgw-sync.timer (MOFGW_SKIP_SYSTEMCTL=1)"
+    return 0
+  fi
+  systemctl_user daemon-reload
+  systemctl_user enable --now mofgw-sync.timer
+  systemctl --user is-enabled mofgw-sync.timer >/dev/null 2>&1 \
+    || die "mofgw-sync.timer no quedó habilitado; ver: systemctl --user status mofgw-sync.timer"
+  systemctl --user list-timers mofgw-sync.timer --no-legend 2>/dev/null | grep -q mofgw-sync \
+    || die "mofgw-sync.timer no aparece en la agenda; ver: systemctl --user list-timers"
+  log "timer activo: $(systemctl --user list-timers mofgw-sync.timer --no-legend | awk '{print $NF}')"
+}
+
 # ---------------------------------------------------------------------------
 # Desinstalación
 # ---------------------------------------------------------------------------
@@ -193,11 +273,16 @@ uninstall() {
   if [[ "$MOFGW_SKIP_SYSTEMCTL" != "1" ]]; then
     systemctl --user disable mofgw.service >/dev/null 2>&1 || true
     systemctl --user stop mofgw.service >/dev/null 2>&1 || true
+    # El sync se desagenda con tolerancia (el timer puede no existir).
+    systemctl --user disable --now mofgw-sync.timer >/dev/null 2>&1 || true
   else
     log "dry-run: omitiendo stop/disable (MOFGW_SKIP_SYSTEMCTL=1)"
   fi
   rm -f "$UNIT"
   rm -f "$BIN"
+  # Epic 019-006 (P11): borrar units y binario del sync; los .bak.* de units
+  # y de config jamás se borran.
+  rm -f "$SYNC_SERVICE" "$SYNC_TIMER" "$SYNC_BIN"
   if [[ -f "$CONFIG_TARGET" ]]; then
     local ts
     ts="$(date +%Y%m%d%H%M%S)"
@@ -224,10 +309,15 @@ main() {
   install_binary
   install_config
   install_unit
+  install_sync_binary
+  install_sync_units
   start_service
+  start_sync_timer
 
   log "mofgw instalado. Unit: $UNIT | Binario: $BIN | Config: $CONFIG_TARGET"
+  log "sync:  Unit timer: $SYNC_TIMER | Binario: $SYNC_BIN"
   log "Estado: systemctl --user status mofgw"
+  log "Timer:  systemctl --user list-timers mofgw-sync.timer"
 }
 
 main "$@"

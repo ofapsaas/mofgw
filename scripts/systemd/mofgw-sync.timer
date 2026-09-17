@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+# mofgw-sync.timer — agenda UN ciclo de sincronización cada 60 minutos desde
+# el último completado (epic 019). Fuente única de verdad: este archivo
+# commiteado (spec 019-006 D1/P2).
+#
+# cuenta desde la última activación (monotónica, NO de calendario). El service
+# es Type oneshot, así que los disparos NO se solapan: si un run tarda más de
+# 60 min, systemd colapsa el disparo en vez de lanzar otro. Sin catch-up
+# post-downtime (irrelevante sin calendario). Sin directiva Unit (el
+# emparejamiento por nombre activa mofgw-sync.service).
+# Comportamiento al enable --now con OnBootSec vencido: primera corrida
+# inmediata (DESEADO: deja logs visibles al instalar, criterio del epic).
+[Unit]
+Description=mofgw-sync timer - sincronización del catálogo cada 60 minutos
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=60min
+
+[Install]
+WantedBy=timers.target

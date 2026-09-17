@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+# mofgw-sync.service — unidad oneshot que ejecuta UN ciclo de sincronización
+# del catálogo (epic 019). Fuente única de verdad: este archivo commiteado
+# en scripts/systemd/ (install.sh lo COPIA, jamás lo re-genera — spec 019-006
+# D1/P1). El scheduler es mofgw-sync.timer; este service jamás se activa de
+# forma autónoma ni se reintenta solo (I1: el exit distinto de 0 queda
+# visible y el próximo vencimiento del timer lo reintenta).
+[Unit]
+Description=mofgw-sync - sincronización del catálogo de providers de mofgw (epic 019)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/mofgw-sync
+# Env COMPARTIDO con el server (D4): prefix `-` → el sync corre igual si el
+# file falta; la única var que le importa es MOFGW_SYNC_VERIFY_KEY (sin ella,
+# degradación fail-soft F1+F2 + warning, spec 019-005 D7/P9).
+EnvironmentFile=-%h/.config/mofgw/env
+# Logging estructurado (slog por fase, spec 019-005 P12) → journal.
+StandardOutput=journal
+StandardError=journal
