@@ -1,9 +1,30 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-17 (feature 019-004-atomic-write-validate MERGED — epic 019 provider-sync-automation).
+> Última actualización: 2026-09-17 (feature 019-005-reload-signal MERGED — epic 019 provider-sync-automation).
 
 ## Decisiones recientes (cronología inversa)
+
+### 17 Sep 2026 — Feature 019-005-reload-signal (epic 019-provider-sync-automation) MERGED
+
+### Decisiones relevantes
+
+- **Feature 019-005-reload-signal MERGED — QUINTA del epic 019 (aplica la config escrita: el ciclo sync queda completo de punta a punta).** Paquete puro **`internal/reloadsig`** (interfaces inyectadas SystemdCtl/Prober/FS/Clock, precedente FS de 004): **restart `systemctl --user restart mofgw.service`** (D4: unit constante — decisión estructural, no temporal: el discovery verificó que el epic 017 es clients-polling, jamás hot-reload de providers[]; "SIGHUP cuando 017 retome" del plan epic se descarta por INCORRECTO) + **verificación en 3 fases** (F1 is-active poll 1s/ventana 30s → F2 `/healthz` sin Bearer → F3 paridad de IDs por SET contra `/v1/models` con Bearer `MOFGW_SYNC_VERIFY_KEY` — key de cliente; unset → degradación fail-soft a F1/F2 + warning) + **rollback restore-only** ante cualquier fallo de verificación (restaura los bytes previos leídos al inicio del run — jamás derivados — con patrón atómico temp+chmod+fsync+rename, re-restart y re-verificación liveness; el veredicto del rollback JAMÁS es exit 0) + **defensa M-2** (skip + digest disco≠candidato → fail-loud sin restart — cierra el skip-trap heredado de 004). Exit codes extendidos: 0/1/2 (heredados) + **3** = applied pero reload/verificación falló (rollback intentado). Flag `--no-reload` (D12: aplica sin restartear — streams en curso/testing/006).
+- **Descubrimiento estructural clave:** el servidor NO tiene ningún mecanismo de reload (config.Load boot-only, wiring pre-tráfico, SIGHUP 0 hits — y sin handler SIGHUP la señal MATA el proceso). `/v1/models` SÍ requiere Bearer (auth.go:94-110) — el curl sin auth del skill mofgw-client-sync es STALE (R3 cerrado; corregir doc del skill quedó como tarea de documentación del merge).
+- **Review REQUEST_CHANGES resuelto (7af4d22): F1 Major corregido pre-merge** — `Available()` conflatía "systemd sano" con "unit activo": un unit stopped/failed era misdiagnosticado como "sin systemd" → fix `is-system-running` con tolerancia a `degraded` (unit caído + systemd sano → restart intentado). F3 (cleanup temp), F4 (state completo), F6 (warn defensivo), F8b (rama muerta del default) aplicados; F2 (timeout 5s único vs 2s/5s) aceptado+documentado.
+- **Suite final del merge: 953 tests / 36 paquetes `-race` verde** (re-corrida fresca post-fixes; vet limpio). Commits: `c6720e2` spec, `f096ab8` test-audit, `391d883` RED (21 tests B1-B17 + fakes + fixture addr 4444), `58d5d47` GREEN (reloadsig + fase post-write), `1e257df` fixes review, `7af4d22` review+sign-off.
+- **Proceso — 8º incidente de harness del epic (el más severo):** el runtime de sub-agentes falló 8 veces durante la etapa 3 (outputs vacíos ×5 en 3 tipos de agente + 1 abort tras 3h de retry) → RED y GREEN ejecutados por el ORQUESTADOR inline (contract-primero: el test-audit commiteado ANTES del GREEN preserva la garantía del RED; el reviewer auditó el diff RED→GREEN y confirmó que el único edit de test fue de ejecutabilidad sin debilitar aserciones). Anti-bias DEGRADADO: review mono-familia como única capa externa (GLM vs GLM). Flakes preexistentes registrados: `TestE2E010002_TTLExpiry` + `TestPostcondition9_MuestreoBanda` (estadístico).
+
+### Deuda técnica detectada
+
+- **M-2 de 004 (DEFENSA ACTIVA AHORA):** el skip-trap sidecar-primero produce fail-loud en cada corrida (exit 1) hasta intervención — comportamiento deseado, pero el operador debe saber interpretarlo (log m2_check con ambos digests).
+- **`MOFGW_SYNC_VERIFY_KEY` requiere registrarse como key de cliente** en clients.yaml — la paridad automatizada post-reload sin key queda en degradación (warning). Documentar en config.example/env.
+- **Curl sin auth en skill mofgw-client-sync (stale):** corregir en el merge de documentación.
+- **Advisories F8a/F-http-client + flakes preexistentes** al backlog de hardening (detalle: docs/specs/019-005-reload-signal/review.md).
+
+### Próxima feature en cola
+
+- **019-006-systemd-timer** (epic 019): unidad timer 60 min + OnBootSec + logging estructurado + modo `--once` (ya existe como default). Después: 019-007-build-snapshot. Epic 020 en cola tras el cierre de 019.
 
 ### 17 Sep 2026 — Feature 019-004-atomic-write-validate (epic 019-provider-sync-automation) MERGED
 
