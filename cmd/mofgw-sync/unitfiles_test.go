@@ -129,17 +129,58 @@ func TestSyncTimerUnit(t *testing.T) {
 
 // ---- B3 (C3) — emparejamiento por nombre + descripciones ----
 
-// TestSyncUnitPairing congela la derivación estándar timer→service por
-// emparejamiento de nombre de archivo y la presencia de Description en ambos.
+// TestSyncUnitPairing congela C3: el emparejamiento timer→service se DERIVA
+// por nombre de archivo (review F3: sin literales duplicados). Nota honesta:
+// la verdadera garantía del emparejamiento es B2 (ausencia de `Unit=` ⇒
+// systemd deriva mofgw-sync.timer → mofgw-sync.service por nombre); acá se
+// congela que AMBOS archivos existen con el mismo stem (derivado de cada
+// nombre, jamás literales repetidos) + Description en cada uno.
 func TestSyncUnitPairing(t *testing.T) {
-	service := readUnit(t, "mofgw-sync.service")
-	timer := readUnit(t, "mofgw-sync.timer")
+	service, timer := pairNames(t)
+	assertHas(t, readUnit(t, service), []string{"Description="}, "service Description")
+	assertHas(t, readUnit(t, timer), []string{"Description="}, "timer Description")
+}
 
-	if !strings.HasPrefix("mofgw-sync.timer", "mofgw-sync") || !strings.HasPrefix("mofgw-sync.service", "mofgw-sync") {
-		t.Fatal("emparejamiento por nombre roto (C3): los archivos deben compartir prefijo mofgw-sync")
+// pairNames localiza en scripts/systemd/ el par timer/service con el mismo
+// stem (review F3: el emparejamiento se deriva del FS, no de strings
+// hardcodeadas en el test).
+func pairNames(t *testing.T) (service, timer string) {
+	t.Helper()
+	root := repoRoot(t)
+	dir := filepath.Join(root, "scripts", "systemd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("leyendo %s: %v", dir, err)
 	}
-	assertHas(t, service, []string{"Description="}, "service Description")
-	assertHas(t, timer, []string{"Description="}, "timer Description")
+	byStem := map[string][]string{}
+	for _, e := range entries {
+		name := e.Name()
+		if cut, ok := cutSuffix(name, ".service"); ok {
+			byStem[cut] = append(byStem[cut], name)
+		}
+		if cut, ok := cutSuffix(name, ".timer"); ok {
+			byStem[cut] = append(byStem[cut], name)
+		}
+	}
+	names, ok := byStem["mofgw-sync"]
+	if !ok || len(names) != 2 {
+		t.Fatalf("par timer/service para el stem mofgw-sync ausente o incompleto en %s: %v", dir, byStem)
+	}
+	for _, n := range names {
+		if len(n) >= 8 && n[len(n)-8:] == ".service" {
+			service = n
+		} else {
+			timer = n
+		}
+	}
+	return service, timer
+}
+
+func cutSuffix(s, suffix string) (string, bool) {
+	if len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix {
+		return s[:len(s)-len(suffix)], true
+	}
+	return s, false
 }
 
 // ---- B4 (C10) — canary opt-in del entorno real ----

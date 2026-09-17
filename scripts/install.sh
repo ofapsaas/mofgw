@@ -35,6 +35,12 @@
 #   MOFGW_BIN_SRC         binario prebuilt a copiar (si no, ver install_binary)
 #   MOFGW_SYNC_BIN_SRC    binario prebuilt mofgw-sync a copiar (si no, ver
 #                           install_sync_binary — espejo de MOFGW_BIN_SRC)
+#   MOFGW_SYNC_VERIFY_KEY   key de cliente (registrada en clients.yaml) para
+#                           que el sync verifique paridad de IDs post-reload
+#                           (F3 de 019-005); sin ella, cada corrida del timer
+#                           corre degradada F1+F2 con warning (P9 de 019-005).
+#                           NO la genera install.sh: el operador la agrega a
+#                           ~/.config/mofgw/env (P10 de 019-006).
 #
 # Origen del binario (decisión documentada en install_binary):
 #   $MOFGW_BIN_SRC si está set → ./mofgw prebuilt en el repo si existe →
@@ -152,8 +158,20 @@ TimeoutStartSec=30
 [Install]
 WantedBy=default.target
 EOF
+  local before after
+  # (compgen sin matches retorna 1 — el `|| true` evita que set -e mate el
+  # script en el caso normal de "sin backups previos").
+  before="$(compgen -G "$UNIT.bak.*" 2>/dev/null | sort | tr '\n' ' ' || true)"
   install_unit_file "$tmp" "$UNIT"
   rm -f "$tmp"
+  after="$(compgen -G "$UNIT.bak.*" 2>/dev/null | sort | tr '\n' ' ' || true)"
+  # F2 (review 019-006): el backup salva el archivo, no el comportamiento —
+  # si el unit real divergía, avisar LOUD para conciliar manualmente
+  # (EnvironmentFile, flags de ExecStart, customs del operador). La
+  # absorción de env+flags al template es scope de 019-007.
+  if [[ "$before" != "$after" ]]; then
+    log "ATENCIÓN: el unit de mofgw.service divergía del template y fue respaldado (NO pisado). Antes del próximo restart, conciliá manualmente EnvironmentFile, flags de ExecStart y customizaciones del operador. Backups en: $MOFGW_UNIT_DIR"
+  fi
 }
 
 # install_unit_file: copia un unit con backup-on-overwrite (D6/P4 de 019-006).
@@ -173,7 +191,7 @@ install_unit_file() {
     return 0
   fi
   local ts
-  ts="$(date +%Y%m%d%H%M%S)"
+  ts="$(date +%Y%m%d%H%M%S%N)"
   mv "$dst" "${dst}.bak.${ts}"
   log "unit existente divergida, protegida como backup: ${dst}.bak.${ts}"
   cp "$src" "$dst"
@@ -285,7 +303,7 @@ uninstall() {
   rm -f "$SYNC_SERVICE" "$SYNC_TIMER" "$SYNC_BIN"
   if [[ -f "$CONFIG_TARGET" ]]; then
     local ts
-    ts="$(date +%Y%m%d%H%M%S)"
+    ts="$(date +%Y%m%d%H%M%S%N)"
     mv "$CONFIG_TARGET" "${CONFIG_TARGET}.bak.${ts}"
     log "config preservada: ${CONFIG_TARGET}.bak.${ts}"
   fi

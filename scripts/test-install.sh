@@ -299,6 +299,18 @@ test_sync_creates_files() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7b (019-006 F1/P10): el header documenta MOFGW_SYNC_VERIFY_KEY.
+# ---------------------------------------------------------------------------
+test_sync_documents_verify_key() {
+  # --help imprime el header (install.sh:218-221) sin efectos colaterales.
+  if "$INSTALL_SCRIPT" --help 2>/dev/null | grep -q "MOFGW_SYNC_VERIFY_KEY"; then
+    pass "help documenta MOFGW_SYNC_VERIFY_KEY (P10: el operador debe leer el requisito de paridad)"
+  else
+    fail "help NO documenta MOFGW_SYNC_VERIFY_KEY (P10 incumplida)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Test 8 (019-006 C4): MOFGW_SYNC_BIN_SRC copia el prebuilt sin build.
 # ---------------------------------------------------------------------------
 test_sync_bin_from_src() {
@@ -405,6 +417,12 @@ test_sync_bin_permissions() {
 # ---------------------------------------------------------------------------
 test_sync_timer_requires_healthy_server() {
   new_sandbox
+  # review F5 (019-006): el listener de prueba requiere python3 — sin él,
+  # el puerto quedaría libre y el test mediría entorno en vez de regresión.
+  if ! command -v python3 >/dev/null 2>&1; then
+    say "SKIP: python3 ausente — C7 requiere un listener localhost para ocupar 3369"
+    return 0
+  fi
   # Listener ajeno en 3369: el fake is-active dice "no activo" → la rama
   # port_in_use muere (proceso ajeno, jamás se toca — solo lectura localhost).
   python3 -m http.server 3369 --bind 127.0.0.1 >/dev/null 2>&1 &
@@ -468,6 +486,7 @@ main() {
            test_respects_existing_config \
            test_bin_permissions \
            test_sync_creates_files \
+           test_sync_documents_verify_key \
            test_sync_bin_from_src \
            test_sync_units_backup_on_overwrite \
            test_sync_bin_permissions \
