@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Pablo Manuel Rizzo
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Registro de clientes complementario del fixture golden 019-004 (D8).
+# Formato 017-001 clients_file, idéntico a validClientsYAML de config_test.go:
+# key_sha256 = 64 hex (hash de la key del cliente; mofgw NUNCA resuelve la
+# key, I5). Referenciado desde config-roundtrip.yaml como
+# `clients_file: "testdata/config-roundtrip-clients.yaml"` — solo lo lee
+# config.ParseForValidation en los happy-paths de Apply.
+- id: ofap-core
+  key_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
