@@ -211,7 +211,7 @@ func Test014001_P6_TerminalSchemaExact(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &m); err != nil {
 		t.Fatalf("línea no es JSON válido: %v", err)
 	}
-	want := []string{"type", "request_id", "ts", "client", "outcome", "error_code", "status", "final_provider", "tokens", "cost_usd", "stream"}
+	want := []string{"type", "request_id", "ts", "client", "outcome", "error_code", "status", "final_provider", "model", "tokens", "cost_usd", "cost_usd_src", "cost_usd_up", "stream"}
 	if !keysIguales(m, want) {
 		t.Fatalf("keys terminal = %v, want exactamente %v (P6/C10)", sortedKeys(m), want)
 	}
