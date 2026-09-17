@@ -51,6 +51,10 @@ sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mv "$tmp" "$DIR/api.json"
 trap - EXIT
+# F4 (review 019-007): meta.json también atómico (tmp+mv) — un crash entre
+# api y meta dejaría par mismatched (api nuevo + meta vieja ⇒ sha mentiroso).
+metatmp="$(mktemp)"
 printf '{\n  "fetched_at": "%s",\n  "sha256": "%s",\n  "source_url": "%s"\n}\n' \
-  "$now" "$sha" "$URL" >"$DIR/meta.json"
+  "$now" "$sha" "$URL" >"$metatmp"
+mv "$metatmp" "$DIR/meta.json"
 log "snapshot regenerado: $DIR/api.json + $DIR/meta.json (sha $sha, $now)"

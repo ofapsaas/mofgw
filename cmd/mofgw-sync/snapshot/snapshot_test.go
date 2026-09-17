@@ -79,6 +79,31 @@ func TestSnapshot_LiveEmbeddedParses(t *testing.T) {
 	_ = meta
 }
 
+// ---- B2b (C2, P4) — caminos corruptos deterministas (review B2) ----
+
+// TestParseMeta_RejectsBad congela P4 de forma DETERMINISTA: JSON inválido,
+// fecha mala, sha vacío u objeto sin campos ⇒ parseMeta devuelve error (y
+// por tanto Embedded() con ese estado devuelve ok=false). In-package puede
+// llamar al no-exportado directamente (contrato de parseo del paquete).
+func TestParseMeta_RejectsBad(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"json_invalido", `no-json`},
+		{"objeto_vacio", `{}`},
+		{"fecha_mala", `{"fetched_at":"ayer","sha256":"x","source_url":"u"}`},
+		{"sha_vacio", `{"fetched_at":"2026-09-17T19:39:29Z","sha256":"","source_url":"u"}`},
+		{"sin_fetched_at", `{"sha256":"x","source_url":"u"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseMeta([]byte(tc.raw)); err == nil {
+				t.Errorf("parseMeta(%q) sin error (P4: vías corruptas ⇒ unavailable)", tc.raw)
+			}
+		})
+	}
+}
+
 // TestSnapshot_UnavailableOnBadMeta congela P4: con meta.json corrupto
 // (documentado: este test congela el CONTRATO de unavailable — la mecánica
 // exacta de inyección de "meta mala" es del implementer, p.ej. parse de un

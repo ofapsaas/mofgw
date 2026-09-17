@@ -17,7 +17,9 @@
 package snapshot
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"time"
 )
@@ -45,12 +47,20 @@ type metaFile struct {
 // Embedded devuelve el snapshot embebido. ok=false cuando api.json está
 // vacío o meta.json falta/corrompe (P4): el llamante se comporta como si no
 // hubiera snapshot (cero fallback, fail-loud sin cache intacto).
+//
+// F3 (review 019-007): NO confía ciegamente en el sha de meta.json — lo
+// recomputa sobre api.json; mismatch ⇒ ok=false (fail-safe: el evento
+// snapshot_fallback{sha256} es forense, no decorativo).
 func Embedded() (raw []byte, meta Meta, ok bool) {
 	if len(apiJSON) == 0 {
 		return nil, Meta{}, false
 	}
 	m, err := parseMeta(metaJSON)
 	if err != nil {
+		return nil, Meta{}, false
+	}
+	sum := sha256.Sum256(apiJSON)
+	if got := hex.EncodeToString(sum[:]); got != m.SHA256 {
 		return nil, Meta{}, false
 	}
 	return apiJSON, m, true

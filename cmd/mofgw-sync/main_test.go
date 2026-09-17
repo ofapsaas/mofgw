@@ -540,7 +540,7 @@ func TestLoadSources_SnapshotFallback(t *testing.T) {
 	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
 
 	before := readdirNames(t, dir)
-	catalog, zenList, goList, orCatalog := loadSources(snapshotOpts(mdPath))
+	catalog, zenList, goList, orCatalog, _ := loadSources(snapshotOpts(mdPath))
 
 	if catalog == nil {
 		t.Fatal("catalog nil con cache ausente + snapshot disponible (P1: fallback por ausencia)")
@@ -594,7 +594,7 @@ func TestLoadSources_SnapshotTolerantShape(t *testing.T) {
 	dir := t.TempDir()
 	mdPath := filepath.Join(dir, "cache", "modelsdev.json")
 
-	catalog, _, _, _ := loadSources(snapshotOpts(mdPath))
+	catalog, _, _, _, _ := loadSources(snapshotOpts(mdPath))
 	if catalog == nil {
 		t.Fatal("catalog nil (P1)")
 	}
@@ -618,7 +618,7 @@ func TestLoadSources_CorruptCacheNoSnapshotMask(t *testing.T) {
 	writeCacheFile(t, mdPath, []byte("{json roto"))
 
 	opts := snapshotOpts(mdPath)
-	catalog, _, _, _ := loadSources(opts)
+	catalog, _, _, _, _ := loadSources(opts)
 	if catalog != nil {
 		t.Errorf("catalog servido desde snapshot con cache CORRUPTO (P5: corruption ≠ ausencia)")
 	}
@@ -680,15 +680,15 @@ func TestSnapshotFallback_StalenessWarn(t *testing.T) {
 	if code := run(newSnapshot(31)(), logger); code != 0 {
 		t.Fatalf("run con snapshot viejo = %d, want 0 (P8: staleness no cambia exit)", code)
 	}
-	if !strings.Contains(buf.String(), "stale") {
-		t.Errorf("log sin warning de staleness con age 31d (P8)\nlog: %s", buf.String())
+	if !strings.Contains(buf.String(), "snapshot stale") {
+		t.Errorf("log sin warning de staleness con age 31d (P8: marcador canónico `snapshot stale`)\nlog: %s", buf.String())
 	}
 
 	buf2, logger2 := captureLogs()
 	if code := run(newSnapshot(5)(), logger2); code != 0 {
 		t.Fatalf("run con snapshot fresco = %d, want 0", code)
 	}
-	if strings.Contains(buf2.String(), "stale") {
+	if strings.Contains(buf2.String(), "snapshot stale") {
 		t.Errorf("log CON warning de staleness con age 5d (P8: solo > 30d)\nlog: %s", buf2.String())
 	}
 }
@@ -705,7 +705,7 @@ func TestLoadSources_NoSnapshotBehavesAsBefore(t *testing.T) {
 
 	opts := snapshotOpts(mdPath)
 	opts.Snapshot = runSnapshot{Available: false}
-	catalog, _, _, _ := loadSources(opts)
+	catalog, _, _, _, _ := loadSources(opts)
 	if catalog != nil {
 		t.Errorf("catalog no-nil con Available=false y sin cache (P9: comportamiento pre-007)")
 	}

@@ -156,18 +156,19 @@ func run(opts runOpts, logger *slog.Logger) int {
 		return 1
 	}
 
-	catalog, zenList, goList, orCatalog := loadSources(opts)
+	catalog, zenList, goList, orCatalog, fromSnapshot := loadSources(opts)
 	plan, err := catalogmerge.Merge(catalog, zenList, goList, orCatalog, cfg.Providers)
 	if err != nil {
 		logger.Error("mofgw-sync: merge de catálogos", "error", err)
 		return 1
 	}
 
-	// 019-007 (D5): si el catálogo vino del snapshot (cache ausente +
-	// disponible + servido), visibilidad fail-soft: evento + warning
-	// sintético post-Merge (binario-added, NO derivado del IR) + warn de
-	// staleness si age > 30d. NUNCA cambia el exit code (I7 de 007).
-	if usedSnapshot(opts, catalog) {
+	// 019-007 (D5): si el catálogo vino del snapshot (flag propagado por
+	// loadSources — review F1: sin re-stat, sin ventana TOCTOU), visibilidad
+	// fail-soft: evento + warning sintético post-Merge (binario-added, NO
+	// derivado del IR) + warn de staleness si age > 30d. NUNCA cambia el
+	// exit code (I7 de 007).
+	if fromSnapshot {
 		ageDays := snapshotAgeDays(opts.Snapshot)
 		logger.Warn("mofgw-sync: snapshot_fallback — catálogo models.dev servido desde el snapshot embebido",
 			"source", "modelsdev",
@@ -277,7 +278,13 @@ func loadRawConfig(explicit string) ([]byte, string, error) {
 // disco (sin red, P14); modo fetch → Refresh fail-soft + Get. Cache ausente
 // → fuente nil (fail-soft de 003: degradación + warning en el IR). Con
 // path inyectado vacío → Default*CachePath.
-func loadSources(opts runOpts) (*modelsdev.Catalog, *upstream.ModelList, *upstream.ModelList, *upstream.OpenRouterCatalog) {
+//
+// Retorna además `fromSnapshot`: true IFF el catálogo vino del snapshot
+// (019-007 D4/D5). El flag se PROPAGA (no se re-chequea en el llamante —
+// review F1: el re-stat posterior abriría una ventana TOCTOU donde el mundo
+// exterior —otro mofgw-sync del timer, el operador— cambia el archivo entre
+// ambos stats y el fallback quedaría silencioso).
+func loadSources(opts runOpts) (*modelsdev.Catalog, *upstream.ModelList, *upstream.ModelList, *upstream.OpenRouterCatalog, bool) {
 	ctx := context.Background()
 
 	mdStore := modelsdev.NewStore(pathOr(opts.CachePaths.ModelsDev, modelsdev.DefaultCachePath()), 0, false)
@@ -295,6 +302,7 @@ func loadSources(opts runOpts) (*modelsdev.Catalog, *upstream.ModelList, *upstre
 	}
 
 	catalog, err := mdStore.Get()
+	fromSnapshot := false
 	if err != nil {
 		catalog = nil
 		// 019-007 (D4): fallback SOLO por ausencia (cache inexistente).
@@ -304,6 +312,7 @@ func loadSources(opts runOpts) (*modelsdev.Catalog, *upstream.ModelList, *upstre
 		if _, statErr := os.Stat(mdPath); os.IsNotExist(statErr) && opts.Snapshot.Available {
 			if parsed, perr := modelsdev.ParseCatalog(opts.Snapshot.Raw); perr == nil {
 				catalog = parsed
+				fromSnapshot = true
 			}
 		}
 	}
@@ -322,7 +331,7 @@ func loadSources(opts runOpts) (*modelsdev.Catalog, *upstream.ModelList, *upstre
 	if err == nil {
 		orCatalog = &orc
 	}
-	return catalog, zenList, goList, orCatalog
+	return catalog, zenList, goList, orCatalog, fromSnapshot
 }
 
 func pathOr(injected, def string) string {
@@ -330,19 +339,6 @@ func pathOr(injected, def string) string {
 		return injected
 	}
 	return def
-}
-
-// usedSnapshot detecta si el catálogo de este run vino del snapshot (019-007
-// D5): opts.Snapshot disponible + cache modelsdev ausente en disco +
-// catálogo servido (non-nil). El re-chequeo de stat es contra el MISMO path
-// efectivo que usa loadSources (no hay concurrencia entre ambos).
-func usedSnapshot(opts runOpts, catalog *modelsdev.Catalog) bool {
-	if !opts.Snapshot.Available || catalog == nil {
-		return false
-	}
-	mdPath := pathOr(opts.CachePaths.ModelsDev, modelsdev.DefaultCachePath())
-	_, err := os.Stat(mdPath)
-	return os.IsNotExist(err)
 }
 
 // snapshotAgeDays: edad del snapshot en días enteros (0 si futuro).
