@@ -476,6 +476,124 @@ test_sync_uninstall() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 13 (019-007 C9/P12): el server unit instalado trae EnvironmentFile
+# estricto (sin prefix -).
+# ---------------------------------------------------------------------------
+test_server_unit_has_envfile() {
+  new_sandbox
+  local unit="$SANDBOX/.config/systemd/user/mofgw.service"
+
+  run_install || { fail "install.sh falló"; return; }
+
+  if grep -qxF "EnvironmentFile=%h/.config/mofgw/env" "$unit" 2>/dev/null; then
+    pass "server unit con EnvironmentFile estricto (P12)"
+  else
+    fail "server unit sin la línea EnvironmentFile exacta (P12)"
+    grep -n "EnvironmentFile" "$unit" >&2 || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 14 (019-007 C9/P13): el drop-in del operador sobrevive intacto;
+# install jamás crea mofgw.service.d/.
+# ---------------------------------------------------------------------------
+test_server_dropin_untouched() {
+  new_sandbox
+  local udir="$SANDBOX/.config/systemd/user"
+  local dropdir="$udir/mofgw.service.d"
+  local override="$dropdir/override.conf"
+  mkdir -p "$dropdir"
+  printf '[Service]\nExecStart=\nExecStart=%%h/.local/bin/mofgw --verbose\n' >"$override"
+  local prev
+  prev="$(cat "$override")"
+
+  run_install || { fail "install.sh falló"; return; }
+
+  if [[ "$(cat "$override")" == "$prev" ]]; then
+    pass "override.conf del operador byte-exacto tras install (P13)"
+  else
+    fail "override.conf modificado por install (P13: jamás gestiona drop-ins)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 15 (019-007 C9/P13 complementario): sin drop-in preexistente,
+# install NO crea mofgw.service.d/.
+# ---------------------------------------------------------------------------
+test_server_dropin_never_created() {
+  new_sandbox
+  local dropdir="$SANDBOX/.config/systemd/user/mofgw.service.d"
+
+  run_install || { fail "install.sh falló"; return; }
+
+  if [[ ! -e "$dropdir" ]]; then
+    pass "mofgw.service.d/ jamás creado por install (P13)"
+  else
+    fail "install creó mofgw.service.d/ (P13: el drop-in es del operador)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 16 (019-007 C10/P14): fetch-snapshot.sh con fake genera api+meta
+# correctos; body inválido → exit≠0 sin escribir.
+# ---------------------------------------------------------------------------
+test_fetch_snapshot() {
+  new_sandbox
+  local snapdir="$SANDBOX/snapshot"
+  local fakebody="$SANDBOX/upstream-api.json"
+  printf '{"opencode":{"name":"OpenCode","models":{"m1":{"name":"M1"}}}}' >"$fakebody"
+
+  if MOFGW_SNAPSHOT_URL="file://$fakebody" MOFGW_SNAPSHOT_DIR="$snapdir" \
+       "$REPO_ROOT/scripts/fetch-snapshot.sh" >"$SANDBOX/fetch.log" 2>&1; then
+    pass "fetch-snapshot.sh exit 0 con body válido"
+  else
+    fail "fetch-snapshot.sh exit != 0 con body válido"
+    tail -5 "$SANDBOX/fetch.log" >&2
+    return
+  fi
+
+  if [[ -f "$snapdir/api.json" ]] && cmp -s "$fakebody" "$snapdir/api.json"; then
+    pass "api.json byte-idéntico al body (P14)"
+  else
+    fail "api.json no es byte-idéntico al body (P14)"
+  fi
+
+  # Validador de meta en archivo propio (el heredoc va en statement simple —
+  # heredoc en la línea de condición del if confunde al parser de bash).
+  local pycheck="$SANDBOX/check-meta.py"
+  cat >"$pycheck" <<'PYEOF'
+import json, sys, hashlib, datetime
+meta = json.load(open(sys.argv[1]))
+raw = open(sys.argv[2], 'rb').read()
+assert meta["sha256"] == hashlib.sha256(raw).hexdigest(), "sha"
+datetime.datetime.fromisoformat(meta["fetched_at"].replace("Z", "+00:00"))
+PYEOF
+  if python3 "$pycheck" "$snapdir/meta.json" "$snapdir/api.json" 2>/dev/null; then
+    pass "meta.json con sha256 correcto y fetched_at RFC3339 (P14)"
+  else
+    fail "meta.json inválido (sha o fetched_at)"
+    cat "$snapdir/meta.json" >&2 || true
+  fi
+
+  # Body inválido → exit≠0 y NADA escrito (dir fresco).
+  local snapdir2="$SANDBOX/snapshot2"
+  printf 'no-json' >"$SANDBOX/bad.json"
+  if MOFGW_SNAPSHOT_URL="file://$SANDBOX/bad.json" MOFGW_SNAPSHOT_DIR="$snapdir2" \
+       "$REPO_ROOT/scripts/fetch-snapshot.sh" >"$SANDBOX/fetch2.log" 2>&1; then
+    fail "fetch-snapshot.sh exit 0 con body inválido (P14: fail sin escribir)"
+  else
+    pass "fetch-snapshot.sh exit != 0 con body inválido (P14)"
+  fi
+  if [[ ! -e "$snapdir2/api.json" && ! -e "$snapdir2/meta.json" ]]; then
+    pass "nada escrito con body inválido (P14)"
+  else
+    fail "archivos escritos con body inválido (P14)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# main()
+# ---------------------------------------------------------------------------
 main() {
   say "== Harness 005-003-systemd (sandbox MOFGW_SKIP_SYSTEMCTL=1) =="
   for t in test_install_creates_files \
@@ -491,7 +609,11 @@ main() {
            test_sync_units_backup_on_overwrite \
            test_sync_bin_permissions \
            test_sync_timer_requires_healthy_server \
-           test_sync_uninstall; do
+           test_sync_uninstall \
+           test_server_unit_has_envfile \
+           test_server_dropin_untouched \
+           test_server_dropin_never_created \
+           test_fetch_snapshot; do
     say "--- $t"
     "$t"
   done

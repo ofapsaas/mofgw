@@ -42,6 +42,12 @@
 #                           NO la genera install.sh: el operador la agrega a
 #                           ~/.config/mofgw/env (P10 de 019-006).
 #
+# Customs host-specific del server (flags como --verbose, --log-file, paths):
+#   van en ~/.config/systemd/user/mofgw.service.d/override.conf (sección
+#   [Service] + línea "ExecStart=" vacía + "ExecStart=" completo), creado por
+#   el OPERADOR — install.sh JAMÁS escribe en mofgw.service.d/ (D8 de 019-007).
+#   El unit base absorbió EnvironmentFile (epic 019-007, cierre F2 de 019-006).
+#
 # Origen del binario (decisión documentada en install_binary):
 #   $MOFGW_BIN_SRC si está set → ./mofgw prebuilt en el repo si existe →
 #   go build -o "$MOFGW_BIN_DIR/mofgw" ./cmd/mofgw (construye directo al
@@ -149,6 +155,11 @@ Wants=network-online.target
 
 [Service]
 ExecStart=$BIN
+# Epic 019-007 (Track B, cierre F2 de 019-006): el server consume keys del
+# env del operador — sin EnvironmentFile arranca infuncional. El template
+# absorbe SOLO esta línea (genérica, portable); flags/paths host-specific
+# van al drop-in del operador (ver MOFGW docs en el header).
+EnvironmentFile=%h/.config/mofgw/env
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

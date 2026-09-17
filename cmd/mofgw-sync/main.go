@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	syncsnapshot "github.com/ofapsaas/mofgw/cmd/mofgw-sync/snapshot"
 	"github.com/ofapsaas/mofgw/internal/catalogmerge"
 	"github.com/ofapsaas/mofgw/internal/config"
 	"github.com/ofapsaas/mofgw/internal/configsync"
@@ -44,12 +45,23 @@ import (
 // Extensión ADITIVA de 005 (test-audit §2.4): los campos nuevos en
 // zero-value DESHABILITAN la fase de reload (los tests de 004 congelan solo
 // la fase 004); main() siempre cablea hooks reales en producción.
+// Extensión ADITIVA de 007 (test-audit §2.4): Snapshot zero-value
+// (Available=false) ⇒ comportamiento pre-007 idéntico.
 type runOpts struct {
 	ConfigPath string      // -config (precedencia idéntica a config.Load)
 	NoFetch    bool        // --no-fetch: cache-only, sin red (P14)
 	CachePaths cachePaths  // inyección de paths de cache por fuente (tests)
 	NoReload   bool        // --no-reload (D12): aplica config sin restartear
 	Reload     reloadHooks // inyección de la fase reload (tests); nil hooks = disabled
+	Snapshot   runSnapshot // fallback offline inyectado (tests tiny; prod desde Embedded)
+}
+
+// runSnapshot: catálogo models.dev de último recurso (019-007 D3).
+type runSnapshot struct {
+	Raw       []byte
+	FetchedAt time.Time
+	SHA256    string
+	Available bool
 }
 
 // reloadHooks: implementaciones de la fase de reload (019-005). Zero-value
@@ -91,6 +103,16 @@ func main() {
 	// main() SIEMPRE cablea hooks reales (nil-disabled es exclusivo de
 	// tests — test-audit §2.4/R3). --no-reload lo respeta run() por opts.
 	opts.Reload = realReloadHooks()
+	// 019-007 (P9): poblar el fallback desde el snapshot embebido (solo el
+	// binario sync crece; la librería y el server quedan livianos, I1).
+	if raw, meta, ok := syncsnapshot.Embedded(); ok {
+		opts.Snapshot = runSnapshot{
+			Raw:       raw,
+			FetchedAt: meta.FetchedAt,
+			SHA256:    meta.SHA256,
+			Available: true,
+		}
+	}
 	os.Exit(run(opts, slog.Default()))
 }
 
@@ -139,6 +161,27 @@ func run(opts runOpts, logger *slog.Logger) int {
 	if err != nil {
 		logger.Error("mofgw-sync: merge de catálogos", "error", err)
 		return 1
+	}
+
+	// 019-007 (D5): si el catálogo vino del snapshot (cache ausente +
+	// disponible + servido), visibilidad fail-soft: evento + warning
+	// sintético post-Merge (binario-added, NO derivado del IR) + warn de
+	// staleness si age > 30d. NUNCA cambia el exit code (I7 de 007).
+	if usedSnapshot(opts, catalog) {
+		ageDays := snapshotAgeDays(opts.Snapshot)
+		logger.Warn("mofgw-sync: snapshot_fallback — catálogo models.dev servido desde el snapshot embebido",
+			"source", "modelsdev",
+			"fetched_at", opts.Snapshot.FetchedAt.UTC().Format(time.RFC3339),
+			"sha256", opts.Snapshot.SHA256,
+			"age_days", ageDays)
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf(
+			"models.dev: catálogo snapshot embebido (fetched_at %s, %d días) — sin red",
+			opts.Snapshot.FetchedAt.UTC().Format("2006-01-02"), ageDays))
+		if ageDays > 30 {
+			logger.Warn("mofgw-sync: snapshot stale — el snapshot supera 30 días; regenerar con scripts/fetch-snapshot.sh",
+				"source", "modelsdev",
+				"age_days", ageDays)
+		}
 	}
 
 	// P12: warnings del plan (el IR ya los trae sorted+dedup, incluidos los
@@ -254,6 +297,15 @@ func loadSources(opts runOpts) (*modelsdev.Catalog, *upstream.ModelList, *upstre
 	catalog, err := mdStore.Get()
 	if err != nil {
 		catalog = nil
+		// 019-007 (D4): fallback SOLO por ausencia (cache inexistente).
+		// Archivo presente pero corrupto (parse error) → error de corruption,
+		// NO cae a snapshot (P5: el snapshot no enmascara corrupción).
+		mdPath := pathOr(opts.CachePaths.ModelsDev, modelsdev.DefaultCachePath())
+		if _, statErr := os.Stat(mdPath); os.IsNotExist(statErr) && opts.Snapshot.Available {
+			if parsed, perr := modelsdev.ParseCatalog(opts.Snapshot.Raw); perr == nil {
+				catalog = parsed
+			}
+		}
 	}
 	zen, err := zenStore.Get()
 	var zenList *upstream.ModelList
@@ -278,6 +330,28 @@ func pathOr(injected, def string) string {
 		return injected
 	}
 	return def
+}
+
+// usedSnapshot detecta si el catálogo de este run vino del snapshot (019-007
+// D5): opts.Snapshot disponible + cache modelsdev ausente en disco +
+// catálogo servido (non-nil). El re-chequeo de stat es contra el MISMO path
+// efectivo que usa loadSources (no hay concurrencia entre ambos).
+func usedSnapshot(opts runOpts, catalog *modelsdev.Catalog) bool {
+	if !opts.Snapshot.Available || catalog == nil {
+		return false
+	}
+	mdPath := pathOr(opts.CachePaths.ModelsDev, modelsdev.DefaultCachePath())
+	_, err := os.Stat(mdPath)
+	return os.IsNotExist(err)
+}
+
+// snapshotAgeDays: edad del snapshot en días enteros (0 si futuro).
+func snapshotAgeDays(snap runSnapshot) int {
+	d := int(time.Since(snap.FetchedAt).Hours() / 24)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // realReloadHooks: hooks de producción (main() los cablea siempre — el
