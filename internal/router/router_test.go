@@ -71,6 +71,13 @@ func (f *fakeProvider) fail400() *fakeProvider {
 	return f
 }
 
+// fail401: cuenta upstream agotada (ej. "Insufficient balance", opencode
+// Zen devuelve 401). Es fallo DE ESA CUENTA, no del request del cliente.
+func (f *fakeProvider) fail401() *fakeProvider {
+	f.errFor["complete"] = &provider.ErrUpstream{StatusCode: 401, Type: "invalid_request_error", Message: "Insufficient balance. Manage your billing here: https://example.com/billing (status 401)"}
+	return f
+}
+
 // failThenOK: falla con el error dado los primeros n intentos, luego
 // responde ok("") (002-001: reintento absorbe el fallo transitorio).
 // NO toca errFor (fallo permanente): es un modo transitorio aparte.
@@ -314,6 +321,64 @@ func TestClientErrorNoFallback(t *testing.T) {
 	}
 	if p2.callCount() != 0 {
 		t.Fatal("4xx de cliente no debe probar el siguiente provider")
+	}
+}
+
+// TestUpstream401FailsOver: un 401 de cuenta agotada reportado por el
+// UPSTREAM (no error del cliente contra mofgw) debe ser retryable —
+// failover al siguiente provider con otra key. Incidente 17 Sep 2026:
+// go-ofap4 sin saldo devolvía 401 "Insufficient balance" y el chain
+// terminaba 502 sin probar los 5 providers restantes con crédito.
+func TestUpstream401FailsOver(t *testing.T) {
+	p1 := newFake("p1", "m").fail401()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 401 upstream debe hacer failover, no terminal)", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
+	}
+	if p2.callCount() != 1 {
+		t.Fatalf("p2.callCount = %d, want 1", p2.callCount())
+	}
+}
+
+// TestUpstream401AllFail: si TODO el chain falla con 401, el cliente ve
+// 502/upstream_error (fallo de providers), no 401 (que sugeriría problema
+// de credenciales del cliente contra mofgw, que no es).
+func TestUpstream401AllFail(t *testing.T) {
+	p1 := newFake("p1", "m").fail401()
+	p2 := newFake("p2", "m").fail401()
+	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError", err)
+	}
+	if ce.Status != http.StatusBadGateway || ce.Type != "upstream_error" {
+		t.Fatalf("status/type = %d/%s, want 502/upstream_error", ce.Status, ce.Type)
+	}
+}
+
+// TestUpstream400StillNoFallback: guarda del contrato existente — un 400
+// real del upstream (request malformado, error del cliente) sigue siendo
+// no-retryable. Solo 401/402 de cuenta ganan failover.
+func TestUpstream400StillNoFallback(t *testing.T) {
+	p1 := newFake("p1", "m").fail400()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError", err)
+	}
+	if p2.callCount() != 0 {
+		t.Fatal("400 upstream no debe probar el siguiente provider")
 	}
 }
 

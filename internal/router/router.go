@@ -705,6 +705,16 @@ func (r *Router) injectThinkingForAttempt(body []byte, model string, s *Provider
 // classify decide si un error de intento es retryable (se reintenta el
 // mismo provider o se prueba el siguiente) o no-retryable (se responde
 // al cliente ya).
+//
+// 401/402 del upstream (cuenta: key inválida, saldo agotado) son
+// retryable con failover: el problema es del estado de ESA cuenta, no de
+// la request — otro provider con otra key funciona (incidente 17 Sep
+// 2026: go-ofap4 sin saldo devolvía 401 "Insufficient balance" y el
+// chain moría 502 sin probar los 5 providers restantes con crédito).
+// El 401 del cliente contra mofgw nunca llega acá (internal/auth
+// rechaza antes del router). El 403 queda no-retryable a propósito:
+// semántica ambigua (puede ser política de contenido a nivel request,
+// que fallaría igual en todos los providers).
 func classify(err error) (retryable bool, status int, typ, msg string) {
 	var ue *provider.ErrUpstream
 	if errors.As(err, &ue) {
@@ -713,9 +723,11 @@ func classify(err error) (retryable bool, status int, typ, msg string) {
 			return true, ue.StatusCode, ue.Type, ue.Message
 		case ue.StatusCode >= 500:
 			return true, ue.StatusCode, ue.Type, ue.Message
+		case ue.StatusCode == http.StatusUnauthorized || ue.StatusCode == http.StatusPaymentRequired:
+			return true, http.StatusBadGateway, "upstream_error", ue.Message
 		case ue.Type == "timeout" || ue.Type == "network":
 			return true, http.StatusBadGateway, "upstream_error", ue.Message
-		default: // 4xx de cliente (400, 401, 404...)
+		default: // 4xx de request (400, 403, 404, 413...)
 			return false, ue.StatusCode, ue.Type, ue.Message
 		}
 	}
