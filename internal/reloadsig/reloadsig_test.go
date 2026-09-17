@@ -48,8 +48,6 @@ package reloadsig
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -117,11 +115,6 @@ var expectedModelSet = []string{"claude-sonnet-4", "glm-5.2", "minimax-m3"}
 const unitConst = "mofgw.service" // D4/P15
 
 const verifyKeyTest = "s3cr3t-k3y" // B15: valor que JAMÁS puede salir en logs
-
-func digestHex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
 
 // writeBytes escribe bytes en el path del config dentro de dir.
 func writeBytes(t *testing.T, dir string, content string) string {
@@ -353,16 +346,31 @@ func phaseCount(buf *bytes.Buffer, phase string) int {
 	return bytes.Count(buf.Bytes(), []byte(needle))
 }
 
-// runReload: helper de construcción del Input para los paths DEGRADADOS
-// (VerifyKey siempre vacío — P9). El parámetro key NO participa acá.
-func runReload(configPath string, stash []byte, applied bool, digest string, sys *fakeSystemd, p *fakeProber, fs FS, ck *fakeClock, logger *slog.Logger) int {
+// runReload: helper para los paths de RELOAD degradados (Applied=true,
+// Skipped=false, VerifyKey vacío — P9).
+func runReload(configPath string, stash []byte, digest string, sys *fakeSystemd, p *fakeProber, fs FS, ck *fakeClock, logger *slog.Logger) int {
 	return Run(Input{
 		Stash:      stash,
 		ConfigPath: configPath,
-		Applied:    applied,
+		Applied:    true,
 		Digest:     digest,
 		Unit:       unitConst,
 		VerifyKey:  "",
+		Systemd:    sys,
+		Prober:     p,
+		FS:         fs,
+		Clock:      ck,
+		Logger:     logger,
+	})
+}
+
+// runM2: helper para la defensa M-2 (Skipped=true, Applied=false — P2).
+func runM2(configPath string, digest string, sys *fakeSystemd, p *fakeProber, fs FS, ck *fakeClock, logger *slog.Logger) int {
+	return Run(Input{
+		ConfigPath: configPath,
+		Skipped:    true,
+		Digest:     digest,
+		Unit:       unitConst,
 		Systemd:    sys,
 		Prober:     p,
 		FS:         fs,
@@ -402,7 +410,7 @@ func TestRun_M2Defense(t *testing.T) {
 		sys := &fakeSystemd{}
 		p := &fakeProber{}
 		buf, logger := capture()
-		code := runReload(configPath, nil, false, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
+		code := runM2(configPath, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
 		if code != 0 {
 			t.Fatalf("skip con digest match = %d, want 0 (P2)", code)
 		}
@@ -429,7 +437,7 @@ func TestRun_M2Defense(t *testing.T) {
 		sys := &fakeSystemd{}
 		p := &fakeProber{}
 		buf, logger := capture()
-		code := runReload(configPath, nil, false, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
+		code := runM2(configPath, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
 		if code != 1 {
 			t.Fatalf("skip con mismatch = %d, want 1 (P2 fail-loud, D8)", code)
 		}
@@ -471,7 +479,7 @@ func TestRun_M2ReadOnly(t *testing.T) {
 	spy := &spyFS{FS: realFS{}}
 	sys := &fakeSystemd{}
 	_, logger := capture()
-	code := runReload(configPath, nil, false, digestHex(raw), sys, &fakeProber{}, spy, &fakeClock{base: baseTime()}, logger)
+	code := runM2(configPath, digestHex(raw), sys, &fakeProber{}, spy, &fakeClock{base: baseTime()}, logger)
 	if code != 0 {
 		t.Fatalf("skip legítimo = %d, want 0", code)
 	}
@@ -496,7 +504,7 @@ func TestRun_ReloadPhases(t *testing.T) {
 	p := &fakeProber{Healthz: []proberResp{{status: 500}, {status: 500}, {status: 200}}}
 	ck := &fakeClock{base: baseTime()}
 	_, logger := capture()
-	code := runReload(configPath, raw, true, digestHex(raw), sys, p, realFS{}, ck, logger)
+	code := runReload(configPath, raw, digestHex(raw), sys, p, realFS{}, ck, logger)
 	if code != 0 {
 		t.Fatalf("reload degradado feliz = %d, want 0 (P9)", code)
 	}
@@ -620,6 +628,12 @@ func TestRun_Parity(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Reset del config en disco: los subtests de rollback restauran
+			// el stash (addr 5555) — el siguiente subtest debe derivar addr
+			// del config ESCRITO (4444) de nuevo.
+			if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+				t.Fatalf("reset fixture: %v", err)
+			}
 			sys := &fakeSystemd{IsActives: []bool{true}}
 			var p *fakeProber
 			if tc.body != nil {
@@ -683,7 +697,7 @@ func TestRun_ParityKeyDegradation(t *testing.T) {
 		sys := &fakeSystemd{IsActives: []bool{true}}
 		p := okProber(t, expectedModelSet)
 		buf, logger := capture()
-		code := runReload(configPath, stash, true, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
+		code := runReload(configPath, stash, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
 		if code != 0 {
 			t.Fatalf("degradación = %d, want 0 (P9)", code)
 		}
@@ -946,7 +960,7 @@ func TestRun_PhaseLogging(t *testing.T) {
 		sys := &fakeSystemd{IsActives: []bool{true}}
 		p := &fakeProber{Healthz: []proberResp{{status: 200}}}
 		buf, logger := capture()
-		code := runReload(configPath, stash, true, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
+		code := runReload(configPath, stash, digestHex(raw), sys, p, realFS{}, &fakeClock{base: baseTime()}, logger)
 		if code != 0 {
 			t.Fatalf("degradado = %d, want 0", code)
 		}
