@@ -10,7 +10,7 @@ Estado de features del proyecto mofgw (Memory Bank).
 
 <!-- features actualmente en alguna etapa del ciclo CDAD -->
 
-_(ninguna — 019-005 done; 019-006 no arrancada todavía)_
+_(ninguna — 019-006 done; 019-007 no arrancada todavía)_
 
 ## Done
 
@@ -21,13 +21,13 @@ _(ninguna — 019-005 done; 019-006 no arrancada todavía)_
 - **019-003-merge-provider-catalog** (epic 019-provider-sync-automation) — paquete puro `internal/catalogmerge` (Plan/ProviderPlan/Merge): IR de sync determinístico con matching strip-vendor/alias-2-saltos, espejo de pricing/metadata (defaults zen→opencode, go→opencode-go), derivación de Thinking/supported_parameters (extensión aditiva modelsdev), fail-soft por fuente + knobs `sync_source`/`sync_mirror`. Merged 2026-09-16. Suite 836/33 `-race` verde (re-corrida fresca de merge; 1 flake preexistente `TestE2E010002_TTLExpiry` documentado). Commits: `b73694a` RED, `0b9d9fc` GREEN, `0f0fa33` review (APPROVE 0 bloqueantes), `047a064` sign-off HITL S1/S2. Findings S1 (enmienda I7) y S2 (aclaración P2) resueltos y documentados por HITL.
 - **019-004-atomic-write-validate** (epic 019-provider-sync-automation) — write atómico de config.yaml vía edición estructural yaml.Node (`internal/configsync`: comentarios preservados, orden in-place = cadena fallback, merge-back, thinking_default jamás tocado) + validación pre-commit `config.ParseForValidation` (API aditiva, sin env keys) + binario `cmd/mofgw-sync` (--no-fetch cache-only, --once no-op, exit 0/1/2) + skip byte-idéntico con sidecar `config.yaml.sha256` (auto-cura). Merged 2026-09-17. Suite 903/35 `-race` verde (re-corrida fresca de merge). Commits: `e6ba734` spec, `1ac13ea` spec aprobado, `3764b29` test-audit, `211f2d7` audit aprobado, `6d63adf` RED (21 tests B1-B21), `98d1826` GREEN, `eb29036` fixes AP-4, `7401710` review, `6fed1d9` mini-RED --once, `c3ea424` mini-GREEN --once, `efae476` sign-off. Review REQUEST_CHANGES → resuelto (B-1 corregido en el origen, contract-primero); anti-bias SATISFECHO 1ª vez en el epic (GLM/Z.ai vs deepseek).
 - **019-005-reload-signal** (epic 019-provider-sync-automation) — fase post-write de `mofgw-sync`: restart systemd (`internal/reloadsig` puro con interfaces inyectadas) + verificación 3 fases (is-active → /healthz → paridad de IDs por SET en /v1/models con `MOFGW_SYNC_VERIFY_KEY`) + rollback restore-only de los bytes previos (exit 3 jamás 0) + defensa M-2 del skip-trap + `--no-reload` + exit code 3. Restart estructural (017 es clients-polling — "SIGHUP" del plan epic descartado por incorrecto). Merged 2026-09-17. Suite 953/36 `-race` verde (re-corrida post-fixes). Commits: `c6720e2` spec, `f096ab8` audit, `391d883` RED, `58d5d47` GREEN, `1e257df` fixes review (F1 Major: Available() distinguía mal manager sano de unit caído), `7af4d22` review+sign-off. 8º incidente de harness (RED/GREEN inline por orquestador, contract-primero).
+- **019-006-systemd-timer** (epic 019-provider-sync-automation) — unidades commiteadas `scripts/systemd/mofgw-sync.{service,timer}` (oneshot + timer 60min/OnBootSec, fuente única) + install.sh extendido (binario sync, copia idempotente, start_sync_timer con verificación de agenda, uninstall sync, resumen P12) + corrección estructural D6: backup-on-overwrite universal para los 3 units (incluido `mofgw.service`) + aviso LOUD de divergencia del server. Merged 2026-09-17. Suite 959/36 `-race` verde + harness bash 40/40. Commits: `70b7e84` spec, `0f3ee06` audit, `e338154` RED golden, `c776a3e` GREEN, `e630c93` fixes review (F1 doc, F2 warning+scope 007, F3/F4/F5), `496d284` review+sign-off. Deuda: absorción env+flags al template → 019-007; canary B4 opt-in sin correr (deploy real).
 
 ## Queued
 
 <!-- features identificadas pero no arrancadas todavía -->
 
 Epic **019-provider-sync-automation** (backlog; plan: `docs/epics/019-provider-sync-automation/plan.md`):
-- 019-006-systemd-timer (timer 60 min + logging estructurado + modo `--once`)
 - 019-007-build-snapshot (snapshot embebido del catálogo en build; fallback offline — depende de 001)
 
 Epic **020-mofgw-consumption-report** (planificado 16 Sep 2026, arranca cuando 019-003 libere el epic 019; plan: `docs/epics/020-mofgw-consumption-report/plan.md`):

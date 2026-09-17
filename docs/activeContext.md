@@ -1,9 +1,28 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-17 (feature 019-005-reload-signal MERGED — epic 019 provider-sync-automation).
+> Última actualización: 2026-09-17 (feature 019-006-systemd-timer MERGED — epic 019 provider-sync-automation).
 
 ## Decisiones recientes (cronología inversa)
+
+### 17 Sep 2026 — Feature 019-006-systemd-timer (epic 019-provider-sync-automation) MERGED
+
+### Decisiones relevantes
+
+- **Feature 019-006-systemd-timer MERGED — SEXTA del epic 019 (agenda el ciclo: cierra el criterio "Timer systemd activo con logs del sync").** Dos unidades commiteadas como fuente única de verdad — `scripts/systemd/mofgw-sync.service` (Type=oneshot, ExecStart=%h/.local/bin/mofgw-sync, EnvironmentFile compartido tolerante `-%h/.config/mofgw/env`, journal; SIN Restart/Install/timeouts) + `scripts/systemd/mofgw-sync.timer` (OnBootSec=10min + OnUnitActiveSec=60min; sin OnCalendar/Persistent — decisión estructural, no calendario). install.sh extendido: `install_sync_binary` (precedencia SYNC_BIN_SRC→prebuilt→go build, espejo de install_binary), `install_sync_units` por COPIA (no heredocs), `start_sync_timer` (daemon-reload + enable --now + verificación de agenda, DESPUÉS de server sano), uninstall sync (disable tolerante, .bak inmortales), resumen P12. Decisión explícita: **sin knob de intervalo, sin kill-switch, sin Persistent, `--once` queda no-op** (superficie mínima, precedente 005).
+- **Corrección estructural D6 (el hallazgo de valor del ciclo):** el patrón `cmp→mv` de install.sh pisaba SIN rescate el unit real divergido del operador (env-file + flags verificados en host). Ahora: **backup-on-overwrite universal** `<unit>.bak.<ts>` ANTES de instalar — para los 3 units (incluido `mofgw.service`). **Pero (F2 del review): el backup salva el ARCHIVO, no el COMPORTAMIENTO** — el template del server sigue sin env-file/flags, así que re-instalar deja un server que arranca distinto. Mitigación inmediata: aviso LOUD post-install cuando hubo divergencia ("conciliar env-file/flags/customs antes del próximo restart"). La absorción de env+flags al template es scope de 019-007 (spec I5/P4 de 006 lockean el template byte-intacto).
+- **Review REQUEST_CHANGES resuelto:** F1 (P10: header documenta `MOFGW_SYNC_VERIFY_KEY` + assert en harness — sin doc, F3 jamás se activa), F3 (pairing test tautológico → deriva del FS), F4 (timestamps `%N`), F5 (guard python3). F6 aceptado (tolerancia documentada del binario %h ausente en sandbox — territorio del canary B4). F7: no hay catch-up post-downtime con OnUnitActiveSec (semántica aceptada: sync idempotente).
+- **Evidencia del gate:** golden Go 4/4, suite **959/36 `-race` verde**, harness bash **40/40** (re-corridos; chmod +x de ambos scripts commiteado 100755). Commits: `70b7e84` spec, `0f3ee06` audit, `e338154` RED golden, `c776a3e` GREEN, `e630c93` fixes review, `496d284` review+sign-off.
+
+### Deuda técnica detectada
+
+- **Absorción de env-file+flags al template del server → scope 019-007** (decisión F2; el warning post-install es solo mitigación).
+- **Canary B4 opt-in (`MOFGW_SYNC_LIVE=1`) sin correr:** el deploy real del timer (daemon-reload + enable + list-timers) queda para el cierre del epic / deploy. El criterio "Timer activo" se cierra con this merge a nivel artefacto; la activación real es E3/integración o deploy del operador.
+- **Paralelismo en el repo:** el fix `0edec80` (router 401/402 failover, incidente acct-4) landed mid-ciclo sin interferencia (suite verde con ambos). Coordinar con ese track si toca router en 019-007/E3.
+
+### Próxima feature en cola
+
+- **019-007-build-snapshot** (epic 019): snapshot embebido del catálogo en build (fallback offline, patrón opencode models-snapshot; depende de 001). Scope adicional acordado: absorción env-file+flags al template (F2). Epic 020 en cola tras el cierre de 019.
 
 ### 17 Sep 2026 — Feature 019-005-reload-signal (epic 019-provider-sync-automation) MERGED
 
