@@ -1,9 +1,30 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-17 (feature 019-006-systemd-timer MERGED — epic 019 provider-sync-automation).
+> Última actualización: 2026-09-17 (feature 019-007-build-snapshot MERGED — epic 019 provider-sync-automation COMPLETO 7/7).
 
 ## Decisiones recientes (cronología inversa)
+
+### 17 Sep 2026 — Feature 019-007-build-snapshot (epic 019-provider-sync-automation) MERGED — EPIC 7/7
+
+### Decisiones relevantes
+
+- **Feature 019-007-build-snapshot MERGED — ÚLTIMA del epic 019 (fallback offline + cierre F2).** Paquete nuevo **`cmd/mofgw-sync/snapshot`** (go:embed api.json+meta.json en su propio dir): **api.json REAL commiteado (4.5 MB, 221 providers, 7847 modelos, fetched 2026-09-17)** + meta.json (fetched_at/sha256/source_url). Fallback en `loadSources` SOLO por ausencia (stat IsNotExist — corrupto NO enmascara, P5) con parse del parser de 001; servido en memoria, jamás persistido (P6). Visibilidad: evento `snapshot_fallback{...}` + warning sintético post-Merge + warn staleness > 30d (fail-soft siempre). `runOpts.Snapshot` inyectable (tiny en tests; `main()` puebla desde `Embedded()`). Contrato runSnapshot{Raw,FetchedAt,SHA256,Available}.
+- **Review REQUEST_CHANGES resuelto:** B1 (test sin commitear) + B2 (camino corrupto sin test determinista → `TestParseMeta_RejectsBad` in-package) + **F1 Major (TOCTOU por doble stat → `loadSources` retorna flag `fromSnapshot`, call sites mecánicos)** + F3 (sha recomputado en `Embedded()`, mismatch ⇒ unavailable) + F4 (meta atómica tmp+mv) + F5 (spec: "meta ausente como archivo" = error de compilación, fail-loud en build). F2/F6/F7 aceptados+documentados.
+- **Track B (cierre F2 de 006):** heredoc del server gana EXACTAMENTE `EnvironmentFile=%h/.config/mofgw/env` (sin `-`); header documenta drop-in `mofgw.service.d/override.conf` (operador-creado; install.sh jamás lo gestiona); aviso post-divergencia de 006 intacto.
+- **Suite final del merge: 973 tests / 37 paquetes `-race` verde** + harness **48/48** (re-corridos; vet limpio). Commits: `8f54d8f` spec, `4c40d39` audit, `393a4c0` RED, `ed1833f` GREEN, `190bd70` fixes review, `51e4da2` review+sign-off.
+- **Ciclo del epic 019 COMPLETO:** 001 fetch-modelsdev → 002 fetch-zen-go → 003 merge-provider-catalog → 004 atomic-write-validate → 005 reload-signal → 006 systemd-timer → 007 build-snapshot. Siguiente: integración cross-feature E3 (criterios del plan: `mofgw-sync --once` contra upstreams reales + paridad `/v1/models` + timer activo) y closure E4.
+
+### Deuda técnica detectada
+
+- **Regeneración del snapshot sin dueño/cadencia:** api.json envejece silenciosamente (solo warn > 30d). Si la cadencia supera ~1/mes, reconsiderar frecuencia o documentación (F6). Mantenedor: regenerar con `scripts/fetch-snapshot.sh` cuando el sync loguee staleness.
+- **Canary B12 (`MOFGW_SYNC_LIVE=1`) sin correr** — Embedded() sobre el real nunca verificado en runtime (el parse está congelado por tests contra el parser de 001; riesgo residual mínimo).
+- **Absorción de flags (`--verbose`/`--log-file`) al template:** NO hecha por diseño (van al drop-in). El unit real deployado sigue divergiendo en flags — el aviso post-install lo cubre.
+- **Flakes preexistentes:** `TestE2E010002_TTLExpiry` + `TestPostcondition9_MuestreoBanda` (estadísticos, fuera del epic).
+
+### Próximo paso
+
+- **E3 Integración del epic 019** (cdad-epic): E2E cross-feature (`mofgw-sync --once` real + paridad + timer) y cierre del loop; luego **E4 Closure** (closure.md + Memory Bank consolidado). Epic 020 en cola.
 
 ### 17 Sep 2026 — Feature 019-006-systemd-timer (epic 019-provider-sync-automation) MERGED
 
