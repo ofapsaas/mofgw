@@ -98,3 +98,4 @@ motivacion_externa: "Epic 019: 003 produce el IR (Plan) pero nadie materializa c
 ## Estado
 
 Status: **Draft** — pendiente aprobación HITL (Pablo/Ofap)
+Status: **Approved** by Pablo/Ofap (HITL — owner técnico mofgw) on 2026-09-16
