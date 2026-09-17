@@ -296,9 +296,20 @@ func realReloadHooks() reloadHooks {
 type execSystemdCtl struct{}
 
 func (execSystemdCtl) Available() error {
-	// Detección de systemd user manager disponible (P10): consulta barata
-	// previa a cualquier restart.
-	return exec.Command("systemctl", "--user", "is-active", "--quiet", "mofgw.service").Run()
+	// Detección de systemd user manager (P10/D11): distinguir "manager
+	// disponible" de "unit activo" — is-system-running falla solo si no hay
+	// bus de usuario; "degraded" (exit 1) es un manager SANO con servicios
+	// fallando → disponible para restart. El review F1 (019-005) identificó
+	// la versión previa (is-active del unit) como misdiagnóstico: un unit
+	// stopped/failed con systemd sano es restarteable, no "sin systemd".
+	out, err := exec.Command("systemctl", "--user", "is-system-running").Output()
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.TrimSpace(string(out)), "degraded") {
+		return nil // manager vivo, solo hay servicios en estado failed
+	}
+	return fmt.Errorf("mofgw-sync: systemd user manager: %s (%v)", strings.TrimSpace(string(out)), err)
 }
 
 func (execSystemdCtl) Restart(unit string) error {

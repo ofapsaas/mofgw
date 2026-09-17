@@ -107,8 +107,11 @@ func Run(in Input) int {
 		return m2Defense(in, logger)
 	}
 	if !in.Applied {
-		// Nada que aplicar ni verificar (no debería ocurrir post-004 exit 0
-		// sin Applied/Skipped — el binario garantiza uno de los dos).
+		// Defensivo (review F6, I7 hermético): inalcanzable vía binario real
+		// (run() garantiza Applied/Skipped post-004 exit 0) pero jamás
+		// silencio.
+		logger.Warn("mofgw-sync: fase de reload sin Applied ni Skipped — nada que hacer",
+			"phase", "degraded", "reason", "input_sin_applied_ni_skipped")
 		return 0
 	}
 
@@ -333,7 +336,7 @@ func rollback(in Input, logger *slog.Logger, addrNew string) int {
 
 	addrOld, err := serverAddr(in.FS, in.ConfigPath)
 	if err != nil {
-		logger.Error("mofgw-sync: rollback agotado — el config restaurado no parsea", "phase", "rollback_verify", "error", err)
+		logger.Error("mofgw-sync: rollback agotado — el config restaurado no parsea", "phase", "rollback_verify", "error", err, "state", "config PREVIO en disco, server sin verificar y posiblemente caído en loop de Restart=on-failure")
 		return 3
 	}
 
@@ -409,7 +412,11 @@ func restoreStash(in Input) error {
 		_ = in.FS.Remove(tmp)
 		return fmt.Errorf("reloadsig: chmod del temp: %w", err)
 	}
-	return in.FS.Rename(tmp, in.ConfigPath)
+	if err := in.FS.Rename(tmp, in.ConfigPath); err != nil {
+		_ = in.FS.Remove(tmp) // review F3 (019-005): cleanup del temp si el rename falla
+		return err
+	}
+	return nil
 }
 
 func digestHex(b []byte) string {
@@ -418,7 +425,10 @@ func digestHex(b []byte) string {
 }
 
 // serverAddr deriva server.addr del config en disco (D5) — esquema http
-// fijo (el server no sirve TLS).
+// fijo (el server no sirve TLS). ParseForValidation SIEMPRE materializa el
+// default de server.addr (config.go parseCommon → defaults), así que no hay
+// rama de fallback: el valor vive solo en internal/config (review F8b —
+// acoplamiento deliberado, sin duplicación).
 func serverAddr(fs FS, configPath string) (string, error) {
 	raw, err := fs.ReadFile(configPath)
 	if err != nil {
@@ -427,9 +437,6 @@ func serverAddr(fs FS, configPath string) (string, error) {
 	cfg, err := config.ParseForValidation(raw)
 	if err != nil {
 		return "", fmt.Errorf("reloadsig: ParseForValidation: %w", err)
-	}
-	if cfg.Server.Addr == "" {
-		return "127.0.0.1:3369", nil
 	}
 	return cfg.Server.Addr, nil
 }
