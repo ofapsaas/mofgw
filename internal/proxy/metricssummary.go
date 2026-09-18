@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"sort"
@@ -94,92 +95,140 @@ func aggregateMetricsSummary(regPath, date string) *metricsSummaryResult {
 		result.MissingActive = true // P5: día sin datos es válido
 	}
 
-	for _, f := range files {
-		if _, err := os.Stat(f); err != nil {
+	for _, fp := range files {
+		if _, err := os.Stat(fp); err != nil {
 			continue // rotado ausente: stop natural del loop (P8)
 		}
-		result.FilesRead = append(result.FilesRead, f)
-		f, err := os.Open(f)
+		fh, err := os.Open(fp)
 		if err != nil {
 			continue // P6/I6: fail-soft, sin abortar
 		}
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // P12: línea gigante descartada sin abortar
-		for sc.Scan() {
-			line := sc.Bytes()
-			if len(line) == 0 {
-				continue
-			}
-			var ev struct {
-				Type    string   `json:"type"`
-				Ts      string   `json:"ts"`
-				Outcome string   `json:"outcome"`
-				Model   string   `json:"model"`
-				CostUSD *float64 `json:"cost_usd"`
-				CostSrc string   `json:"cost_usd_src"`
-				CostUp  *float64 `json:"cost_usd_up"`
-				Tokens  *struct {
-					Prompt     int64 `json:"prompt"`
-					Completion int64 `json:"completion"`
-					Cache      int64 `json:"cache"`
-					Reasoning  int64 `json:"reasoning"`
-				} `json:"tokens"`
-			}
-			if err := json.Unmarshal(line, &ev); err != nil {
-				result.Corruptas++ // P12: skip + contador, sin abortar
-				continue
-			}
-			if ev.Type != "terminal" { // P6: solo terminales agregan
-				continue
-			}
-			if len(ev.Ts) < 10 || ev.Ts[:10] != date { // P7: prefijo ts[:10] == date (UTC)
-				continue
-			}
-			result.TotalTerminales++
-			if ev.Model == "" {
-				// P11: fila desconocido (histórico pre-020-001 o modelo ausente)
-			}
-			row := result.Rows[ev.Model]
-			if row == nil {
-				row = &metricsSummaryRow{}
-				result.Rows[ev.Model] = row
-			}
-			row.Requests++
-			if ev.Outcome == "success" {
-				row.Success++
-			} else {
-				row.Errors++
-			}
-			if ev.Tokens != nil {
-				row.TokensPrompt += ev.Tokens.Prompt
-				row.TokensCompletion += ev.Tokens.Completion
-				row.TokensCache += ev.Tokens.Cache
-				row.TokensReasoning += ev.Tokens.Reasoning
-			}
-			if ev.CostUSD != nil {
-				row.CostUSD += *ev.CostUSD
-			}
-			if ev.CostUp != nil {
-				row.CostUpPresente++
-			} else {
-				row.CostUpNull++
-			}
-			// P10: cobertura de proveniencia ("" → none, D8)
-			switch ev.CostSrc {
-			case "upstream":
-				result.ProvUpstream++
-			case "table":
-				result.ProvTable++
-			default:
-				result.ProvNone++
-				if ev.CostSrc == "" {
-					result.Historicas++
+		result.FilesRead = append(result.FilesRead, fp) // F8: post-Open exitoso
+		// F1 (review 020-002): el loop de parse re-arranca ante ErrTooLong —
+		// la línea gigante se descarta hasta el próximo \n (contada como
+		// corrupta) y el resto del archivo SÍ se parsea (P12/I6: jamás se
+		// descarta silenciosamente el resto del archivo).
+		for {
+			sc := bufio.NewScanner(fh)
+			sc.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+			aborted := false
+			for sc.Scan() {
+				line := sc.Bytes()
+				if len(line) == 0 {
+					continue
 				}
+				ev := parseSummaryLine(line)
+				if ev == nil {
+					result.Corruptas++ // P12: skip + contador, sin abortar
+					continue
+				}
+				if ev.Type != "terminal" { // P6: solo terminales agregan
+					// F2 (review 020-002): P12 lista 3 categorías de
+					// corruptas — JSON inválido, objeto SIN `type`, terminal
+					// con ts malformado. El `attempt` es un evento VÁLIDO
+					// del registro (P6: cero contribución, skip silencioso).
+					if ev.Type == "" {
+						result.Corruptas++
+					}
+					continue
+				}
+				if len(ev.Ts) < 10 { // F2: ts malformado = corrupta
+					result.Corruptas++
+					continue
+				}
+				if ev.Ts[:10] != date { // P7: prefijo ts[:10] == date (UTC)
+					continue
+				}
+				aggregateSummaryEvent(result, ev)
 			}
+			if sc.Err() == bufio.ErrTooLong {
+				// Descartar el resto de la línea gigante hasta \n (cuenta
+				// corrupta) y re-arrancar el scanner.
+				result.Corruptas++
+				reader := bufio.NewReader(fh)
+				for {
+					chunk, err := reader.ReadBytes('\n')
+					if err != nil || chunk[len(chunk)-1] == '\n' {
+						break
+					}
+				}
+				aborted = true
+				continue // re-arrancar el scanner tras la línea gigante
+			}
+			_ = aborted
+			break // ErrTooLong resuelto o EOF → salir del loop de re-arranque
 		}
-		_ = f.Close()
+		_ = fh.Close()
 	}
 	return result
+}
+
+// summaryEvent: shape de parseo tolerante (mismo json tags que registry.go).
+type summaryEvent struct {
+	Type    string   `json:"type"`
+	Ts      string   `json:"ts"`
+	Outcome string   `json:"outcome"`
+	Model   string   `json:"model"`
+	CostUSD *float64 `json:"cost_usd"`
+	CostSrc string   `json:"cost_usd_src"`
+	CostUp  *float64 `json:"cost_usd_up"`
+	Tokens  *struct {
+		Prompt     int64 `json:"prompt"`
+		Completion int64 `json:"completion"`
+		Cache      int64 `json:"cache"`
+		Reasoning  int64 `json:"reasoning"`
+	} `json:"tokens"`
+}
+
+// parseSummaryLine parsea una línea JSONL; nil = corrupta (P12).
+func parseSummaryLine(line []byte) *summaryEvent {
+	var ev summaryEvent
+	if err := json.Unmarshal(line, &ev); err != nil {
+		return nil
+	}
+	return &ev
+}
+
+// aggregateSummaryEvent agrega un terminal válido del día (P9/P10).
+func aggregateSummaryEvent(result *metricsSummaryResult, ev *summaryEvent) {
+	result.TotalTerminales++
+	row := result.Rows[ev.Model]
+	if row == nil {
+		row = &metricsSummaryRow{}
+		result.Rows[ev.Model] = row
+	}
+	row.Requests++
+	if ev.Outcome == "success" {
+		row.Success++
+	} else {
+		row.Errors++
+	}
+	if ev.Tokens != nil {
+		row.TokensPrompt += ev.Tokens.Prompt
+		row.TokensCompletion += ev.Tokens.Completion
+		row.TokensCache += ev.Tokens.Cache
+		row.TokensReasoning += ev.Tokens.Reasoning
+	}
+	if ev.CostUSD != nil {
+		row.CostUSD += *ev.CostUSD
+	}
+	if ev.CostUp != nil {
+		row.CostUpPresente++
+	} else {
+		row.CostUpNull++
+	}
+	// P10: cobertura de proveniencia ("" → none, D8)
+	switch ev.CostSrc {
+	case "upstream":
+		result.ProvUpstream++
+	case "table":
+		result.ProvTable++
+	default:
+		result.ProvNone++
+		if ev.CostSrc == "" {
+			result.Historicas++
+		}
+	}
 }
 
 // renderMetricsSummary produce el HTML self-contained (P14/D9).
@@ -204,7 +253,8 @@ func renderMetricsSummary(r *metricsSummaryResult) []byte {
 		b.WriteString("<p class=\"warn\">archivo no encontrado (sin datos para este host)</p>\n")
 	}
 
-	// Filas sortadas por modelo (determinismo, D9 de 003).
+	// Filas sortadas por modelo (determinismo, D9 de 003); F3: HTML escaping
+	// del model (viene del write path — un model malicioso jamás inyecta HTML).
 	models := make([]string, 0, len(r.Rows))
 	for m := range r.Rows {
 		models = append(models, m)
@@ -225,7 +275,7 @@ func renderMetricsSummary(r *metricsSummaryResult) []byte {
 			display = "desconocido"
 		}
 		fmt.Fprintf(&b, "<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%.6f</td><td>%d</td><td>%d</td></tr>\n",
-			display, row.Requests, row.Success, row.Errors,
+			html.EscapeString(display), row.Requests, row.Success, row.Errors, // F3: XSS del propio registro
 			row.TokensPrompt, row.TokensCompletion, row.TokensCache, row.TokensReasoning,
 			row.CostUSD, row.CostUpPresente, row.CostUpNull)
 		total.Requests += row.Requests

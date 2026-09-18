@@ -315,19 +315,33 @@ func Test020002_FixtureFidelity(t *testing.T) {
 		// el HTML muestra cost_usd agregado (0.0052) + cost_usd_up presente=2
 		t.Errorf("agregados upstream de glm-5.2 no visibles (P3/P9)\nHTML: %s", html)
 	}
-	// cobertura: upstream=2, table=1, none=3, históricas=1, total terminales=7
-	if !strings.Contains(html, "upstream") || !strings.Contains(html, "table") || !strings.Contains(html, "none") {
-		t.Errorf("cobertura de proveniencia incompleta (P10)\nHTML: %s", html)
+	// cobertura EXACTA (F5 review: números, no solo palabras): upstream=2,
+	// table=1, none=3 (2 errors+none modelo-sin-precio... según fixture),
+	// históricas=1, total terminales=6
+	for _, frag := range []string{
+		"<tr><td>upstream</td><td>2</td>",
+		"<tr><td>table</td><td>1</td>",
+		"<tr><td>none</td><td>3</td>",
+		"<tr><td>históricas (sin src)</td><td>1</td>",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("cobertura de proveniencia: falta %q (P10/F5)\nHTML: %s", frag, html)
+		}
 	}
-	// líneas corruptas contadas (P12): 2 (JSON roto + gigante)
-	if !strings.Contains(html, "2") && !strings.Contains(html, "dos") {
-		// el contador puede aparecer como número o en texto
-		t.Logf("contador de corruptas no verificado por substring numérico (P12)")
+	// líneas corruptas EXACTAS (F4 review): 2 (JSON roto + gigante >64KiB)
+	if !strings.Contains(html, "líneas corruptas: 2") {
+		t.Errorf("contador de corruptas exacto no visible (P12/F4)\nHTML: %s", html)
 	}
-	// totales del día
-	if !strings.Contains(html, "6") {
-		// total terminales = 7 (5 no-hist + 1 hist + 1 válida post-corrupta) — aserto blando
-		t.Logf("totales del día no verificados por substring numérico (P10)")
+	// totales EXACTOS (F4 review): 6 terminales del día (2 glm-5.2 + 1 minimax
+	// + 1 sin-precio + 1 no-such + 1 desconocida)
+	if !strings.Contains(html, "terminales del día: 6") {
+		t.Errorf("total terminales exacto no visible (P10/F4)\nHTML: %s", html)
+	}
+	// F12 review: determinismo — 2 requests → mismo HTML byte a byte (P16)
+	resp2 := get020002(t, srv, "/v1/metrics/summary?date="+day020002, "sk-test-1")
+	body2, _ := io.ReadAll(resp2.Body)
+	if !strings.EqualFold(string(body), string(body2)) {
+		t.Errorf("dos requests → HTML distinto (P16/F12: determinismo)")
 	}
 }
 
