@@ -41,6 +41,7 @@ type Usage struct {
 	TotalTokens      int
 	CachedTokens     int
 	ReasoningTokens  int
+	Cost             *float64
 }
 
 type flight struct {

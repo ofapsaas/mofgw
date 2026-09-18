@@ -500,7 +500,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	// 6. Delegar en la pipeline de chat (router.Complete).
 	res, err := s.router.Complete(r.Context(), req, chatReqBody)
 	if err != nil {
-		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), clientID, false)
+		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), clientID, rb.Model, false)
 		return
 	}
 	providerID = res.ProviderID

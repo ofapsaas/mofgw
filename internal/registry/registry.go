@@ -63,17 +63,20 @@ type AttemptEvent struct {
 // intentado ("" si ninguno, p.ej. model_not_found). tokens/cost_usd son 0 en
 // outcome error (P13).
 type TerminalEvent struct {
-	Type          string  `json:"type"` // "terminal"
-	RequestID     string  `json:"request_id"`
-	Ts            string  `json:"ts"` // RFC3339 UTC con milisegundos (D4)
-	Client        string  `json:"client"`
-	Outcome       string  `json:"outcome"` // "success" | "error"
-	ErrorCode     string  `json:"error_code"`
-	Status        int     `json:"status"` // 200 / 502 / 503 / 404...
-	FinalProvider string  `json:"final_provider"`
-	Tokens        Tokens  `json:"tokens"`
-	CostUSD       float64 `json:"cost_usd"`
-	Stream        bool    `json:"stream"`
+	Type          string   `json:"type"` // "terminal"
+	RequestID     string   `json:"request_id"`
+	Ts            string   `json:"ts"` // RFC3339 UTC con milisegundos (D4)
+	Client        string   `json:"client"`
+	Outcome       string   `json:"outcome"` // "success" | "error"
+	ErrorCode     string   `json:"error_code"`
+	Status        int      `json:"status"` // 200 / 502 / 503 / 404...
+	FinalProvider string   `json:"final_provider"`
+	Model         string   `json:"model"`
+	Tokens        Tokens   `json:"tokens"`
+	CostUSD       float64  `json:"cost_usd"`
+	CostUSDSrc    string   `json:"cost_usd_src"`
+	CostUSDUp     *float64 `json:"cost_usd_up"`
+	Stream        bool     `json:"stream"`
 }
 
 // Writer escribe los eventos del registro como JSONL append-only (D10/I1).

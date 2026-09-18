@@ -125,6 +125,10 @@ type Usage struct {
 	CachedTokens        int `json:"-"`
 	CacheCreationTokens int `json:"-"`
 	ReasoningTokens     int `json:"-"`
+	// Cost es el costo upstream reportado (OpenRouter `usage.cost`).
+	// *float64 para distinguir presente-0.0 (modelo free legítimo) de
+	// ausente (nil). Parseo tolerante: ausente/null/no-numérico → nil.
+	Cost *float64 `json:"-"`
 }
 
 // UnmarshalJSON parsea usage con los campos anidados de cache (formato
@@ -133,6 +137,7 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 	type plain Usage
 	var p struct {
 		plain
+		Cost                *json.RawMessage `json:"cost"`
 		PromptTokensDetails *struct {
 			CachedTokens        json.RawMessage `json:"cached_tokens"`
 			CacheCreationTokens json.RawMessage `json:"cache_creation_input_tokens"`
@@ -145,6 +150,7 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*u = Usage(p.plain)
+	u.Cost = usageFloatPtr(p.Cost)
 	if p.PromptTokensDetails != nil {
 		u.CachedTokens = usageInt(p.PromptTokensDetails.CachedTokens)
 		u.CacheCreationTokens = usageInt(p.PromptTokensDetails.CacheCreationTokens)
@@ -153,6 +159,20 @@ func (u *Usage) UnmarshalJSON(data []byte) error {
 		u.ReasoningTokens = usageInt(p.CompletionTokensDetails.ReasoningTokens)
 	}
 	return nil
+}
+
+// usageFloatPtr convierte un RawMessage a *float64 tolerante:
+// ausente/null/no-numérico → nil (sin dato); cualquier número (incluido
+// 0.0 legítimo) → puntero no-nil. Nunca devuelve error.
+func usageFloatPtr(raw *json.RawMessage) *float64 {
+	if raw == nil || len(*raw) == 0 || string(*raw) == "null" {
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(*raw, &f); err != nil {
+		return nil
+	}
+	return &f
 }
 
 // usageInt convierte un RawMessage a int tolerante: ausente/null/no

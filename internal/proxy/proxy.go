@@ -767,7 +767,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			if cerr != nil {
 				// Líder: responde su error como en el flujo legacy; el
 				// vuelo termina sin resultado compartido.
-				s.handleChainError(w, cerr, logger, logging.RequestID(r.Context()), clientID, req.Stream)
+				s.handleChainError(w, cerr, logger, logging.RequestID(r.Context()), clientID, req.Model, req.Stream)
 				return nil
 			}
 			providerID = cres.ProviderID
@@ -793,6 +793,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 					TotalTokens:      cres.Response.Usage.TotalTokens,
 					CachedTokens:     cres.Response.Usage.CachedTokens,
 					ReasoningTokens:  cres.Response.Usage.ReasoningTokens,
+					Cost:             cres.Response.Usage.Cost,
 				},
 			}
 		})
@@ -821,6 +822,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 				TotalTokens:      sfRes.Usage.TotalTokens,
 				CachedTokens:     sfRes.Usage.CachedTokens,
 				ReasoningTokens:  sfRes.Usage.ReasoningTokens,
+				Cost:             sfRes.Usage.Cost,
 			}
 			lastUsage = usage
 			s.recordCacheTokens(logging.RequestID(r.Context()), clientID, sessionID, sfRes.ProviderID, req.Model, usage)
@@ -838,7 +840,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	res, err := complete()
 	if err != nil {
-		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), clientID, req.Stream)
+		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), clientID, req.Model, req.Stream)
 		return
 	}
 	providerID = res.ProviderID
@@ -952,6 +954,25 @@ func (s *Server) emitTerminalSuccess(requestID, clientID, providerID, model stri
 	if miss < 0 {
 		miss = 0
 	}
+	// 020-001: precedencia total upstream > tabla > none. `u.Cost`
+	// presente (cualquier numérico, tolerante) → cost exacto sin
+	// re-cálculo; si no → estimateCost reutilizado (P5) con src por
+	// ausencia de key en el mapa de pricing (no comparación de valores).
+	var costUSD float64
+	var src string
+	var up *float64
+	if u != nil && u.Cost != nil {
+		costUSD = *u.Cost
+		src = "upstream"
+		up = u.Cost
+	} else {
+		costUSD = s.estimateCost(model, miss, completion, hit)
+		if _, ok := s.pricing[model]; ok {
+			src = "table"
+		} else {
+			src = "none"
+		}
+	}
 	ev := registry.TerminalEvent{
 		Type:          "terminal",
 		RequestID:     requestID,
@@ -960,14 +981,17 @@ func (s *Server) emitTerminalSuccess(requestID, clientID, providerID, model stri
 		Outcome:       "success",
 		Status:        http.StatusOK,
 		FinalProvider: providerID,
+		Model:         model,
 		Tokens: registry.Tokens{
 			Prompt:     int(prompt),
 			Completion: int(completion),
 			Cache:      int(hit),
 			Reasoning:  int(reasoning),
 		},
-		CostUSD: s.estimateCost(model, miss, completion, hit),
-		Stream:  stream,
+		CostUSD:    costUSD,
+		CostUSDSrc: src,
+		CostUSDUp:  up,
+		Stream:     stream,
 	}
 	if err := s.registry.Terminal(ev); err != nil {
 		s.logger.Warn("registry: terminal success no emitido", "request_id", requestID, "err", err)
@@ -979,7 +1003,7 @@ func (s *Server) emitTerminalSuccess(requestID, clientID, providerID, model stri
 // FINAL enviado al cliente; final_provider = ChainError.ProviderID (último
 // provider intentado; "" si ninguno, p.ej. model_not_found). tokens/cost 0.
 // Best-effort (D10/I4): un error de escritura no altera la respuesta.
-func (s *Server) emitTerminalError(requestID, clientID string, ce *router.ChainError, stream bool) {
+func (s *Server) emitTerminalError(requestID, clientID, model string, ce *router.ChainError, stream bool) {
 	if s.registry == nil {
 		return
 	}
@@ -1003,6 +1027,8 @@ func (s *Server) emitTerminalError(requestID, clientID string, ce *router.ChainE
 		ErrorCode:     code,
 		Status:        status,
 		FinalProvider: providerID,
+		Model:         model,
+		CostUSDSrc:    "none",
 		Stream:        stream,
 	}
 	if err := s.registry.Terminal(ev); err != nil {
@@ -1128,7 +1154,7 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *htt
 		res, err = s.router.Stream(ctx, req, body)
 	}
 	if err != nil {
-		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), auth.ClientIDFrom(r.Context()), req.Stream)
+		s.handleChainError(w, err, logger, logging.RequestID(r.Context()), auth.ClientIDFrom(r.Context()), req.Model, req.Stream)
 		return "", nil
 	}
 	s.metrics.SetLastProvider(res.Provider.ID())
@@ -1162,7 +1188,7 @@ func (s *Server) handleStream(ctx context.Context, w http.ResponseWriter, r *htt
 // provider_auth_error) y responde. El detalle completo queda en logs.
 // requestID/clientID/stream permiten emitir el evento terminal error del
 // registro (014-001 P13) junto al manejo del error de cadena.
-func (s *Server) handleChainError(w http.ResponseWriter, err error, logger *slog.Logger, requestID, clientID string, stream bool) {
+func (s *Server) handleChainError(w http.ResponseWriter, err error, logger *slog.Logger, requestID, clientID, model string, stream bool) {
 	var ce *router.ChainError
 	if errors.As(err, &ce) {
 		s.metrics.IncErrors()
@@ -1173,11 +1199,11 @@ func (s *Server) handleChainError(w http.ResponseWriter, err error, logger *slog
 			"provider", ce.ProviderID,
 			"detail", ce.Err,
 		)
-		s.emitTerminalError(requestID, clientID, ce, stream)
+		s.emitTerminalError(requestID, clientID, model, ce, stream)
 	} else {
 		s.metrics.IncErrors()
 		logger.Error("error interno", "err", err)
-		s.emitTerminalError(requestID, clientID, nil, stream)
+		s.emitTerminalError(requestID, clientID, model, nil, stream)
 	}
 	absorb.Respond(w, err)
 }
