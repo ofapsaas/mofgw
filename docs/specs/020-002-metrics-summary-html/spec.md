@@ -198,3 +198,4 @@ con y sin los campos de 020-001 (mezcla de esquemas, P6 de 020-001).
 
 Status: **Draft** — pendiente aprobación HITL (Pablo/Ofap)
 Status: **Approved** by Pablo/Ofap (HITL — owner técnico mofgw, chat orquestador) on 2026-09-17
+Status: **Approved** by Pablo/Ofap (HITL — owner técnico mofgw, chat orquestador) on 2026-09-17 — gate 2→3 cerrado
