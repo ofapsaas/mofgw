@@ -138,6 +138,13 @@ type Server struct {
 	// Seteado pre-tráfico vía SetRegistry; lectura concurrente segura.
 	registry *registry.Writer
 
+	// registryPath: path del registry.jsonl activo (020-002). Seteado
+	// pre-tráfico vía SetRegistryPath (patrón SetRegistry); inmutable
+	// después. Los rotados se derivan mecánicamente (<dir>/<base>.N).
+	// Vacío → /v1/metrics/summary responde 503 en runtime (I4: patrón
+	// clientconfig — no fallback silencioso, no fail-fast de arranque).
+	registryPath string
+
 	// clientConfigBaseURL + clientConfigKeyEnv: knobs del endpoint
 	// /v1/client-config (016-001). Inmutables tras SetClientConfig (antes
 	// del tráfico, patrón SetContextAnalysis). BaseURL vacío → el endpoint
@@ -374,7 +381,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /v1/context", s.handleContext)
-	mux.HandleFunc("GET /v1/client-config", s.handleClientConfig) // 016-001
+	mux.HandleFunc("GET /v1/client-config", s.handleClientConfig)     // 016-001
+	mux.HandleFunc("GET /v1/metrics/summary", s.handleMetricsSummary) // 020-002
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	// rutas no declaradas en el mux → 404 OpenAI-compatible
@@ -428,6 +436,15 @@ func (s *Server) SetStickyRouting(enabled bool) {
 // al request path). Debe llamarse antes del tráfico (patrón SetStickyRouting).
 func (s *Server) SetRegistry(w *registry.Writer) {
 	s.registry = w
+}
+
+// SetRegistryPath configura el path del registry.jsonl activo para el
+// endpoint read-only /v1/metrics/summary (020-002 D3). Los rotados se
+// derivan mecánicamente (<dir>/<base>.N). Vacío → el endpoint responde 503
+// en runtime (patrón clientconfig 016-001: no fallback silencioso, no
+// fail-fast de arranque). Pre-tráfico e inmutable después.
+func (s *Server) SetRegistryPath(path string) {
+	s.registryPath = path
 }
 
 // SetBudget configura los límites de consumo por cliente (008-002 P1).

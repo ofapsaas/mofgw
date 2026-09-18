@@ -32,7 +32,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ofapsaas/mofgw/internal/registry"
 	"github.com/ofapsaas/mofgw/internal/router"
 )
 
@@ -260,7 +259,6 @@ func Test020002_RotatedFiles(t *testing.T) {
 // corruptas y desconocido. Es el discriminante central del feature.
 func Test020002_FixtureFidelity(t *testing.T) {
 	up42 := 0.0042
-	up0 := 0.0
 	active := []any{
 		// terminal success upstream con cost (P4: tabla NO participa)
 		terminal020002(ts020002, "c1", "glm-5.2", "success", 200, 0.0042, "upstream", &up42, false),
@@ -270,8 +268,9 @@ func Test020002_FixtureFidelity(t *testing.T) {
 		terminal020002(ts020002, "c1", "minimax-m3", "success", 200, 0.00128, "table", nil, false),
 		// terminal success none (modelo sin pricing)
 		terminal020002(ts020002, "c2", "modelo-sin-precio", "success", 200, 0.0, "none", nil, false),
-		// terminal ERROR (HITL-a: model presente, src none)
-		terminal020002(ts020002, "c2", "no-such-model", "error", 404, 0.0, "none", nil, true),
+		// terminal ERROR (HITL-a: model presente, src none) — NO histórico
+		// (el model viaja aunque el request falle)
+		terminal020002(ts020002, "c2", "no-such-model", "error", 404, 0.0, "none", nil, false),
 		// línea HISTÓRICA (pre-020-001): model=="" → fila desconocido (P11)
 		terminal020002(ts020002, "c3", "", "success", 200, 0.5, "", nil, true),
 		// línea corrupta (JSON inválido — P12)
@@ -309,9 +308,12 @@ func Test020002_FixtureFidelity(t *testing.T) {
 	if !strings.Contains(html, "desconocido") {
 		t.Errorf("fila desconocido ausente (P11)\nHTML: %s", html)
 	}
-	// cost_usd_up presente: 2 glm-5.2 upstream con cost (0.0042 y 0.001)
-	if !strings.Contains(html, "0.0042") {
-		t.Errorf("cost_usd_up 0.0042 no visible (P3/P9)\nHTML: %s", html)
+	// cost_usd_up presente: 2 glm-5.2 upstream con cost (0.0042 y 0.001);
+	// el agregado cost_usd de la fila = 0.0052 (los UP se suman, no se
+	// muestran por-item — P9: conteo presente/null, no valores individuales)
+	if !strings.Contains(html, "0.005200") || !strings.Contains(html, ">2<") {
+		// el HTML muestra cost_usd agregado (0.0052) + cost_usd_up presente=2
+		t.Errorf("agregados upstream de glm-5.2 no visibles (P3/P9)\nHTML: %s", html)
 	}
 	// cobertura: upstream=2, table=1, none=3, históricas=1, total terminales=7
 	if !strings.Contains(html, "upstream") || !strings.Contains(html, "table") || !strings.Contains(html, "none") {
@@ -362,7 +364,7 @@ func Test020002_ReadOnly(t *testing.T) {
 	active := []any{terminal020002(ts020002, "c1", "glm-5.2", "success", 200, 0.001, "upstream", &up, false)}
 	write020002Fixture(t, regPath, active)
 
-	h := buildRegistry(t, []fakeUpstream{upstreamUsageOK("m")}, "sk-test-1", regPath+".writer.jsonl", routerOptsNoop())
+	h, _, _ := buildRegistry(t, []fakeUpstream{upstreamUsageOK("m")}, "sk-test-1", regPath+".writer.jsonl", router.Options{MaxRetries: 2, Cooldown: 0, GlobalTimeout: 30 * time.Second})
 	h.proxySrv.SetRegistryPath(regPath)
 
 	before := readdirNames020002(t, dir)
@@ -442,7 +444,7 @@ func Test020002_HTMLShape(t *testing.T) {
 func Test020002_MissingFileSoft(t *testing.T) {
 	dir := t.TempDir()
 	regPath := filepath.Join(dir, "inexistente.jsonl")
-	h := buildRegistry(t, []fakeUpstream{upstreamUsageOK("m")}, "sk-test-1", regPath+".writer.jsonl", routerOptsNoop())
+	h, _, _ := buildRegistry(t, []fakeUpstream{upstreamUsageOK("m")}, "sk-test-1", regPath+".writer.jsonl", router.Options{MaxRetries: 2, Cooldown: 0, GlobalTimeout: 30 * time.Second})
 	h.proxySrv.SetRegistryPath(regPath)
 
 	resp := get020002(t, h.srv, "/v1/metrics/summary?date="+day020002, "sk-test-1")

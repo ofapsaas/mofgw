@@ -236,6 +236,10 @@ func run() error {
 
 	srv := proxy.New(r, providers, authz, m, logger, telemetryLogger, cfg.Server.MaxBodyBytes, globalLimiter, keyedLimiter, cfg.Server.BackpressureTimeout)
 	srv.SetRegistry(registryWriter)
+	// 020-002 (D3): el path SIEMPRE (independiente de registry.enabled —
+	// lectura pura no depende del writer). Vacío → /v1/metrics/summary
+	// responde 503 en runtime (patrón clientconfig 016-001).
+	srv.SetRegistryPath(cfg.Registry.File)
 
 	// Cableado del catálogo y eficiencia (006-002/007-001/008-002/008-003):
 	// pricing, metadata de modelos, budgets por cliente y margen de
