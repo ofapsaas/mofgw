@@ -10,11 +10,9 @@ Estado de features del proyecto mofgw (Memory Bank).
 
 <!-- features actualmente en alguna etapa del ciclo CDAD -->
 
-_(ninguna — epic 019 cerrado 7/7; sigue epic 020)_
+_(ninguna — 020-001 done; 020-002 no arrancada todavía)_
 
-## Done (epics)
-
-- **019-provider-sync-automation** — sync automatizado del catálogo (7/7 features + integración E3). Cerrado 2026-09-17. Closure: `docs/epics/019-provider-sync-automation/closure.md`. Pendiente de deploy (operador): install timer + paridad live (integration.md §4).
+- **020-001-registry-cost-model** (epic 020-mofgw-consumption-report) — TerminalEvent enriquecido con `model` + `cost_usd_src` (upstream/table/none) + `cost_usd_up` (*float64 nullable, 0.0 ≠ null); captura `usage.cost` de OpenRouter (provider.Usage.Cost, json:"-"); precedencia upstream > tabla > none (estimateCost reutilizado, cero duplicación); emitTerminalError con model (HITL-a); captura solo-lectura (respuesta byte-idéntica, P8); compatibilidad P6 automática. Merged 2026-09-17. Suite 987/37 `-race` verde. Commits: `f8795b5` spec, `00edf8b` audit, `0e48bc5` RED, `7cbeaa9` GREEN, `9905d7f` review (APPROVE 0 bloqueantes; anti-bias SATISFECHO GLM vs deepseek).
 
 ## Done
 

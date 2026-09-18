@@ -1,9 +1,22 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-17 (epic 019-provider-sync-automation CERRADO — 7/7 + integración E3).
+> Última actualización: 2026-09-17 (feature 020-001-registry-cost-model MERGED — epic 020 1/2).
 
 ## Decisiones recientes (cronología inversa)
+
+### 17 Sep 2026 — Feature 020-001-registry-cost-model (epic 020-mofgw-consumption-report) MERGED
+
+### Decisiones relevantes
+
+- **Feature 020-001-registry-cost-model MERGED — PRIMERA del epic 020 (el registro ahora responde "USD por modelo por día" sin joins).** `TerminalEvent` gana `model` + `cost_usd_src` (upstream/table/none) + `cost_usd_up` (*float64 nullable — 0.0 de modelo free ≠ null). **Captura de `usage.cost` de OpenRouter** (`provider.Usage.Cost` con `json:"-"` → jamás re-serializado al cliente): precedencia upstream (costo exacto facturado) > tabla `pricing:` (`estimateCost` reutilizado — cero duplicación, decisión vinculante) > none (dato faltante, no costo cero). `emitTerminalError` extendido con `model` (HITL-a: error también lleva la dimensión). Captura **solo-lectura**: envelope + headers `X-Usage-*` byte-idénticos (P8 congelado por B9). Compatibilidad P6: líneas históricas parsean con zero-values (encoding/json default). 6 call-sites success (chat ×4 + responses + embeddings) + 4 error via `handleChainError`.
+- **Implementer abortado a mitad de reporte, trabajo COMPLETO:** el GREEN (`7cbeaa9`) dejó 5 archivos sin commitear cuando el task se cortó (crédito agotado del usuario — explicación de los 8+ incidentes de harness del día). El orquestador verificó empíricamente (build OK, B1-B9 pasan, suite 987/37, vet limpio) antes de commitear — ningún trabajo perdido.
+- **Review: APPROVE 0 bloqueantes** (1 Minor + 5 Advisory no-bloqueantes). **Anti-bias SATISFECHO** (GLM reviewer vs deepseek implementer). Auditoría RED→GREEN: cero toques a tests. MINOR-1 (singleflight follower sin test propio) al backlog de consolidación; Advisories 1-5 (followers de vuelo fallido, embeddings sin terminal, stream interrumpido, divergencia header-vs-registro, costo negativo sin clamp) al backlog del epic 020.
+- **Suite del merge: 987 tests / 37 paquetes `-race` verde.** Commits: `f8795b5` spec, `00edf8b` audit, `0e48bc5` RED (B1-B9 + mod P6), `7cbeaa9` GREEN, `9905d7f` review.
+
+### Próxima feature en cola
+
+- **020-002-metrics-summary-html** (epic 020): `GET /v1/metrics/summary?date=YYYY-MM-DD` → HTML estático (tabla por modelo + cobertura de proveniencia + totales), streaming parse, tolerante a líneas corruptas. Epic 020: 1/2 done.
 
 ### 17 Sep 2026 — EPIC 019-provider-sync-automation CERRADO
 
