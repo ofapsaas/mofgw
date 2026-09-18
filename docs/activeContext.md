@@ -1,11 +1,25 @@
 # activeContext.md — Contexto activo de mofgw
 
 > Memory Bank: estado actual, decisiones recientes, próximos pasos, deuda conocida.
-> Última actualización: 2026-09-17 (feature 020-001-registry-cost-model MERGED — epic 020 1/2).
+> Última actualización: 2026-09-18 (feature 020-002-metrics-summary-html MERGED — epic 020 2/2 COMPLETO).
 
 ## Decisiones recientes (cronología inversa)
 
-### 17 Sep 2026 — Feature 020-001-registry-cost-model (epic 020-mofgw-consumption-report) MERGED
+### 18 Sep 2026 — Feature 020-002-metrics-summary-html (epic 020-mofgw-consumption-report) MERGED — EPIC 2/2
+
+### Decisiones relevantes
+
+- **Feature 020-002-metrics-summary-html MERGED — ÚLTIMA del epic 020 (el reporte de consumo existe como endpoint).** `GET /v1/metrics/summary?date=YYYY-MM-DD` (auth Bearer, date UTC estricto) → **HTML self-contained** (CSS inline, sin recursos externos, determinístico sortado) con: tabla por modelo (requests/success/error/tokens por tipo/cost_usd/cost_usd_up presente-null), cobertura de proveniencia (upstream/table/none + históricas + %), totales del día, contadores de corruptas. Parse **streaming single-pass** (Scanner buffer 1MiB) de registry.jsonl + rotados logrotate `<base>.N` (tope 5, `.gz` ignorado); filtro estricto `type=="terminal"` + `ts[:10]==date` (cero doble conteo); tolerante a líneas corruptas de cualquier longitud (ErrTooLong → descarta la línea gigante y RE-ARRANCA el parse — el resto del archivo SÍ se cuenta); `model==""` → fila "desconocido". Setter `SetRegistryPath(path)` (knob vacío → 503 runtime, patrón clientconfig); main.go lo cablea SIEMPRE (independiente de registry.enabled — lectura pura).
+- **Review NEEDS_FIX resuelto pre-merge (3 Majors):** F1 (línea >1MiB abortaba el resto del archivo → re-arranque del scanner), F2 (2 categorías de corruptas sin contar: objeto sin type + ts malformado — el attempt válido skip silencioso), F3 (**html.EscapeString en el model — XSS del propio registro cerrado**). F4/F5/F12: aserciones endurecidas (corruptas exactas, totales exactos, cobertura numérica exacta, determinismo 2-request byte-idéntico).
+- **Suite final del merge: 997 tests / 37 paquetes `-race` verde** (vet limpio). Commits: `cd7b3e5` spec, `0df0d77` audit, `b568bb0` RED, `f803ed5` GREEN, `8d79a98` fixes review, `0b9f8b6` review+sign-off.
+- **Proceso — 10º-12º incidente de harness:** subagentes test-writer/implementer en loop o vacío durante 020-002 → RED y GREEN inline del orquestador (disclosure registrada). El review auditó el mixing de fixes de test en el commit GREEN (F6): ningún cambio debilita, dos endurecen — costo documentado de la ejecución inline.
+
+### Epic 020-mofgw-consumption-report — CERRADO (2/2)
+
+- **El registro ahora responde "USD/tokens por modelo por día" sin joins** (020-001) y **la vista de consulta inmediata existe** (020-002). Fuera de alcance del epic (ingestión Odoo/DB, dimensiones sesión/proyecto) queda documentado en el plan para un epic posterior.
+- **Pendiente de deploy (operador):** ninguna acción requerida para este endpoint (vive en el server binario — la próxima actualización de deploy lo habilita).
+
+### 18 Sep 2026 — Feature 020-001-registry-cost-model (epic 020-mofgw-consumption-report) MERGED
 
 ### Decisiones relevantes
 

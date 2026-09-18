@@ -10,14 +10,14 @@ Estado de features del proyecto mofgw (Memory Bank).
 
 <!-- features actualmente en alguna etapa del ciclo CDAD -->
 
-_(ninguna — 020-001 done; 020-002 no arrancada todavía)_
-
-- **020-001-registry-cost-model** (epic 020-mofgw-consumption-report) — TerminalEvent enriquecido con `model` + `cost_usd_src` (upstream/table/none) + `cost_usd_up` (*float64 nullable, 0.0 ≠ null); captura `usage.cost` de OpenRouter (provider.Usage.Cost, json:"-"); precedencia upstream > tabla > none (estimateCost reutilizado, cero duplicación); emitTerminalError con model (HITL-a); captura solo-lectura (respuesta byte-idéntica, P8); compatibilidad P6 automática. Merged 2026-09-17. Suite 987/37 `-race` verde. Commits: `f8795b5` spec, `00edf8b` audit, `0e48bc5` RED, `7cbeaa9` GREEN, `9905d7f` review (APPROVE 0 bloqueantes; anti-bias SATISFECHO GLM vs deepseek).
+_(ninguna — epic 020 cerrado 2/2)_
 
 ## Done
 
 <!-- features cerradas (mergeadas + Memory Bank actualizado) -->
 
+- **020-002-metrics-summary-html** (epic 020-mofgw-consumption-report) — endpoint read-only `GET /v1/metrics/summary?date=YYYY-MM-DD` → HTML self-contained determinístico (tabla por modelo + cobertura de proveniencia + totales) leído en streaming de registry.jsonl + rotados (tolerante a corruptas de cualquier longitud, filtro terminal+UTC, model="" → desconocido, html escaping). Setter `SetRegistryPath` (503 runtime si vacío). Merged 2026-09-18. Suite 997/37 `-race` verde. Commits: `cd7b3e5` spec, `0df0d77` audit, `b568bb0` RED, `f803ed5` GREEN, `8d79a98` fixes review (F1 ErrTooLong, F2 corruptas por categoría, F3 html.EscapeString, F4/F5/F12 aserciones exactas), `0b9f8b6` review+sign-off. **Epic 020 completo: 2/2.**
+- **020-001-registry-cost-model** (epic 020-mofgw-consumption-report) — TerminalEvent enriquecido con `model` + `cost_usd_src` (upstream/table/none) + `cost_usd_up` (*float64 nullable, 0.0 ≠ null); captura `usage.cost` de OpenRouter (provider.Usage.Cost, json:"-"); precedencia upstream > tabla > none (estimateCost reutilizado, cero duplicación); emitTerminalError con model (HITL-a); captura solo-lectura (respuesta byte-idéntica, P8); compatibilidad P6 automática. Merged 2026-09-17. Suite 987/37 `-race` verde. Commits: `f8795b5` spec, `00edf8b` audit, `0e48bc5` RED, `7cbeaa9` GREEN, `9905d7f` review (APPROVE 0 bloqueantes; anti-bias SATISFECHO GLM vs deepseek).
 - **019-001-fetch-modelsdev** (epic 019-provider-sync-automation) — fetch + cache en disco del catálogo models.dev (`internal/modelsdev`). Merged 2026-09-11. Suite 763/30 `-race` verde. Commits: `f99c061` RED, `226728c` GREEN, `c0489bc` POST-AUDIT RED discriminante, `65503d4` fix review. Review REQUEST_CHANGES con B1/B2 resueltos (HITL delegado).
 - **019-002-fetch-zen-go** (epic 019-provider-sync-automation) — motor genérico `internal/modelscache` (extraído de 019-001, generics `Fetch[T]`/`Store[T]`, retry/lock/digest/atomic/TTL idénticos) + fuentes `internal/upstream` (FetchZen/FetchGo: 70/37 items reales; FetchOpenRouter: 443 modelos + auth condicional). Merged 2026-09-11. Suite 806/32 `-race` verde. Commits: `1eddbed` RED, `0ba81ab` fix fixture (AP-4), `7baa598` GREEN, `648188f` review. Review 15/15 P PASS; bloqueante cosmético resuelto por HITL (identidad contractual = errors.Is/As).
 - **019-003-merge-provider-catalog** (epic 019-provider-sync-automation) — paquete puro `internal/catalogmerge` (Plan/ProviderPlan/Merge): IR de sync determinístico con matching strip-vendor/alias-2-saltos, espejo de pricing/metadata (defaults zen→opencode, go→opencode-go), derivación de Thinking/supported_parameters (extensión aditiva modelsdev), fail-soft por fuente + knobs `sync_source`/`sync_mirror`. Merged 2026-09-16. Suite 836/33 `-race` verde (re-corrida fresca de merge; 1 flake preexistente `TestE2E010002_TTLExpiry` documentado). Commits: `b73694a` RED, `0b9d9fc` GREEN, `0f0fa33` review (APPROVE 0 bloqueantes), `047a064` sign-off HITL S1/S2. Findings S1 (enmienda I7) y S2 (aclaración P2) resueltos y documentados por HITL.
@@ -30,11 +30,9 @@ _(ninguna — 020-001 done; 020-002 no arrancada todavía)_
 
 <!-- features identificadas pero no arrancadas todavía -->
 
-Epic **019-provider-sync-automation** (backlog; plan: `docs/epics/019-provider-sync-automation/plan.md`): 7/7 features done — sigue integración E3.
+Epic **019-provider-sync-automation**: 7/7 done + E3. CERRADO 2026-09-17.
 
-Epic **020-mofgw-consumption-report** (planificado 16 Sep 2026, arranca cuando 019-003 libere el epic 019; plan: `docs/epics/020-mofgw-consumption-report/plan.md`):
-- 020-001-registry-cost-model (model + cost_usd_src + cost_usd_up nullable en TerminalEvent; captura usage.cost de OpenRouter — verificado empíricamente)
-- 020-002-metrics-summary-html (GET /v1/metrics/summary?date= → HTML streaming sobre registry.jsonl + rotados)
+Epic **020-mofgw-consumption-report**: 2/2 done. CERRADO 2026-09-18.
 
 ## Blocked
 
