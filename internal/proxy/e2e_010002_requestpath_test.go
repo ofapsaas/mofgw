@@ -51,6 +51,7 @@ type rpProvider struct {
 	model     string // modelo que sirve
 	maxTokens int64  // MaxTokens del provider (001-004; 0 = sin límite)
 	ups       *upstream
+	count     *countingUpstream
 }
 
 // buildRP construye el harness con N providers configurables. Orden de la
@@ -63,7 +64,11 @@ func buildRP(t *testing.T, clientKey string, provs ...rpProvider) *harness {
 	providers := make([]provider.Provider, len(provs))
 	for i, p := range provs {
 		ups[i] = p.ups
-		srv := httptest.NewServer(p.ups.handler())
+		hf := p.ups.handler()
+		if p.count != nil {
+			hf = p.count.handler() // 021-001: conteo de intentos (guard C11)
+		}
+		srv := httptest.NewServer(hf)
 		t.Cleanup(srv.Close)
 		cl := provider.NewClient(p.id, srv.URL, "sk-upstream", []string{p.model}, p.maxTokens, nil)
 		providers[i] = cl
@@ -509,16 +514,21 @@ func TestE2E010002_C10_CadenaZenBailian(t *testing.T) {
 	wantBodyBool(t, bailian.gotBody, "enable_thinking", true)
 }
 
-// ---- C11: 4xx no-reintentable (P9) ----
+// ---- C11: 4xx no-reintentable → failover (P9 + 021-001) ----
 
-// C11: cadena de dos providers, el primero responde 400 upstream → el
-// cliente recibe 400 y el segundo provider NO recibe ningún request.
-// Guard: verde hoy.
-func TestE2E010002_C11_400NoReintenta(t *testing.T) {
+// POST-AUDIT 021-001: TestE2E010002_C11_400NoReintenta era guard del
+// comportamiento viejo (400 upstream → 400 al cliente y p2 sin request).
+// La spec 021-001 cambió el contrato: el 4xx no-retryable es fatal solo
+// para el PAR (provider, request) — el guard pasa a exigir el failover.
+// Se conserva el espíritu original en lo que sigue siendo cierto: p1 se
+// intenta EXACTAMENTE 1 vez (el mismo provider no se reintenta tras 4xx;
+// contador vía countingUpstream de e2e_010002_test.go).
+func TestE2E010002_C11_400Failover(t *testing.T) {
 	p1 := upstreamFail(400)
-	p2 := upstreamOK("m", "nunca")
+	p2 := upstreamOK("m", "rescate")
+	c1 := &countingUpstream{ups: p1}
 	h := buildRP(t, "sk-test-1",
-		rpProvider{id: "zen", model: "m", maxTokens: 4096, ups: p1},
+		rpProvider{id: "zen", model: "m", maxTokens: 4096, ups: p1, count: c1},
 		rpProvider{id: "bailian", model: "m", maxTokens: 4096, ups: p2},
 	)
 
@@ -526,12 +536,18 @@ func TestE2E010002_C11_400NoReintenta(t *testing.T) {
 		"model":    "m",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	})
-	if resp.StatusCode != 400 {
-		t.Fatalf("status = %d, want 400 (4xx no-reintentable)", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200 (el 400 descarta solo p1; la cadena continúa vía p2)", resp.StatusCode)
 	}
-	io.Copy(io.Discard, resp.Body)
-	if p2.gotBody != "" {
-		t.Fatalf("el segundo provider recibió un request tras 400: %s", p2.gotBody)
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "rescate") {
+		t.Fatalf("body = %s, want contenido de p2 (rescate): éxito vía segundo provider", body)
+	}
+	if got := c1.calls(); got != 1 {
+		t.Fatalf("p1 intentos = %d, want 1 (el mismo provider no se reintenta tras 4xx)", got)
+	}
+	if p2.gotBody == "" {
+		t.Fatal("p2 no recibió request tras el 400 de p1 (la cadena no continuó)")
 	}
 }
 

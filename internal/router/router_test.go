@@ -78,6 +78,16 @@ func (f *fakeProvider) fail401() *fakeProvider {
 	return f
 }
 
+// fail403: error NO-retryable del upstream por entitlement de la cuenta
+// (021-001: "An active OpenCode Go subscription is required to use Go
+// models."). Es un fallo DE ESE provider, no del request del cliente
+// contra mofgw: la cadena debe descartar SOLO este provider y continuar
+// con el siguiente candidato.
+func (f *fakeProvider) fail403() *fakeProvider {
+	f.errFor["complete"] = &provider.ErrUpstream{StatusCode: 403, Type: "invalid_request_error", Message: "An active OpenCode Go subscription is required to use Go models."}
+	return f
+}
+
 // failThenOK: falla con el error dado los primeros n intentos, luego
 // responde ok("") (002-001: reintento absorbe el fallo transitorio).
 // NO toca errFor (fallo permanente): es un modo transitorio aparte.
@@ -175,6 +185,9 @@ type streamFake struct {
 func (f *streamFake) Stream(ctx context.Context, body []byte) (<-chan provider.StreamEvent, error) {
 	f.mu.Lock()
 	f.lastBody = body
+	// 021-001: calls["complete"] solo se incrementa en el path Complete;
+	// el conteo de intentos de Stream necesita su propia clave.
+	f.calls["stream"]++
 	f.mu.Unlock()
 	if f.script == nil {
 		return nil, &provider.ErrUpstream{StatusCode: 500, Type: "upstream_error", Message: "down before first byte"}
@@ -187,6 +200,14 @@ func (f *streamFake) Stream(ctx context.Context, body []byte) (<-chan provider.S
 		}
 	}()
 	return ch, nil
+}
+
+// streamCallCount: intentos de Stream sobre este fake (mismo patrón que
+// streamCountingFake en router_sticky_test.go).
+func (f *streamFake) streamCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls["stream"]
 }
 
 // ---- helpers ----
@@ -306,21 +327,32 @@ func TestPerProviderCooldownOverride(t *testing.T) {
 	}
 }
 
-func TestClientErrorNoFallback(t *testing.T) {
+// POST-AUDIT 021-001: TestClientErrorNoFallback fijaba el contrato viejo
+// (un 400 "de cliente" reportado por el upstream terminaba la cadena con
+// ChainError 400 y p2.callCount()==0). Bajo 021-001 el router no distingue
+// el origen del 4xx (el error es opaco y es fatal para el PAR
+// (provider, request), no para la cadena): descarta p1 y continúa. El
+// nombre "NoFallback" quedó mentiroso → TestClientErrorFailsOver. El
+// passthrough del 4xx crudo al cliente cuando TODOS los candidatos quedan
+// descartados queda cubierto por TestNoRetryableNotRevisited y
+// TestExhaustedChain4xxPassthrough (no aquí: p2 está vivo).
+func TestClientErrorFailsOver(t *testing.T) {
 	p1 := newFake("p1", "m").fail400()
 	p2 := newFake("p2", "m").ok("de p2")
 	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
 
-	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
-	var ce *ChainError
-	if !errors.As(err, &ce) {
-		t.Fatalf("err = %v, want *ChainError", err)
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 400 debe descartar solo p1, no abortar la cadena)", err)
 	}
-	if ce.Status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", ce.Status)
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
 	}
-	if p2.callCount() != 0 {
-		t.Fatal("4xx de cliente no debe probar el siguiente provider")
+	if p1.callCount() != 1 {
+		t.Fatalf("p1.callCount = %d, want 1 (el mismo provider no-retryable no se reintenta)", p1.callCount())
+	}
+	if p2.callCount() != 1 {
+		t.Fatalf("p2.callCount = %d, want 1", p2.callCount())
 	}
 }
 
@@ -364,21 +396,30 @@ func TestUpstream401AllFail(t *testing.T) {
 	}
 }
 
-// TestUpstream400StillNoFallback: guarda del contrato existente — un 400
-// real del upstream (request malformado, error del cliente) sigue siendo
-// no-retryable. Solo 401/402 de cuenta ganan failover.
-func TestUpstream400StillNoFallback(t *testing.T) {
+// POST-AUDIT 021-001: TestUpstream400StillNoFallback fijaba el contrato
+// viejo — un 400 del upstream abortaba la cadena (p2.callCount()==0). La
+// spec 021-001 lo cambió: el 4xx no-retryable es fatal solo para el PAR
+// (provider, request) — descarta p1 y la cadena continúa con el siguiente
+// candidato (mismo tratamiento que el 401 de cuenta, TestUpstream401FailsOver).
+// Se conserva del contrato viejo lo que sigue siendo cierto: el MISMO
+// provider no-retryable no se reintenta (p1 exactamente 1 vez).
+func TestUpstream400FailsOver(t *testing.T) {
 	p1 := newFake("p1", "m").fail400()
 	p2 := newFake("p2", "m").ok("de p2")
 	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
 
-	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
-	var ce *ChainError
-	if !errors.As(err, &ce) {
-		t.Fatalf("err = %v, want *ChainError", err)
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 400 upstream debe descartar solo p1, no abortar la cadena)", err)
 	}
-	if p2.callCount() != 0 {
-		t.Fatal("400 upstream no debe probar el siguiente provider")
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
+	}
+	if p1.callCount() != 1 {
+		t.Fatalf("p1.callCount = %d, want 1 (el mismo provider no-retryable no se reintenta)", p1.callCount())
+	}
+	if p2.callCount() != 1 {
+		t.Fatalf("p2.callCount = %d, want 1", p2.callCount())
 	}
 }
 
@@ -768,23 +809,289 @@ func TestMaxRetriesCeroUnIntento(t *testing.T) {
 	}
 }
 
-func TestCircularNoRetryableCorta(t *testing.T) {
-	// 4xx de cliente → responde ya; el loop circular NO reintenta
-	// errores no-retryable (p2 no se toca aunque haya presupuesto).
+// TestCircularNoRetryableFailsOver (021-001): reemplaza a
+// TestCircularNoRetryableCorta, que fijaba el bug (la cadena abortaba al
+// primer 4xx no-retryable con p2.callCount()==0). Un 400 del upstream NO
+// corta la cadena: descarta p1 y continúa con p2 aunque quede presupuesto
+// circular (max_retries=5). Se conserva el espíritu original SOLO en lo
+// que sigue siendo cierto: el MISMO provider no-retryable no se reintenta
+// (p1 exactamente 1 vez).
+func TestCircularNoRetryableFailsOver(t *testing.T) {
 	p1 := newFake("p1", "m").fail400()
 	p2 := newFake("p2", "m").ok("de p2")
 	r := New(specsOf(p1, p2), 5, time.Minute, 0, 30*time.Second, nil)
 
-	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
-	var ce *ChainError
-	if !errors.As(err, &ce) {
-		t.Fatalf("err = %v, want *ChainError", err)
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 400 no-retryable debe descartar solo p1, no cortar la cadena)", err)
 	}
-	if ce.Status != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", ce.Status)
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
 	}
-	if got := p2.callCount(); got != 0 {
-		t.Fatalf("p2 intentos = %d, want 0 (no-retryable no reintenta)", got)
+	if got := p1.callCount(); got != 1 {
+		t.Fatalf("p1 intentos = %d, want 1 (el mismo provider no-retryable no se reintenta)", got)
+	}
+}
+
+// ---- 021-001-no-retryable-failover: un 4xx upstream NO-retryable
+// (400/403/404/413) descarta SOLO al provider que lo devolvió y la cadena
+// continúa con el siguiente candidato. El error es de ESA cuenta/provider
+// (ej. entitlement OpenCode Go, campo desconocido por el upstream), no del
+// request del cliente contra mofgw: abortar la cadena entera por un
+// provider equivocado deja al cliente sin el resto de providers sanos.
+// Hoy (bug) la cadena aborta → todos estos tests van RED, esperado.
+//
+// Insumos de la spec: classify() mapea 400/403/404/413 como NO-retryable
+// (vs 401/402 retryable-con-failover); recordFailure NO se invoca en el
+// skip (→ sin cooldown); la cadena solo termina cuando TODOS los
+// candidatos agotan o se llega al tope maxAttempts (max_retries+1).
+
+// TestNoRetryable403Failover: p1 responde 403 de entitlement; p2 vivo →
+// éxito vía p2. Cada provider exactamente 1 intento.
+func TestNoRetryable403Failover(t *testing.T) {
+	p1 := newFake("p1", "m").fail403()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := New(specsOf(p1, p2), 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 403 no-retryable debe descartar solo p1, no abortar la cadena)", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
+	}
+	if got := p1.callCount(); got != 1 {
+		t.Fatalf("p1 intentos = %d, want 1 (descartado con su 403)", got)
+	}
+	if got := p2.callCount(); got != 1 {
+		t.Fatalf("p2 intentos = %d, want 1 (la cadena continúa con el siguiente)", got)
+	}
+}
+
+// TestNoRetryable400Failover: p1 responde 400 del upstream (ej. campo
+// desconocido que ese upstream no acepta); p2 vivo → éxito vía p2.
+func TestNoRetryable400Failover(t *testing.T) {
+	p1 := newFake("p1", "m").fail400()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := New(specsOf(p1, p2), 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 400 no-retryable debe descartar solo p1)", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
+	}
+	if got := p1.callCount(); got != 1 {
+		t.Fatalf("p1 intentos = %d, want 1", got)
+	}
+	if got := p2.callCount(); got != 1 {
+		t.Fatalf("p2 intentos = %d, want 1", got)
+	}
+}
+
+// TestNoRetryableNoSameProviderRetry: no-retryable significa "sin
+// reintento del MISMO provider" — aunque RetryConfig.MaxAttempts dé
+// presupuesto con backoff, p1 se descarta al primer 403 y pasa directo a
+// p2 (a diferencia del 500 transitorio, que sí absorbe reintentos).
+func TestNoRetryableNoSameProviderRetry(t *testing.T) {
+	p1 := newFake("p1", "m").fail403()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := NewWithOptions(specsOf(p1, p2), Options{
+		MaxRetries: 2, Cooldown: time.Minute, GlobalTimeout: 30 * time.Second,
+		Retry: RetryConfig{MaxAttempts: 3, BackoffBase: time.Millisecond, BackoffMax: 10 * time.Millisecond},
+	})
+
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 403 no debe abortar la cadena)", err)
+	}
+	if res.ProviderID != "p2" {
+		t.Fatalf("provider = %s, want p2", res.ProviderID)
+	}
+	if got := p1.callCount(); got != 1 {
+		t.Fatalf("p1 intentos = %d, want 1 (no-retryable: sin reintento del mismo provider con backoff)", got)
+	}
+	if got := p2.callCount(); got != 1 {
+		t.Fatalf("p2 intentos = %d, want 1", got)
+	}
+}
+
+// TestNoRetryableNotRevisited: el recorrido circular de la cadena NO
+// revisita dentro del MISMO request a providers ya descartados por 4xx
+// no-retryable: cada candidato se intenta exactamente 1 vez (el ciclo
+// attempts%len(ready) no vuelve a llamar a p1/p2).
+func TestNoRetryableNotRevisited(t *testing.T) {
+	t.Run("exito via p3 tras dos descartes", func(t *testing.T) {
+		p1 := newFake("p1", "m").fail403()
+		p2 := newFake("p2", "m").fail400()
+		p3 := newFake("p3", "m").ok("de p3")
+		r := New(specsOf(p1, p2, p3), 2, time.Minute, 0, 30*time.Second, nil)
+
+		res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+		if err != nil {
+			t.Fatalf("Complete: %v (p3 vivo debe responder tras los descartes)", err)
+		}
+		if res.Response.Choices[0].Message.Content != "de p3" {
+			t.Fatalf("content = %q, want de p3", res.Response.Choices[0].Message.Content)
+		}
+		if p1.callCount() != 1 || p2.callCount() != 1 || p3.callCount() != 1 {
+			t.Fatalf("calls = p1:%d p2:%d p3:%d, want 1/1/1 (sin revisita circular del mismo request)", p1.callCount(), p2.callCount(), p3.callCount())
+		}
+	})
+
+	t.Run("todos no-retryable termina en ChainError, uno por provider", func(t *testing.T) {
+		p1 := newFake("p1", "m").fail403()
+		p2 := newFake("p2", "m").fail400()
+		p3 := newFake("p3", "m").fail403()
+		r := New(specsOf(p1, p2, p3), 2, time.Minute, 0, 30*time.Second, nil)
+
+		_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+		var ce *ChainError
+		if !errors.As(err, &ce) {
+			t.Fatalf("err = %v, want *ChainError (cadena agotada por descartes)", err)
+		}
+		if p1.callCount() != 1 || p2.callCount() != 1 || p3.callCount() != 1 {
+			t.Fatalf("calls = p1:%d p2:%d p3:%d, want 1/1/1 (cada candidato exactamente 1 vez)", p1.callCount(), p2.callCount(), p3.callCount())
+		}
+	})
+}
+
+// TestNoRetryableNoCooldown: el descarte no-retryable NO es recordFailure:
+// p1 no entra en cooldown (el skip es específico de este request; el
+// provider puede estar sano para otras claves/modelos y el estado del
+// router no debe ensuciarse).
+func TestNoRetryableNoCooldown(t *testing.T) {
+	p1 := newFake("p1", "m").fail403()
+	p2 := newFake("p2", "m").ok("de p2")
+	r := New(specsOf(p1, p2), 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (el 403 debe descartar solo p1)", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de p2" {
+		t.Fatalf("content = %q, want de p2", res.Response.Choices[0].Message.Content)
+	}
+	if r.cooldowns.IsCooling("p1") {
+		t.Fatal("p1 quedó en cooldown tras el skip no-retryable (recordFailure NO debe invocarse en el descarte)")
+	}
+}
+
+// TestNoRetryableFailover_Stream: el failover no-retryable también aplica
+// en streaming: un 403 PRE-primer-byte (error de retorno de Stream())
+// descarta p1 y la cadena sirve vía p2.
+func TestNoRetryableFailover_Stream(t *testing.T) {
+	p1 := &streamCountingFake{fakeProvider: newFake("p1", "m").fail403()}
+	p2 := &streamFake{fakeProvider: newFake("p2", "m").ok("x"), script: []provider.StreamEvent{
+		{Data: `{"choices":[{"delta":{"content":"hola"}}]}`},
+		{Data: "[DONE]"},
+	}}
+	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Stream(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Stream: %v (el 403 pre-primer-byte debe descartar solo p1, no abortar la cadena)", err)
+	}
+	if res.Provider.ID() != "p2" {
+		t.Fatalf("provider = %s, want p2 (failover no-retryable pre-primer-byte)", res.Provider.ID())
+	}
+	if got := p1.streamCallCount(); got != 1 {
+		t.Fatalf("p1 intentos de Stream = %d, want 1", got)
+	}
+	var datas []string
+	for ev := range res.Events {
+		if ev.Err != nil {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		datas = append(datas, ev.Data)
+	}
+	if len(datas) != 2 || datas[1] != "[DONE]" {
+		t.Fatalf("datas = %v", datas)
+	}
+}
+
+// TestNoRetryableFirstEventFailover_Stream: el 403 también puede llegar
+// como PRIMER evento del canal (pre-commit: el router todavía no reenvió
+// nada al cliente ni hizo commitStream) — mismo tratamiento que el fallo
+// pre-primer-byte: descarta p1 y sirve vía p2.
+func TestNoRetryableFirstEventFailover_Stream(t *testing.T) {
+	p1 := &streamFake{fakeProvider: newFake("p1", "m"), script: []provider.StreamEvent{
+		{Err: &provider.ErrUpstream{StatusCode: 403, Type: "invalid_request_error", Message: "An active OpenCode Go subscription is required to use Go models."}},
+	}}
+	p2 := &streamFake{fakeProvider: newFake("p2", "m").ok("x"), script: []provider.StreamEvent{
+		{Data: `{"choices":[{"delta":{"content":"hola"}}]}`},
+		{Data: "[DONE]"},
+	}}
+	r := New([]ProviderSpec{{Provider: p1}, {Provider: p2}}, 2, time.Minute, 0, 30*time.Second, nil)
+
+	res, err := r.Stream(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Stream: %v (el 403 del primer evento es pre-commit: debe descartar solo p1)", err)
+	}
+	if res.Provider.ID() != "p2" {
+		t.Fatalf("provider = %s, want p2 (failover pre-commit)", res.Provider.ID())
+	}
+	if got := p1.streamCallCount(); got != 1 {
+		t.Fatalf("p1 intentos de Stream = %d, want 1", got)
+	}
+	var datas []string
+	for ev := range res.Events {
+		if ev.Err != nil {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		datas = append(datas, ev.Data)
+	}
+	if len(datas) != 2 || datas[1] != "[DONE]" {
+		t.Fatalf("datas = %v", datas)
+	}
+}
+
+// TestNoRetryableFirstEventFailover_NoTTFB_Stream (021-001, gap de
+// cobertura detectado en POST-AUDIT): replica TestNoRetryableFirstEventFailover_Stream
+// con FirstTokenTimeout=&0 (sin TTFB). Con &0, specFirstTokenTimeout
+// resuelve 0 ("router 0 explícito → sin tope") y el intento cae en la
+// rama timeout<=0 de stream() (espera el primer byte sin límite, M4) —
+// rama que hoy no tiene test directo del sitio no-retryable: los tests
+// existentes caen en la rama del timer (sin knobs → fallback al
+// GlobalTimeout, ver TestSpecFirstTokenTimeoutResolution). El 403 del
+// primer evento (pre-commit) debe descartar p1 y servir vía p2 igual que
+// en la rama con timer.
+func TestNoRetryableFirstEventFailover_NoTTFB_Stream(t *testing.T) {
+	zero := time.Duration(0)
+	p1 := &streamFake{fakeProvider: newFake("p1", "m"), script: []provider.StreamEvent{
+		{Err: &provider.ErrUpstream{StatusCode: 403, Type: "invalid_request_error", Message: "An active OpenCode Go subscription is required to use Go models."}},
+	}}
+	p2 := &streamFake{fakeProvider: newFake("p2", "m").ok("x"), script: []provider.StreamEvent{
+		{Data: `{"choices":[{"delta":{"content":"hola"}}]}`},
+		{Data: "[DONE]"},
+	}}
+	r := NewWithOptions([]ProviderSpec{{Provider: p1}, {Provider: p2}}, Options{
+		MaxRetries:        2,
+		Cooldown:          time.Minute,
+		GlobalTimeout:     30 * time.Second,
+		FirstTokenTimeout: &zero,
+	})
+
+	res, err := r.Stream(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Stream: %v (el 403 del primer evento es pre-commit: debe descartar solo p1)", err)
+	}
+	if res.Provider.ID() != "p2" {
+		t.Fatalf("provider = %s, want p2 (failover pre-commit, rama sin TTFB)", res.Provider.ID())
+	}
+	if got := p1.streamCallCount(); got != 1 {
+		t.Fatalf("p1 intentos de Stream = %d, want 1", got)
+	}
+	var datas []string
+	for ev := range res.Events {
+		if ev.Err != nil {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		datas = append(datas, ev.Data)
+	}
+	if len(datas) != 2 || datas[1] != "[DONE]" {
+		t.Fatalf("datas = %v", datas)
 	}
 }
 
