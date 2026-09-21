@@ -947,7 +947,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 	attempts := 0
 	// 021-001: índices de specs descartados por error no-retryable DE ESTE
 	// request (fatal para el par (provider, request), no para la cadena).
-	excluded := make(map[int]bool)
+	excluded := make(map[int]bool, len(ready))
 	var prevBaseURL string
 	var prevTransient bool
 	for attempts < r.maxAttempts {
@@ -1124,7 +1124,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 	attempts := 0
 	// 021-001: índices de specs descartados por error no-retryable DE ESTE
 	// request (fatal para el par (provider, request), no para la cadena).
-	excluded := make(map[int]bool)
+	excluded := make(map[int]bool, len(ready))
 	var prevBaseURL string
 	var prevTransient bool
 	for attempts < r.maxAttempts {
@@ -1395,17 +1395,20 @@ func (r *Router) logFallback(s *ProviderSpec, attempts, total int, causa string)
 	)
 }
 
-// exhaustedChain normaliza el error final de una cadena agotada: el
-// cliente ve SIEMPRE 502 upstream_error (regla 001-003 §B / 002-003),
-// nunca el status crudo del último provider (500/429 son internos del
-// upstream). Excepción 021-001: si TODOS los candidatos fueron
-// descartados por 4xx no-retryable, el último 4xx pasa crudo (el error
-// apunta al request mismo, no a un provider en particular).
-// ProviderID y Err se conservan para logs. TECHDEBT #30 (brazo
-// "abstain" de BENCH2ROBUST, arXiv:2608.11977): el 502 normalizado
-// lleva el código semántico chain_exhausted — distingue "falló todo
-// tras N intentos" de "el request es inválido/insoluble" (4xx
-// passthrough) — y un RetryAfter que sugiere al cliente cuándo
+// exhaustedChain normaliza el error final de una cadena agotada. Los
+// 5xx y 429 se wrapean SIEMPRE a 502 upstream_error (regla 001-003 §B
+// / 002-003): son internos del upstream. Legacy intencional (021-001,
+// no es regresión): el ÚLTIMO 4xx pasa crudo SIN importar cómo terminó
+// la cadena — sea porque todos los candidatos fueron descartados por
+// 4xx no-retryable o porque se agotó el budget (maxAttempts) tras
+// fallos 5xx/429 previos (ej: p1=500 agotado→cooldown, p2=403 skip,
+// budget 2 → el cliente ve el 403 crudo); el 4xx siempre ganó y sigue
+// ganando. El error apunta al request mismo, no a un provider en
+// particular. ProviderID y Err se conservan para logs. TECHDEBT #30
+// (brazo "abstain" de BENCH2ROBUST, arXiv:2608.11977): el 502
+// normalizado lleva el código semántico chain_exhausted — distingue
+// "falló todo tras N intentos" de "el request es inválido/insoluble"
+// (4xx passthrough) — y un RetryAfter que sugiere al cliente cuándo
 // reintentar en vez de un 502 plano sin señal.
 func (r *Router) exhaustedChain(last *ChainError) *ChainError {
 	if last == nil {
