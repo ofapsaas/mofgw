@@ -7,6 +7,11 @@
 // los providers en orden de config, saltea los que están en cooldown,
 // clasifica errores (retryable vs no-retryable) y garantiza que el
 // cliente reciba una respuesta exitosa si AL MENOS UN provider responde.
+// Un error upstream NO-retryable (400/403/404/413, 021-001) es fatal
+// solo para el PAR (provider, request): descarta a ese provider DE ESE
+// request y la cadena continúa con el siguiente candidato (la cadena
+// termina solo cuando todos los candidatos están agotados o se llega al
+// tope de intentos).
 //
 // EPIC-002 (resiliencia) agrega:
 //   - 002-001-retry: reintentos sobre el MISMO provider con backoff
@@ -50,7 +55,8 @@ import (
 )
 
 // ChainError es el error final que el cliente puede ver (único caso:
-// todos los providers fallaron, o error no-retryable de cliente).
+// la cadena se agotó — todos los providers fallaron, incluido el caso
+// 021-001 donde todos fueron descartados por 4xx no-retryable).
 // 002-003: Code es un código estable para la capa de absorción;
 // ProviderID identifica el provider que originó el error ("" = error
 // del proxy/cliente); Err conserva el error original solo para logs.
@@ -703,8 +709,10 @@ func (r *Router) injectThinkingForAttempt(body []byte, model string, s *Provider
 }
 
 // classify decide si un error de intento es retryable (se reintenta el
-// mismo provider o se prueba el siguiente) o no-retryable (se responde
-// al cliente ya).
+// mismo provider o se prueba el siguiente) o no-retryable (fatal para el
+// PAR (provider, request): el provider se descarta DE ESE request y la
+// cadena continúa con el siguiente candidato — 021-001; ya no aborta la
+// cadena entera).
 //
 // 401/402 del upstream (cuenta: key inválida, saldo agotado) son
 // retryable con failover: el problema es del estado de ESA cuenta, no de
@@ -712,9 +720,13 @@ func (r *Router) injectThinkingForAttempt(body []byte, model string, s *Provider
 // 2026: go-ofap4 sin saldo devolvía 401 "Insufficient balance" y el
 // chain moría 502 sin probar los 5 providers restantes con crédito).
 // El 401 del cliente contra mofgw nunca llega acá (internal/auth
-// rechaza antes del router). El 403 queda no-retryable a propósito:
-// semántica ambigua (puede ser política de contenido a nivel request,
-// que fallaría igual en todos los providers).
+// rechaza antes del router). El 403 queda no-retryable: semántica
+// ambigua (puede ser política de contenido a nivel request), pero bajo
+// skip-semantics (021-001) la razón histórica "fallaría igual en todos
+// los providers" ya no aplica: solo cuesta recorrer la cadena una vez y
+// agotarla limpiamente (el cliente ve el 4xx real vía exhaustedChain).
+// Incidente 21-sep-2026: acct-6 con suscripción vencida devolvía 403
+// y la cadena abortaba sin probar los providers restantes.
 func classify(err error) (retryable bool, status int, typ, msg string) {
 	var ue *provider.ErrUpstream
 	if errors.As(err, &ue) {
@@ -870,6 +882,28 @@ func (r *Router) applyStickyReorder(ready []int, stickyKey, model string) []int 
 	return ready
 }
 
+// nextCyclicCandidate elige el próximo candidato de ready no excluido
+// (021-001), escaneando cíclicamente desde la posición natural
+// (attempts % len(ready)). excluded guarda los índices de specs (los
+// valores de ready) descartados por error no-retryable en ESTE request:
+// el error es fatal para el PAR (provider, request), no para la cadena
+// ni para el provider en sí (sin cooldown). Con excluded vacío el
+// resultado es idéntico al recorrido circular histórico
+// ready[attempts%len(ready)] (sin regresión en el camino retryable).
+// found=false cuando TODOS los candidatos están excluidos → la cadena
+// termina agotada (exhaustedChain sobre el último error).
+func nextCyclicCandidate(ready []int, excluded map[int]bool, attempts int) (idx int, found bool) {
+	n := len(ready)
+	start := attempts % n
+	for i := 0; i < n; i++ {
+		cand := ready[(start+i)%n]
+		if !excluded[cand] {
+			return cand, true
+		}
+	}
+	return 0, false
+}
+
 // Complete recorre la cadena para un request no-stream. Devuelve la
 // respuesta del primer provider exitoso, o ChainError. API legacy (P8):
 // comportamiento idéntico a CompleteFor con stickyKey "".
@@ -911,10 +945,20 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 
 	var lastChain *ChainError
 	attempts := 0
+	// 021-001: índices de specs descartados por error no-retryable DE ESTE
+	// request (fatal para el par (provider, request), no para la cadena).
+	excluded := make(map[int]bool)
 	var prevBaseURL string
 	var prevTransient bool
 	for attempts < r.maxAttempts {
-		idx := ready[attempts%len(ready)]
+		idx, found := nextCyclicCandidate(ready, excluded, attempts)
+		if !found {
+			// 021-001: todos los candidatos descartados por errores
+			// no-retryable → cadena agotada (el cliente ve el último
+			// error, 4xx crudo vía exhaustedChain).
+			r.logger.Debug("decision", "motivo", "todos los candidatos descartados (no-retryable)", "attempts", attempts)
+			return nil, r.exhaustedChain(lastChain)
+		}
 		attempts++
 		s := &r.specs[idx]
 		// 015-001 (P3/P6): antes de intentar este provider, si el anterior
@@ -975,8 +1019,14 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 			retryable, status, typ, msg := classify(clErr)
 			lastChain = &ChainError{Status: status, Type: typ, Code: typ, Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 			if !retryable {
+				// 021-001: el 4xx no-retryable es fatal para el PAR
+				// (provider, request), no para la cadena: descarta este
+				// provider y continúa con el siguiente candidato. Sin
+				// recordFailure (el skip no genera cooldown) y sin
+				// reintento del mismo provider (sin backoff).
+				excluded[idx] = true
 				r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
-				return nil, lastChain
+				break
 			}
 
 			// 002-001: reintentar el MISMO provider con backoff.
@@ -1022,8 +1072,9 @@ type StreamResult struct {
 
 // Stream recorre la cadena para un request streaming. Bufferiza hasta el
 // primer evento: si el intento falla antes del primer byte (429, 5xx,
-// timeout, red), lo descarta silenciosamente y prueba el siguiente
-// provider (con reintentos 002-001 sobre el mismo). El cliente solo ve
+// timeout, red — y 4xx no-retryable, 021-001), lo descarta silenciosamente
+// y prueba el siguiente provider (con reintentos 002-001 sobre el mismo,
+// salvo no-retryable que descarta sin reintento). El cliente solo ve
 // el primer intento que produce un primer byte. API legacy (P8):
 // comportamiento idéntico a StreamFor con stickyKey "".
 func (r *Router) Stream(ctx context.Context, req *provider.ChatRequest, body []byte) (*StreamResult, error) {
@@ -1071,10 +1122,20 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 
 	var lastChain *ChainError
 	attempts := 0
+	// 021-001: índices de specs descartados por error no-retryable DE ESTE
+	// request (fatal para el par (provider, request), no para la cadena).
+	excluded := make(map[int]bool)
 	var prevBaseURL string
 	var prevTransient bool
 	for attempts < r.maxAttempts {
-		idx := ready[attempts%len(ready)]
+		idx, found := nextCyclicCandidate(ready, excluded, attempts)
+		if !found {
+			// 021-001: todos los candidatos descartados por errores
+			// no-retryable → cadena agotada (el cliente ve el último
+			// error, 4xx crudo vía exhaustedChain).
+			r.logger.Debug("decision", "motivo", "todos los candidatos descartados (no-retryable)", "attempts", attempts)
+			return nil, r.exhaustedChain(lastChain)
+		}
 		attempts++
 		s := &r.specs[idx]
 		// 015-001 (P3/P6): antes de intentar este provider, si el anterior
@@ -1089,6 +1150,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 			maxTries = 1
 		}
 
+	tries:
 		for try := 1; try <= maxTries; try++ {
 			// 029-001 (TECHDEBT #29): el tope del intento de stream es el
 			// FIRST-TOKEN timeout (TTFB), no el timeout global de Complete.
@@ -1137,8 +1199,12 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				retryable, status, typ, msg := classify(clErr)
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 				if !retryable {
+					// 021-001: igual que en complete() — el 4xx no-retryable
+					// descarta SOLO este provider (sin recordFailure, sin
+					// reintento del mismo) y la cadena continúa.
+					excluded[idx] = true
 					r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
-					return nil, lastChain
+					break tries
 				}
 				if try < maxTries {
 					wait := r.backoffFor(retryCfg, try-1, clErr)
@@ -1231,8 +1297,15 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 						retryable, status, typ, msg := classify(clErr)
 						lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 						if !retryable {
+							// 021-001: pre-commit (nada llegó al cliente):
+							// descarta SOLO este provider y continúa con el
+							// siguiente (sin recordFailure, sin reintento
+							// del mismo). break tries: el break simple solo
+							// saldría del select y caería en la lectura del
+							// branch timeout<=0.
+							excluded[idx] = true
 							r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
-							return nil, lastChain
+							break tries
 						}
 						if try < maxTries {
 							wait := r.backoffFor(retryCfg, try-1, clErr)
@@ -1278,8 +1351,12 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				retryable, status, typ, msg := classify(clErr)
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: msg, ProviderID: s.Provider.ID(), Err: clErr}
 				if !retryable {
+					// 021-001: mismo tratamiento que el branch timeout>0 —
+					// descarta SOLO este provider (sin recordFailure, sin
+					// reintento del mismo) y la cadena continúa.
+					excluded[idx] = true
 					r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
-					return nil, lastChain
+					break tries
 				}
 				if try < maxTries {
 					wait := r.backoffFor(retryCfg, try-1, clErr)
@@ -1321,7 +1398,9 @@ func (r *Router) logFallback(s *ProviderSpec, attempts, total int, causa string)
 // exhaustedChain normaliza el error final de una cadena agotada: el
 // cliente ve SIEMPRE 502 upstream_error (regla 001-003 §B / 002-003),
 // nunca el status crudo del último provider (500/429 son internos del
-// upstream). 4xx de cliente no pasan por acá (retornan antes).
+// upstream). Excepción 021-001: si TODOS los candidatos fueron
+// descartados por 4xx no-retryable, el último 4xx pasa crudo (el error
+// apunta al request mismo, no a un provider en particular).
 // ProviderID y Err se conservan para logs. TECHDEBT #30 (brazo
 // "abstain" de BENCH2ROBUST, arXiv:2608.11977): el 502 normalizado
 // lleva el código semántico chain_exhausted — distingue "falló todo
