@@ -26,6 +26,33 @@ from pathlib import Path
 CACHE = Path.home() / 'clawd/hb/.cache/mofgw-burn'
 DAILY = CACHE / 'daily.jsonl'
 
+# Mapa de normalización de claves de cliente (anonimización). Único lugar del
+# script donde viven los nombres reales: son las claves exactas que emite el
+# tracker en daily.jsonl vivo; sin ellas el desglose por cliente no sería
+# estable.
+_NORM = {
+    'ofap-opencode': 'cliente-a-opencode',
+    'ofap-openclaw': 'cliente-a-openclaw',
+    'ofap': 'cliente-a',
+    'prizzodrgit': 'cliente-c',
+}
+
+
+def norm(client):
+    """Clave de cliente de daily.jsonl → identificador anónimo 'cliente-*'.
+
+    Clientes desconocidos pasan tal cual; no se inventan nombres.
+    """
+    if client in _NORM:
+        return _NORM[client]
+    if client.startswith('ofap-'):
+        return 'cliente-a-' + client[len('ofap-'):]
+    if client.startswith('blovx-'):
+        return 'cliente-b-' + client[len('blovx-'):]
+    if client == 'blovx':
+        return 'cliente-b'
+    return client
+
 
 def load_entries():
     if not DAILY.exists():
@@ -68,6 +95,7 @@ def main():
     for d, e in window:
         delta = e.get('delta_usd') or {}
         for c, v in delta.items():
+            c = norm(c)  # frontera: el desglose solo ve nombres 'cliente-*'
             per_day[str(d)] += float(v)
             per_day_client[str(d)][c] += float(v)
 
@@ -157,9 +185,9 @@ def component_section(lines, days):
         lines.append('| %s | $%.2f | %s |' % (k, v, pct))
     lines.append('| **TOTAL propio** | **$%.2f** | 100%% |' % total)
     lines.append('')
-    lines.append('_Aprox v1: split ofap-openclaw por arranque de cron en el '
+    lines.append('_Aprox v1: split cliente-a-openclaw por arranque de cron en el '
                  'intervalo (~1h); guardias no separables de heartbeat; '
-                 'excluye blovx-*. Detalle: burn-component.py._')
+                 'excluye cliente-b-*. Detalle: burn-component.py._')
 
 
 if __name__ == '__main__':

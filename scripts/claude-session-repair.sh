@@ -16,7 +16,7 @@
 # Uso:
 #   claude-session-repair.sh <clientID> [--keep-newest|--fresh]
 #
-#   <clientID>     id del cliente mofgw (p.ej. ofap-opencode). El nombre de
+#   <clientID>     id del cliente mofgw (p.ej. cliente-a-opencode). El nombre de
 #                  sesión claude es el clientID saneado a [a-zA-Z0-9_-].
 #   --keep-newest  (default) conserva la sesión .jsonl más reciente de cada
 #                  directorio de proyecto y borra el resto. Preserva la

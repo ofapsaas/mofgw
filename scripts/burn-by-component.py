@@ -5,14 +5,22 @@ Consume los deltas timestamped de hb/.cache/mofgw-burn/daily.jsonl (generados po
 burn-daily.py) y los headers de ciclo del daily log (hb/YYMMDD.md) para atribuir
 cada ventana de delta a un componente:
 
-  - workers_opencode : cliente ofap-opencode (rondas de workers OpenCode: odoo-go,
-                       mofgw, cdad) — el cliente ya separa este bucket.
+  - workers_opencode : cliente cliente-a-opencode (rondas de workers OpenCode:
+                       odoo-go, mofgw, cdad) — el cliente ya separa este bucket.
   - crons            : entradas '## HH:MM Cron' del log dentro de la ventana, o
                        cron programado conocido (Obs-Radar 09:00 ART).
   - heartbeat        : ventana con header '## HH:MM Cycle' y sin evento cron.
-  - openclaw_otros   : delta de ofap-openclaw sin ciclo ni cron en la ventana
-                       (background poll, guardias, spills de ventana anterior).
-  - clientes externos: blovx-openclaw, zot, etc. → atribuidos a su cliente.
+  - openclaw_otros   : delta de cliente-a-openclaw sin ciclo ni cron en la
+                       ventana (background poll, guardias, spills de ventana
+                       anterior).
+  - clientes externos: cliente-b-openclaw, zot, etc. → atribuidos a su cliente.
+
+ANONIMIZACIÓN: las claves de cliente leídas de daily.jsonl (claves reales del
+cache vivo) se normalizan a identificadores 'cliente-*' vía norm() ANTES de
+cualquier matcher/agrupación/output. El mapa real está en _NORM (mínimo
+necesario para que los matchers funcionen contra el cache vivo). Clientes
+desconocidos pasan tal cual (bucket 'cliente_<nombre>') — no se inventan
+nombres.
 
 Prioridad por ventana: cron explícito > cron conocido (radar 09:00) > heartbeat > otros.
 
@@ -39,6 +47,38 @@ KNOWN_CRONS = [('radar', 9, 0)]  # Obs-Radar 09:00 ART
 
 HEADER_RE = re.compile(r'^## (\d{1,2}):(\d{2}) (Cycle|Cron|Corrección)', re.M)
 
+# Mapa de normalización de claves de cliente (anonimización). Único lugar del
+# script donde viven los nombres reales: son las claves exactas que emite el
+# tracker en daily.jsonl vivo; sin ellas los matchers no atribuirían nada.
+_NORM = {
+    'ofap-opencode': 'cliente-a-opencode',
+    'ofap-openclaw': 'cliente-a-openclaw',
+    'ofap': 'cliente-a',
+    'prizzodrgit': 'cliente-c',
+}
+
+
+def norm(client):
+    """Clave de cliente de daily.jsonl → identificador anónimo 'cliente-*'.
+
+    Clientes desconocidos pasan tal cual (bucket 'cliente_<nombre>'); no se
+    inventan nombres.
+    """
+    if client in _NORM:
+        return _NORM[client]
+    if client.startswith('ofap-'):
+        return 'cliente-a-' + client[len('ofap-'):]
+    if client.startswith('blovx-'):
+        return 'cliente-b-' + client[len('blovx-'):]
+    if client == 'blovx':
+        return 'cliente-b'
+    return client
+
+
+def normalize_deltas(deltas):
+    """{cliente: usd} con las claves de cliente normalizadas (norm())."""
+    return {norm(client): usd for client, usd in deltas.items()}
+
 
 def load_deltas():
     out = []
@@ -49,9 +89,14 @@ def load_deltas():
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            e = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(e.get('delta_usd'), dict):
+            # Frontera de parseo: todo el pipeline aguas abajo solo ve
+            # nombres de cliente 'cliente-*'.
+            e['delta_usd'] = normalize_deltas(e['delta_usd'])
+        out.append(e)
     return out
 
 
@@ -101,14 +146,16 @@ def main():
         day = t_to.date().isoformat()
         comp = classify_window(t_from, t_to, events.get(day, []), events.get((t_to - datetime.timedelta(days=1)).date().isoformat(), []))
         for client, usd in cur['delta_usd'].items():
-            if client == 'ofap-opencode':
+            if client == 'cliente-a-opencode':
                 burn['workers_opencode'] += usd
-            elif client.startswith('ofap-openclaw'):
+            elif client.startswith('cliente-a-openclaw'):
                 burn[comp] += usd
-            elif client == 'blovx-openclaw' or client == 'blovx':
-                burn['cliente_blovx'] += usd
+            elif client.startswith('cliente-b'):
+                burn['cliente_b'] += usd
             elif client == 'zot':
                 burn['cliente_zot'] += usd
+            elif client.startswith('cliente-'):
+                burn[client] += usd
             else:
                 burn[f'cliente_{client}'] += usd
         windows += 1

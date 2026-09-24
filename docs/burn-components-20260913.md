@@ -15,8 +15,8 @@ daily.jsonl. Ventanas: 16 · Total: **$4.80**
 | heartbeat | $1.21 | 25.1% |
 | crons | $0.39 | 8.2% |
 | openclaw_otros | $0.36 | 7.4% |
-| cliente_blovx | $0.25 | 5.2% |
-| cliente_blovx-opencode | $0.02 | 0.4% |
+| cliente_b | $0.25 | 5.2% |
+| cliente_cliente-b-opencode | $0.02 | 0.4% |
 | cliente_zot | $0.01 | 0.1% |
 
 ## Proyección semanal (extrapolación lineal — estimación mía, no medida)
@@ -29,7 +29,7 @@ Asumiendo perfil constante (workers rondas regulares + heartbeat a 60m):
 | heartbeat (60m) | ~$1.6 | ~$11 |
 | crons | ~$0.5 | ~$4 |
 | openclaw_otros | ~$0.5 | ~$3 |
-| clientes (blovx+zot) | ~$0.4 | ~$2.7 |
+| clientes (cliente-b+zot) | ~$0.4 | ~$2.7 |
 | **Total** | **~$6.4** | **~$45** |
 
 ⚠️ La ventana de 18h puede subestimar el día completo: el burn total de mofgw
@@ -71,14 +71,14 @@ dio $1.52/día mofgw-local + tráfico de clientes aparte. La discordancia
 | workers_opencode | $6.95 | 66.9% |
 | heartbeat | $1.21 | 11.6% |
 | openclaw_otros | $1.09 | 10.5% |
-| cliente_blovx | $0.53 | 5.1% |
+| cliente_b | $0.53 | 5.1% |
 | crons | $0.39 | 3.8% |
-| cliente_blovx-opencode | $0.21 | 2.0% |
+| cliente_cliente-b-opencode | $0.21 | 2.0% |
 | cliente_zot | $0.01 | 0.1% |
 
-**Delta 12 Sep 18:00 → 14 Sep 00:01 por cliente:** ofap-opencode $4.37 + $0.47 previo, ofap-openclaw $1.19, blovx $0.47, zot $0.0055.
+**Delta 12 Sep 18:00 → 14 Sep 00:01 por cliente:** cliente-a-opencode $4.37 + $0.47 previo, cliente-a-openclaw $1.19, cliente-b $0.47, zot $0.0055.
 
 ### Hallazgo nuevo (00:01, HB)
 
 - **Gap de captura 12:00→00:00:** los deltas de burn-daily solo se capturan cuando un ciclo HB los corre (no hay timer/cron dedicado). Con cadencia 60m los ciclos corrieron pero solo 2 ciclos capturaron delta hoy (12:00 y este). **Gap de datos estructural para Bet G** — candidato: cron liviano de captura (0 tokens, solo `burn-daily.py` cada 2h). Gated: crons nuevos = decisión Pablo (patrón HEARTBEAT "crons externos no tocar" aplica a los existentes; uno nuevo es config).
-- **Worker mofgw re-check gastando en gate HITL:** handoff.json round 3/5 actualizado 23:48 — re-check del gate 4→5 de 019-003 (sigue bloqueado en sign-off Pablo). La ventana 12:00→00:01 concentró $4.37 de ofap-opencode (~66% del total del día). Bounded: máx 5 rondas del ciclo actual, luego se agota. Data point directo para la Bet D (pausa workers): el worker quemó ~$4 en 12h re-verificando un gate que no puede moverse sin Pablo.
+- **Worker mofgw re-check gastando en gate HITL:** handoff.json round 3/5 actualizado 23:48 — re-check del gate 4→5 de 019-003 (sigue bloqueado en sign-off Pablo). La ventana 12:00→00:01 concentró $4.37 de cliente-a-opencode (~66% del total del día). Bounded: máx 5 rondas del ciclo actual, luego se agota. Data point directo para la Bet D (pausa workers): el worker quemó ~$4 en 12h re-verificando un gate que no puede moverse sin Pablo.

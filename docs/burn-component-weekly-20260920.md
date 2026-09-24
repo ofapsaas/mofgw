@@ -3,14 +3,14 @@
 | Componente | USD | % |
 |---|---|---|
 | workers-opencode | $19.27 | 37.9% |
-| otro:prizzodrgit | $17.58 | 34.6% |
+| otro:cliente-c | $17.58 | 34.6% |
 | heartbeat+guardias | $10.79 | 21.2% |
 | worker-trigger-cron | $2.03 | 4.0% |
 | crons-contenido | $1.15 | 2.3% |
 | otro:zot | $0.04 | 0.1% |
 | **TOTAL propio** | **$50.86** | 100% |
 
-Aproximaciones v1: (1) split client-openclaw por arranque de cron en el intervalo del delta (~1h); (2) guardias corren dentro de ciclos HB — no separables aún; (3) excludes blovx-*.
+Aproximaciones v1: (1) split client-openclaw por arranque de cron en el intervalo del delta (~1h); (2) guardias corren dentro de ciclos HB — no separables aún; (3) excludes cliente-b-*.
 
 ### Cross-check: tokens por cron job (ventana)
 

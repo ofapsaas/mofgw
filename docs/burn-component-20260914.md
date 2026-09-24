@@ -9,7 +9,7 @@
 | otro:zot | $0.01 | 0.0% |
 | **TOTAL propio** | **$13.10** | 100% |
 
-Aproximaciones v1: (1) split ofap-openclaw por arranque de cron en el intervalo del delta (~1h); (2) guardias corren dentro de ciclos HB — no separables aún; (3) excludes blovx-*.
+Aproximaciones v1: (1) split cliente-a-openclaw por arranque de cron en el intervalo del delta (~1h); (2) guardias corren dentro de ciclos HB — no separables aún; (3) excludes cliente-b-*.
 
 ### Cross-check: tokens por cron job (ventana)
 

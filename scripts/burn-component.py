@@ -3,16 +3,24 @@
 
 Combina dos fuentes:
   1. hb/.cache/mofgw-burn/daily.jsonl — deltas $ timestamped por CLIENTE
-     (blovx-openclaw/blovx-opencode, ofap-openclaw, ofap-opencode).
+     (cliente-b-openclaw/cliente-b-opencode, cliente-a-openclaw,
+     cliente-a-opencode).
   2. SQLite ~/.openclaw/state/openclaw.sqlite cron_run_logs — runs de gateway
      crons con ts + duration_ms (ventanas de ejecución).
 
-Mapping cliente→componente:
-  ofap-opencode   → workers-opencode   (rondas worker/cdad vía sesiones opencode)
-  blovx-*         → cliente-blovx      (excluido del análisis de recortes)
-  ofap-openclaw   → split por ventanas: si un cron arrancó dentro del intervalo
-                    del delta → 'crons-gateway'; resto → 'heartbeat+guardias'
-                    (guardias corren DENTRO de ciclos HB; v1 no los separa).
+ANONIMIZACIÓN: las claves de cliente leídas de daily.jsonl (claves reales del
+cache vivo) se normalizan a identificadores 'cliente-*' vía norm() ANTES de
+cualquier matcher/agrupación/output — ningún nombre real puede llegar al
+render. El mapa real está en _NORM (mínimo necesario para que los matchers
+funcionen contra el cache vivo). Clientes desconocidos pasan tal cual y se
+renderizan en buckets 'otro:<nombre>' — no se inventan nombres.
+
+Mapping cliente(normalizado)→componente:
+   cliente-a-opencode → workers-opencode   (rondas worker/cdad vía sesiones opencode)
+   cliente-b-*        → cliente-b          (excluido del análisis de recortes)
+   cliente-a-openclaw → split por ventanas: si un cron arrancó dentro del intervalo
+                        del delta → 'crons-gateway'; resto → 'heartbeat+guardias'
+                        (guardias corren DENTRO de ciclos HB; v1 no los separa).
 
 Segunda vista: tokens por cron job (exactos, de cron_run_logs) como cross-check.
 
@@ -36,11 +44,47 @@ DAILY = Path.home() / 'clawd/hb/.cache/mofgw-burn/daily.jsonl'
 SQLITE = Path.home() / '.openclaw/state/openclaw.sqlite'
 
 # Clientes excluidos del análisis (no son burn propio)
-EXCLUDED_PREFIX = 'blovx'
+EXCLUDED_PREFIX = 'cliente-b'
+
+# Mapa de normalización de claves de cliente (anonimización). Único lugar del
+# script donde viven los nombres reales: son las claves exactas que emite el
+# tracker en daily.jsonl vivo; sin ellas los matchers no atribuirían nada.
+_NORM = {
+    'ofap-opencode': 'cliente-a-opencode',
+    'ofap-openclaw': 'cliente-a-openclaw',
+    'ofap': 'cliente-a',
+    'prizzodrgit': 'cliente-c',
+}
+
+
+def norm(client):
+    """Clave de cliente de daily.jsonl → identificador anónimo 'cliente-*'.
+
+    Clientes desconocidos pasan tal cual (se renderizan como 'otro:<nombre>');
+    no se inventan nombres.
+    """
+    if client in _NORM:
+        return _NORM[client]
+    if client.startswith('ofap-'):
+        return 'cliente-a-' + client[len('ofap-'):]
+    if client.startswith('blovx-'):
+        return 'cliente-b-' + client[len('blovx-'):]
+    if client == 'blovx':
+        return 'cliente-b'
+    return client
+
+
+def normalize_deltas(deltas):
+    """{cliente: usd} con las claves de cliente normalizadas (norm())."""
+    return {norm(client): usd for client, usd in deltas.items()}
 
 
 def load_burn_intervals(days):
-    """[(start_ts_dt, end_ts_dt, {client: usd})] desde daily.jsonl."""
+    """[(start_ts_dt, end_ts_dt, {client: usd})] desde daily.jsonl.
+
+    Las claves de cliente del delta se normalizan acá (frontera de parseo):
+    todo el pipeline aguas abajo solo ve nombres 'cliente-*'.
+    """
     cutoff = datetime.datetime.now(datetime.timezone.utc).astimezone() - \
         datetime.timedelta(days=days)
     out = []
@@ -55,7 +99,7 @@ def load_burn_intervals(days):
             continue
         ts = datetime.datetime.fromisoformat(e['ts'])
         if ts > cutoff:
-            out.append((prev_ts, ts, e.get('delta_usd') or {}))
+            out.append((prev_ts, ts, normalize_deltas(e.get('delta_usd') or {})))
         prev_ts = ts
     return out
 
@@ -116,20 +160,20 @@ def attribute(intervals, cron_windows):
         if start is None:
             # baseline sin intervalo previo: conservador → heartbeat (undercuenta crons)
             for client, usd in deltas.items():
-                if not client.startswith(EXCLUDED_PREFIX) and client != 'ofap-opencode':
+                if not client.startswith(EXCLUDED_PREFIX) and client != 'cliente-a-opencode':
                     unattributed += usd
             continue
         hit = next((n for n, s in llm_windows if start < s < end), None)
         for client, usd in deltas.items():
             if client.startswith(EXCLUDED_PREFIX):
                 continue
-            if client == 'ofap-openclaw':
+            if client == 'cliente-a-openclaw':
                 if hit:
                     comp['worker-trigger-cron' if is_worker_cron(hit)
                          else 'crons-contenido'] += usd
                 else:
                     comp['heartbeat+guardias'] += usd
-            elif client == 'ofap-opencode':
+            elif client == 'cliente-a-opencode':
                 comp['workers-opencode'] += usd
             else:
                 comp[f'otro:{client}'] += usd
@@ -139,24 +183,38 @@ def attribute(intervals, cron_windows):
 
 
 def selftest():
-    """Suite sintética: mapping, split cron/heartbeat, exclusión blovx."""
+    """Suite sintética: norm() sobre claves reales, mapping, split
+    cron/heartbeat, exclusión cliente-b y passthrough de desconocidos.
+
+    Los inputs usan las claves REALES que emite el tracker en daily.jsonl
+    vivo; el boundary (normalize_deltas, igual que load_burn_intervals) debe
+    dejar el pipeline con solo nombres 'cliente-*': los asserts fallan si un
+    nombre real se filtra al output.
+    """
     T = datetime.timezone.utc
     mk = lambda d, h, m=0: datetime.datetime(2026, 9, 14, h, m, tzinfo=T) + \
         datetime.timedelta(days=d)
+
+    # Claves REALES (como las escribe daily.jsonl) → se normalizan por la
+    # misma frontera que usa load_burn_intervals.
+    raw = lambda d: normalize_deltas(d)
     windows = [('Obs-Radar', mk(0, 9), mk(0, 9, 7), 1000),
                ('worker-cron:mofgw', mk(1, 8, 30), mk(1, 8, 37), 90000),
                ('worker-report-daily', mk(1, 9, 5), mk(1, 9, 6), 0)]
     ivals = [
         # intervalo que contiene el arranque del radar d0 09:00 → cron
-        (mk(0, 8, 30), mk(0, 9, 30), {'ofap-openclaw': 1.0,
-                                      'ofap-opencode': 2.0,
-                                      'blovx-opencode': 5.0}),
+        (mk(0, 8, 30), mk(0, 9, 30), raw({'ofap-openclaw': 1.0,
+                                          'ofap-opencode': 2.0,
+                                          'blovx-opencode': 5.0})),
         # intervalo sin cron → heartbeat
-        (mk(0, 10, 0), mk(0, 11, 0), {'ofap-openclaw': 0.5}),
+        (mk(0, 10, 0), mk(0, 11, 0), raw({'ofap-openclaw': 0.5})),
         # cron de d1 arranca 08:30, mitad del intervalo → cron
-        (mk(1, 8, 0), mk(1, 9, 0), {'ofap-openclaw': 1.0}),
+        (mk(1, 8, 0), mk(1, 9, 0), raw({'ofap-openclaw': 1.0})),
         # intervalo fuera de ventana de días → heartbeat
-        (mk(1, 12, 0), mk(1, 13, 0), {'ofap-openclaw': 0.25}),
+        (mk(1, 12, 0), mk(1, 13, 0), raw({'ofap-openclaw': 0.25})),
+        # cliente desconocido → bucket 'otro:<nombre>' tal cual
+        (mk(2, 8, 0), mk(2, 9, 0), raw({'prizzodrgit': 3.0,
+                                        'zot': 0.25})),
     ]
     got = attribute(ivals, windows)
     assert abs(got['crons-contenido'] - 1.0) < 1e-9, got
@@ -164,8 +222,24 @@ def selftest():
     # worker-report-daily (0 tokens) NO atribuye → ese intervalo es heartbeat
     assert abs(got['heartbeat+guardias'] - 0.75) < 1e-9, got
     assert abs(got['workers-opencode'] - 2.0) < 1e-9, got
-    # blovx excluido
-    assert not any('blovx' in k for k in got), got
+    # desconocidos: passthrough documentado (no se inventan nombres)
+    assert abs(got['otro:zot'] - 0.25) < 1e-9, got
+    # prizzodrgit se normaliza a cliente-c (bucket otro:)
+    assert abs(got['otro:cliente-c'] - 3.0) < 1e-9, got
+    # exclusión cliente-b (también con la clave sin sufijo)
+    got_b = attribute([(mk(3, 8, 0), mk(3, 9, 0),
+                        raw({'blovx': 0.5, 'blovx-openclaw': 0.7}))], [])
+    assert not any(k.startswith(EXCLUDED_PREFIX) for k in got_b), got_b
+    assert got_b == {}, got_b
+    # baseline (start None): excluye cliente-b y cliente-a-opencode
+    got_base = attribute([(None, mk(4, 9, 0),
+                           raw({'ofap-opencode': 1.0, 'blovx': 0.5,
+                                'prizzodrgit': 0.25}))], [])
+    assert got_base == {'sin-atribuir(baseline)': 0.25}, got_base
+    # NINGÚN nombre real llega al output (gate anti-fuga)
+    leaked = [k for k in got if any(s in k
+                                    for s in ('ofap', 'blovx', 'prizzodrgit'))]
+    assert not leaked, leaked
     print(f'--selftest: OK ({len(got)} componentes sintéticos)')
 
 
@@ -177,9 +251,9 @@ def render(days, comp, total, windows):
         pct = f'{100 * v / total:.1f}%' if total else '—'
         lines.append(f'| {k} | ${v:.2f} | {pct} |')
     lines.append(f'| **TOTAL propio** | **${total:.2f}** | 100% |')
-    lines.append('\nAproximaciones v1: (1) split ofap-openclaw por arranque de cron '
+    lines.append('\nAproximaciones v1: (1) split cliente-a-openclaw por arranque de cron '
                  'en el intervalo del delta (~1h); (2) guardias corren dentro de '
-                 'ciclos HB — no separables aún; (3) excludes blovx-*.')
+                 'ciclos HB — no separables aún; (3) excludes cliente-b-*.')
     lines.append('\n### Cross-check: tokens por cron job (ventana)\n')
     lines += ['| Cron job | runs | tokens |', '|---|---|---|']
     for name, runs, tokens in cron_tokens_by_job(days):
