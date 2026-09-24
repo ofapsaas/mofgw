@@ -29,6 +29,18 @@ provider. **El cooldown solo aplica ENTRE requests**: dentro del mismo request
 NO se saltea un provider que falló (se reintenta circularmente); el cooldown
 registrado (`recordFailure`) afecta solo a requests posteriores.
 
+> **ENMIENDA INTENCIONAL (24 Sep 2026) — contrato de multi-pasada revertido
+> por el incidente del 23-24 Sep 2026:** un request real cicló 120s
+> re-visitando providers en cooldown con "context canceled" y el subagente
+> cliente murió sin respuesta. `max_retries` pasa a ser tope de **VISITAS**,
+> máximo 1 visita por provider por request: al agotar sus tries con error
+> retryable el provider queda EXCLUIDO del resto del mismo request (mecanismo
+> `excluded[]` de 021-001, que antes solo aplicaba al path no-retryable) y la
+> cadena termina con `exhaustedChain` cuando no quedan candidatos. Los tries
+> internos del provider los gobierna `fallback.retry.max_attempts` (002-001).
+> El texto original de abajo se conserva como registro histórico del contrato
+> revertido.
+
 Comportamiento esperado:
 
 - `max_retries >= len(providers) - 1` → el proxy agota TODA la cadena en un
@@ -49,6 +61,13 @@ Comportamiento esperado:
 
 ## Postcondición
 
+> **ENMIENDA (24 Sep 2026):** `max_retries` es un tope de **VISITAS** por
+> request (`maxAttempts = max_retries + 1`) con máximo 1 visita por provider;
+> un provider con tries agotados (retryable) o con skip no-retryable queda
+> excluido del resto del mismo request y la cadena termina agotada cuando no
+> quedan candidatos. El texto original de la postcondición se conserva abajo
+> como registro histórico.
+
 `max_retries` es un tope de intentos TOTALES por request con recorrido
 CIRCULAR de la cadena de candidatos. El cooldown solo opera entre requests
 (intra-request no filtra). Con `max_retries >= N - 1` providers, la cadena se
@@ -65,6 +84,9 @@ cambia. Todos los tests pasan con `go test -race` (cero red externa).
 - El cooldown se sigue registrando (`recordFailure`) pero NO se verifica
   intra-request: un provider que falló en la vuelta 1 se vuelve a intentar en
   la vuelta 2 si queda presupuesto de intentos.
+  **ENMIENDA (24 Sep 2026):** esto se revierte — el fallo retryable agotado
+  TAMBIÉN excluye intra-request (helper `excludeAndRecord`, cooldown
+  cross-request preservado). Ver el bloque de enmienda arriba.
 - Atención: `candidates()` al inicio del request ya excluye cooldowns previos
   (entre requests) — no cambiar eso.
 - El resto del contrato queda intacto: clasificación de errores (contrato
@@ -77,7 +99,10 @@ cambia. Todos los tests pasan con `go test -race` (cero red externa).
   cero red externa).
 - Test multi-pasada: 3 providers, `max_retries: 8` (`maxAttempts = 9`) → cada
   provider se intenta 3 veces (intentos 1,4,7 / 2,5,8 / 3,6,9); total 9
-  intentos.
+  intentos. **ENMIENDA (24 Sep 2026): REEMPLAZADO** por
+  `TestExclusionUnaVisitaPorProvider` (cada provider 1 visita, total 3,
+  terminación vía `chain_exhausted`) — fijaba el contrato revertido por el
+  incidente del 23-24 Sep 2026.
 - Test una-vuelta-completa: 5 providers, `max_retries: 4` (`maxAttempts = 5`)
   → cada provider se intenta 1 vez; el request llega al último provider.
 - Test cooldown entre requests (no romper): provider que falló queda en

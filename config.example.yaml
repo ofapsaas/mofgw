@@ -18,7 +18,8 @@ server:
   #                               # AffinityStore del sticky routing (009-002, default 100)
 
 fallback:
-  max_retries: 2               # intentos totales por request = max_retries + 1
+  max_retries: 2               # tope de visitas por request = max_retries + 1 (máx 1 visita por provider;
+                               # tries internos vía fallback.retry.max_attempts)
   # inter_attempt_delay: retardo entre intentos de la cadena ante fallos
   # transitorios (timeout/network/connect/I-O/EOF pre-primer-byte) cuando el
   # siguiente provider COMPARTE base_url con el que falló (SPOF de cuentas del

@@ -454,6 +454,15 @@ func (r *Router) recordFailure(s *ProviderSpec) {
 	r.logger.Debug("cooldown_start", "provider", s.Provider.ID(), "duracion", d.String())
 }
 
+// excludeAndRecord cierra una visita fallida: cooldown cross-request
+// (recordFailure) + exclusión intra-request (el provider no se re-visita
+// en ESTE request — mismo mecanismo excluded[] del skip no-retryable,
+// 021-001).
+func (r *Router) excludeAndRecord(s *ProviderSpec, idx int, excluded map[int]bool) {
+	r.recordFailure(s)
+	excluded[idx] = true
+}
+
 // resetDegraded reinicia el contador de degradación (002-004): el proxy
 // se recuperó (un request tuvo éxito).
 func (r *Router) resetDegraded() {
@@ -717,7 +726,7 @@ func (r *Router) injectThinkingForAttempt(body []byte, model string, s *Provider
 // 401/402 del upstream (cuenta: key inválida, saldo agotado) son
 // retryable con failover: el problema es del estado de ESA cuenta, no de
 // la request — otro provider con otra key funciona (incidente 17 Sep
-// 2026: go-ofap4 sin saldo devolvía 401 "Insufficient balance" y el
+// 2026: una cuenta sin saldo devolvía 401 "Insufficient balance" y el
 // chain moría 502 sin probar los 5 providers restantes con crédito).
 // El 401 del cliente contra mofgw nunca llega acá (internal/auth
 // rechaza antes del router). El 403 queda no-retryable: semántica
@@ -885,9 +894,9 @@ func (r *Router) applyStickyReorder(ready []int, stickyKey, model string) []int 
 // nextCyclicCandidate elige el próximo candidato de ready no excluido
 // (021-001), escaneando cíclicamente desde la posición natural
 // (attempts % len(ready)). excluded guarda los índices de specs (los
-// valores de ready) descartados por error no-retryable en ESTE request:
-// el error es fatal para el PAR (provider, request), no para la cadena
-// ni para el provider en sí (sin cooldown). Con excluded vacío el
+// valores de ready) descartados en ESTE request — por error no-retryable
+// (021-001) o por retryable con tries agotados: el provider no se
+// re-visita en este request. Con excluded vacío el
 // resultado es idéntico al recorrido circular histórico
 // ready[attempts%len(ready)] (sin regresión en el camino retryable).
 // found=false cuando TODOS los candidatos están excluidos → la cadena
@@ -945,18 +954,19 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 
 	var lastChain *ChainError
 	attempts := 0
-	// 021-001: índices de specs descartados por error no-retryable DE ESTE
-	// request (fatal para el par (provider, request), no para la cadena).
+	// índices de specs descartados DE ESTE request (021-001 no-retryable, y
+	// retryable con tries agotados): fatal para el par (provider, request),
+	// no para la cadena — el provider no se re-visita en este request.
 	excluded := make(map[int]bool, len(ready))
 	var prevBaseURL string
 	var prevTransient bool
 	for attempts < r.maxAttempts {
 		idx, found := nextCyclicCandidate(ready, excluded, attempts)
 		if !found {
-			// 021-001: todos los candidatos descartados por errores
-			// no-retryable → cadena agotada (el cliente ve el último
-			// error, 4xx crudo vía exhaustedChain).
-			r.logger.Debug("decision", "motivo", "todos los candidatos descartados (no-retryable)", "attempts", attempts)
+			// todos los candidatos descartados (no-retryable o retryable
+			// agotado) → cadena agotada (el cliente ve el último error vía
+			// exhaustedChain).
+			r.logger.Debug("decision", "motivo", "sin candidatos restantes", "attempts", attempts)
 			return nil, r.exhaustedChain(lastChain)
 		}
 		attempts++
@@ -986,7 +996,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 			if err != nil {
 				ce := &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 				lastChain = ce
-				r.recordFailure(s)
+				r.excludeAndRecord(s, idx, excluded)
 				r.emitAttempt(ctx, req, s, "fallback", ce.Code, ce.Status, attempts, try-1)
 				break
 			}
@@ -1001,7 +1011,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 				if err != nil {
 					ce := &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
 					lastChain = ce
-					r.recordFailure(s)
+					r.excludeAndRecord(s, idx, excluded)
 					r.emitAttempt(ctx, req, s, "fallback", ce.Code, ce.Status, attempts, try-1)
 					break
 				}
@@ -1048,7 +1058,7 @@ func (r *Router) complete(ctx context.Context, req *provider.ChatRequest, body [
 				"proximo_provider", nextProvider,
 			)
 
-			r.recordFailure(s)
+			r.excludeAndRecord(s, idx, excluded)
 			r.logger.Warn("intento fallido", "provider", s.Provider.ID(), "status", status)
 			r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 			break
@@ -1122,18 +1132,19 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 
 	var lastChain *ChainError
 	attempts := 0
-	// 021-001: índices de specs descartados por error no-retryable DE ESTE
-	// request (fatal para el par (provider, request), no para la cadena).
+	// índices de specs descartados DE ESTE request (021-001 no-retryable, y
+	// retryable con tries agotados): fatal para el par (provider, request),
+	// no para la cadena — el provider no se re-visita en este request.
 	excluded := make(map[int]bool, len(ready))
 	var prevBaseURL string
 	var prevTransient bool
 	for attempts < r.maxAttempts {
 		idx, found := nextCyclicCandidate(ready, excluded, attempts)
 		if !found {
-			// 021-001: todos los candidatos descartados por errores
-			// no-retryable → cadena agotada (el cliente ve el último
-			// error, 4xx crudo vía exhaustedChain).
-			r.logger.Debug("decision", "motivo", "todos los candidatos descartados (no-retryable)", "attempts", attempts)
+			// todos los candidatos descartados (no-retryable o retryable
+			// agotado) → cadena agotada (el cliente ve el último error vía
+			// exhaustedChain).
+			r.logger.Debug("decision", "motivo", "sin candidatos restantes", "attempts", attempts)
 			return nil, r.exhaustedChain(lastChain)
 		}
 		attempts++
@@ -1167,7 +1178,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 			attemptBody, err := clampBody(body, int64(s.Provider.MaxTokens()))
 			if err != nil {
 				lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
-				r.recordFailure(s)
+				r.excludeAndRecord(s, idx, excluded)
 				r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 				break
 			}
@@ -1179,7 +1190,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 				attemptBody, err = r.injectThinkingForAttempt(attemptBody, req.Model, s)
 				if err != nil {
 					lastChain = &ChainError{Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_unavailable", Message: err.Error(), ProviderID: s.Provider.ID(), Err: err}
-					r.recordFailure(s)
+					r.excludeAndRecord(s, idx, excluded)
 					r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 					break
 				}
@@ -1215,7 +1226,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 					continue
 				}
 				r.logFallback(s, attempts, len(ready), "timeout/network")
-				r.recordFailure(s)
+				r.excludeAndRecord(s, idx, excluded)
 				r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 				continue
 			}
@@ -1264,7 +1275,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 						continue
 					}
 					r.logFallback(s, attempts, len(ready), "ttfb timeout")
-					r.recordFailure(s)
+					r.excludeAndRecord(s, idx, excluded)
 					r.emitAttempt(ctx, req, s, "fallback", "timeout", http.StatusBadGateway, attempts, try-1)
 					continue
 				case first, ok := <-ch:
@@ -1287,7 +1298,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 							continue
 						}
 						r.logFallback(s, attempts, len(ready), "stream closed before first byte")
-						r.recordFailure(s)
+						r.excludeAndRecord(s, idx, excluded)
 						r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 						continue
 					}
@@ -1316,7 +1327,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 							continue
 						}
 						r.logFallback(s, attempts, len(ready), "first event error")
-						r.recordFailure(s)
+						r.excludeAndRecord(s, idx, excluded)
 						r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 						continue
 					}
@@ -1341,7 +1352,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 					continue
 				}
 				r.logFallback(s, attempts, len(ready), "stream closed before first byte")
-				r.recordFailure(s)
+				r.excludeAndRecord(s, idx, excluded)
 				r.emitAttempt(ctx, req, s, "fallback", lastChain.Code, lastChain.Status, attempts, try-1)
 				continue
 			}
@@ -1367,7 +1378,7 @@ func (r *Router) stream(ctx context.Context, req *provider.ChatRequest, body []b
 					continue
 				}
 				r.logFallback(s, attempts, len(ready), "first event error")
-				r.recordFailure(s)
+				r.excludeAndRecord(s, idx, excluded)
 				r.emitAttempt(ctx, req, s, "fallback", typ, status, attempts, try-1)
 				continue
 			}

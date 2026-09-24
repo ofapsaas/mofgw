@@ -64,7 +64,7 @@
 - **max_body_bytes:** 10MB → 413 (001-001) == `10485760` (001-002 schema).
 - **Re-clamp en fallback:** 001-004 integración ("re-clampear con el límite de B") consistente con retry pre-primer-byte de 001-003/001-005.
 - **Cooldown:** defaults 60s/5s idénticos en 001-002 y 001-003; override per-provider > global.
-- **max_retries:** 001-002 ("hasta 3 providers") == 001-003 ("max_retries + 1 = 3 intentos").
+- **max_retries:** 001-002 ("hasta 3 providers") == 001-003 ("max_retries + 1 = 3 intentos"). **ENMIENDA (24 Sep 2026):** la semántica pasa a tope de VISITAS (máx 1 visita por provider por request; tries internos vía `fallback.retry.max_attempts`) — ver enmienda en spec 001-003-fallback-v2 (incidente del 23-24 Sep 2026).
 - **Grafo de dependencias:** depends_on de cada spec == tabla del plan.md (001-002 raíz; 003→001+002; 005→001+003; 004/006→002).
 - **MetricsSink:** no-op en MVP (001-003) consistente con EPIC-005 fuera de scope.
 - **Semántica no-streaming:** buffer total + retry hasta agotar chain (001-003) sin frontera de primer byte — coherente con 001-005 §5.

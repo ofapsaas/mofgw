@@ -129,7 +129,7 @@ clients:   # clientes autorizados (agentes)
 
 | Campo | Default | Descripción |
 |-------|---------|-------------|
-| `max_retries` | `2` | Tope de intentos **totales** por request con recorrido **circular** de la cadena (`maxAttempts = max_retries + 1`). Con N providers, `max_retries >= N-1` garantiza recorrer toda la cadena en un solo request; valores mayores dan vueltas adicionales. |
+| `max_retries` | `2` | Tope de **visitas** de la cadena por request (`maxAttempts = max_retries + 1`), con máximo **1 visita por provider por request**. Los reintentos sobre el mismo provider los gobierna `fallback.retry.max_attempts` (no este knob). Con N providers, `max_retries >= N-1` garantiza recorrer toda la cadena en un solo request; valores mayores NO re-visitan providers ya descartados — la cadena se agota cuando todos quedan excluidos (enmienda post-incidente del 23-24 Sep 2026: antes era tope de intentos totales con vueltas circulares). |
 | `cooldown` | `60s` | Tiempo que un provider queda "enfriado" tras un fallo retryable (no se le vuelve a intentar hasta que pase). |
 | `cooldown_jitter` | `5s` | ±jitter aleatorio sobre el cooldown (anti thundering-herd: varios requests no golpean al mismo provider a la vez). |
 | `inter_attempt_delay` | `0` | Retardo (015-001) que se duerme **antes** del siguiente intento de la cadena cuando el provider que falló y el siguiente candidato **comparten `base_url`** (cuentas del mismo proveedor = SPOF). Da tiempo al endpoint a recuperarse tras un blip transitorio (connect/network/timeout/I-O/EOF pre-primer-byte). **NO** aplica en `429` (cuota: salto inmediato). Es `ctx`-aware (aborta si el cliente cancela). `0` = off (cero regresión). Ver §Limitaciones para más detalle. |
@@ -248,7 +248,7 @@ server:
   write_timeout: 300s
 
 fallback:
-  max_retries: 2               # tope de intentos totales por request (recorrido circular) = max_retries + 1
+  max_retries: 2               # tope de visitas por request = max_retries + 1 (máx 1 visita por provider)
   cooldown: 60s                # cooldown global por provider tras fallo retryable
   cooldown_jitter: 5s          # ± jitter anti thundering-herd
   timeout: 120s                # timeout global por intento (TTFB)
@@ -603,17 +603,17 @@ mofgw hash-key <key>
 2. Toma los providers que **sirven ese modelo** (su lista `models`), en orden de config.
 3. Intenta el primero. Si responde bien, **esa** es la respuesta del cliente (el modelo del body de respuesta se reescribe al que pidió el cliente).
 4. Si el intento falla con error **retryable**, registra cooldown para ese provider (con ±jitter) y prueba el siguiente.
-5. **Recorrido circular:** `max_retries` es un tope de intentos **totales** por request (`maxAttempts = max_retries + 1`), no una sola pasada de la cadena. Al llegar al último provider, el loop **vuelve al primero** y sigue probando hasta agotar los intentos. Con N providers que sirven el modelo y `max_retries >= N-1`, el proxy agota **toda la cadena en un solo request**; valores mayores dan vueltas adicionales completas.
-6. **El cooldown NO filtra dentro del mismo request:** un provider que falló en este request puede volver a intentarse en la siguiente vuelta del loop. El cooldown registrado afecta **solo a requests posteriores** — un provider en cooldown se salta en requests nuevos, pero el loop intra-request reintenta.
-7. Solo si se agotan **todos** los intentos (o ninguno sirve el modelo) el cliente ve un error OpenAI-compatible, **sin detalles internos**: los mensajes de error upstream se sanear (URLs, tokens, paths redactados).
+5. **Máximo 1 visita por provider por request (enmienda post-incidente 23-24 Sep 2026):** `max_retries` es un tope de **visitas** de la cadena (`maxAttempts = max_retries + 1`), no de vueltas circulares. Con N providers que sirven el modelo y `max_retries >= N-1`, el proxy agota **toda la cadena en un solo request**. Los reintentos sobre el mismo provider (con backoff) los gobierna `fallback.retry.max_attempts`.
+6. **Un provider que falla queda excluido del resto del MISMO request:** si su visita agota los tries con error retryable (429/5xx/timeout/red), entra en cooldown **y** no se re-visita dentro de ese request (antes, con el contrato de vueltas, el loop lo reintentaba circularmente — enmienda por el incidente del 23-24 Sep 2026: request ciclando 120s con "context canceled"). El skip por 4xx no-retryable también lo excluye (sin cooldown). En ambos casos la cadena continúa con el siguiente candidato y termina agotada cuando no quedan candidatos.
+7. Solo si se agotan **todos** los candidatos (o ninguno sirve el modelo) el cliente ve un error OpenAI-compatible, **sin detalles internos**: los mensajes de error upstream se sanea (URLs, tokens, paths redactados).
 
-**Ejemplo:** con 5 providers y `max_retries: 9` → hasta 10 intentos = 2 vueltas completas a la cadena. Si el primer provider está caído, el proxy prueba los demás en el **mismo request** hasta encontrar uno vivo, sin depender del retry del cliente.
+**Ejemplo:** con 5 providers y `max_retries: 9` → cada provider se visita una vez (5 visitas; el budget sobrante no genera re-visitas). Si el primer provider está caído, el proxy prueba los demás en el **mismo request** hasta encontrar uno vivo, sin depender del retry del cliente.
 
 ### Errores retryable vs no-retryable
 
 | Clasificación | Condición | Acción |
 |---------------|-----------|--------|
-| **Retryable** | `429` (rate limit), `5xx`, timeout (TTFB), error de red | Cooldown del provider + probar el siguiente (recorrido circular: puede reintentar en la misma request) |
+| **Retryable** | `429` (rate limit), `5xx`, timeout (TTFB), error de red | Cooldown del provider + probar el siguiente (una vez agotados sus reintentos `max_attempts`, el provider queda excluido del resto del mismo request) |
 | **No-retryable** | 4xx de cliente (400 inválido, 401, 403…) | Responder al cliente ya — **no** hay fallback |
 
 Los `401/403` de cliente no disparan fallback: son problemas del request, no del provider.

@@ -359,7 +359,7 @@ func TestClientErrorFailsOver(t *testing.T) {
 // TestUpstream401FailsOver: un 401 de cuenta agotada reportado por el
 // UPSTREAM (no error del cliente contra mofgw) debe ser retryable —
 // failover al siguiente provider con otra key. Incidente 17 Sep 2026:
-// go-ofap4 sin saldo devolvía 401 "Insufficient balance" y el chain
+// una cuenta sin saldo devolvía 401 "Insufficient balance" y el chain
 // terminaba 502 sin probar los 5 providers restantes con crédito.
 func TestUpstream401FailsOver(t *testing.T) {
 	p1 := newFake("p1", "m").fail401()
@@ -700,6 +700,24 @@ func TestDebugPrivacidadSinPromptEnLogs(t *testing.T) {
 }
 
 // ---- 001-003-fallback-v2: max_retries como tope de intentos CIRCULARES ----
+//
+// ENMIENDA 021-002 (24 Sep 2026) — max_retries pasa a ser tope de VISITAS
+// con máximo 1 visita por provider por request: al agotar sus tries con
+// error retryable, el provider queda EXCLUIDO del resto del mismo request
+// vía el mecanismo `excluded[]` de 021-001 (que antes solo usaba el path
+// no-retryable) y la cadena termina con exhaustedChain cuando no quedan
+// candidatos. El recorrido circular permanece solo como orden de
+// selección; los tries internos del provider siguen gobernados por
+// fallback.retry.max_attempts (002-001).
+//
+// Por qué los demás tests de max_retries NO cambian:
+//   - TestMaxRetriesUnaVueltaCompleta y TestMaxRetriesCircularLlegaAlUltimo:
+//     budget (max_retries+1) == #providers → nunca habría re-visita ni con el
+//     contrato viejo ni con el nuevo (mismos resultados).
+//   - TestMaxRetriesCapsAttempts: el budget se agota antes de poder
+//     re-visitar a nadie (5 providers, budget 3) → idéntico.
+//   - TestMaxRetriesCeroUnIntento: budget 1 → 1 visita → idéntico.
+//   - TestNoRetryable*: sin cambio — el skip no-retryable ya excluía.
 
 func specsOf(ps ...*fakeProvider) []ProviderSpec {
 	specs := make([]ProviderSpec, len(ps))
@@ -717,28 +735,143 @@ func totalCalls(ps ...*fakeProvider) int {
 	return total
 }
 
-func TestMaxRetriesCircularMultiPasada(t *testing.T) {
-	// 3 providers, max_retries=8 → maxAttempts=9 → 3 vueltas completas:
-	// intentos 1,4,7 / 2,5,8 / 3,6,9 (el cooldown intra-request NO filtra).
+// TestExclusionUnaVisitaPorProvider (ex-TestMaxRetriesCircularMultiPasada):
+// reescrito por la ENMIENDA 021-002. El contrato ANTERIOR (001-003, decisión
+// del 05-Ago-2026) fijaba la multi-pasada intra-request: con 3 providers y
+// max_retries=8, cada provider se intentaba 3 veces (vueltas 1,4,7 / 2,5,8 /
+// 3,6,9). Ese contrato murió con el incidente del 23-24 Sep 2026: un request
+// cicló 120s re-visitando providers en cooldown con "context canceled" y el
+// subagente cliente murió sin respuesta. Contrato NUEVO: cada provider se
+// visita MÁX 1 vez por request (sus tries internos los gobierna
+// fallback.retry.max_attempts); agotar los tries con error retryable lo
+// excluye del resto del request y, con max_retries mayor a la cantidad de
+// providers, la cadena se agota (exhaustedChain) cuando todos quedan
+// excluidos — no hay re-visitas.
+func TestExclusionUnaVisitaPorProvider(t *testing.T) {
+	// 3 providers, max_retries=8 → maxAttempts=9 (budget amplio): cada
+	// provider se visita EXACTAMENTE 1 vez y la cadena muere limpia vía
+	// exhaustedChain al quedar todos excluidos (sin re-visitas circulares).
 	p1 := newFake("p1", "m").fail500()
 	p2 := newFake("p2", "m").fail500()
 	p3 := newFake("p3", "m").fail500()
 	r := New(specsOf(p1, p2, p3), 8, time.Minute, 0, 30*time.Second, nil)
 
-	if _, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil)); err == nil {
-		t.Fatal("Complete: se esperaba error (todos fallan 500)")
+	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError (cadena agotada por exclusiones)", err)
 	}
-	if got := p1.callCount(); got != 3 {
-		t.Fatalf("p1 intentos = %d, want 3 (vuelta 1,2,3)", got)
+	if got := p1.callCount(); got != 1 {
+		t.Fatalf("p1 intentos = %d, want 1 (excluido tras agotar su fallo retryable)", got)
 	}
-	if got := p2.callCount(); got != 3 {
-		t.Fatalf("p2 intentos = %d, want 3 (vuelta 1,2,3)", got)
+	if got := p2.callCount(); got != 1 {
+		t.Fatalf("p2 intentos = %d, want 1", got)
 	}
-	if got := p3.callCount(); got != 3 {
-		t.Fatalf("p3 intentos = %d, want 3 (vuelta 1,2,3)", got)
+	if got := p3.callCount(); got != 1 {
+		t.Fatalf("p3 intentos = %d, want 1", got)
 	}
-	if got := totalCalls(p1, p2, p3); got != 9 {
-		t.Fatalf("intentos totales = %d, want 9 (max_retries+1 con recorrido circular)", got)
+	if got := totalCalls(p1, p2, p3); got != 3 {
+		t.Fatalf("intentos totales = %d, want 3 (una visita por provider, sin vueltas)", got)
+	}
+}
+
+// TestExclusionCadaProviderAgotaSusTries: los tries internos del MISMO
+// provider (002-001, fallback.retry.max_attempts) se preservan dentro de su
+// única visita — MaxAttempts=2 → 2 llamadas al mismo fake antes de excluirlo.
+func TestExclusionCadaProviderAgotaSusTries(t *testing.T) {
+	p1 := newFake("p1", "m").fail500()
+	p2 := newFake("p2", "m").fail500()
+	p3 := newFake("p3", "m").fail500()
+	r := NewWithOptions(specsOf(p1, p2, p3), Options{
+		MaxRetries: 8, Cooldown: time.Minute, GlobalTimeout: 30 * time.Second,
+		Retry: RetryConfig{MaxAttempts: 2, BackoffBase: time.Millisecond, BackoffMax: 10 * time.Millisecond},
+	})
+
+	_, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError (cadena agotada por exclusiones)", err)
+	}
+	if got := p1.callCount(); got != 2 {
+		t.Fatalf("p1 intentos = %d, want 2 (tries internos de su única visita)", got)
+	}
+	if got := p2.callCount(); got != 2 {
+		t.Fatalf("p2 intentos = %d, want 2", got)
+	}
+	if got := p3.callCount(); got != 2 {
+		t.Fatalf("p3 intentos = %d, want 2", got)
+	}
+	if got := totalCalls(p1, p2, p3); got != 6 {
+		t.Fatalf("intentos totales = %d, want 6 (3 providers × 2 tries)", got)
+	}
+}
+
+// TestExclusionCadaProviderAgotaSusTries_Stream: espejo en streaming del
+// contrato de una-visita (rama pre-primer-byte de stream()).
+func TestExclusionCadaProviderAgotaSusTries_Stream(t *testing.T) {
+	p1 := &streamFake{fakeProvider: newFake("p1", "m")}
+	p2 := &streamFake{fakeProvider: newFake("p2", "m")}
+	p3 := &streamFake{fakeProvider: newFake("p3", "m")}
+	r := NewWithOptions([]ProviderSpec{{Provider: p1}, {Provider: p2}, {Provider: p3}}, Options{
+		MaxRetries: 8, Cooldown: time.Minute, GlobalTimeout: 30 * time.Second,
+		Retry: RetryConfig{MaxAttempts: 1},
+	})
+
+	_, err := r.Stream(context.Background(), reqFor("m"), bodyFor("m", nil))
+	var ce *ChainError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want *ChainError (cadena agotada por exclusiones)", err)
+	}
+	if got := p1.streamCallCount(); got != 1 {
+		t.Fatalf("p1 intentos de Stream = %d, want 1", got)
+	}
+	if got := p2.streamCallCount(); got != 1 {
+		t.Fatalf("p2 intentos de Stream = %d, want 1", got)
+	}
+	if got := p3.streamCallCount(); got != 1 {
+		t.Fatalf("p3 intentos de Stream = %d, want 1", got)
+	}
+}
+
+// TestExclusionEspejoIncidente: reconstrucción del incidente del 23-24 Sep
+// 2026 (request ciclando con "context canceled", subagente muerto). pA falla
+// 429 retryable (agota → excluido + cooldown), pB falla 400 no-retryable
+// (excluido SIN cooldown — semántica 021-001 intacta), pC vivo → C gana.
+// Con el contrato viejo (max_retries grande), pA y pB habrían sido
+// re-visitados en la vuelta siguiente de pC fallando… acá pC gana en la
+// primera pasada: pA y pB exactamente 1 llamada cada uno.
+func TestExclusionEspejoIncidente(t *testing.T) {
+	pA := newFake("pA", "m").fail429()
+	pB := newFake("pB", "m").fail400()
+	pC := newFake("pC", "m").ok("de pC")
+	r := NewWithOptions(specsOf(pA, pB, pC), Options{
+		MaxRetries: 8, Cooldown: time.Minute, GlobalTimeout: 30 * time.Second,
+		Retry: RetryConfig{MaxAttempts: 1},
+	})
+
+	res, err := r.Complete(context.Background(), reqFor("m"), bodyFor("m", nil))
+	if err != nil {
+		t.Fatalf("Complete: %v (pC vivo debe ganar tras la exclusión de pA y pB)", err)
+	}
+	if res.Response.Choices[0].Message.Content != "de pC" {
+		t.Fatalf("content = %q, want de pC", res.Response.Choices[0].Message.Content)
+	}
+	if got := pA.callCount(); got != 1 {
+		t.Fatalf("pA intentos = %d, want 1 (agotó su try retryable → excluido, sin re-visita)", got)
+	}
+	if got := pB.callCount(); got != 1 {
+		t.Fatalf("pB intentos = %d, want 1 (skip no-retryable → excluido, sin re-visita)", got)
+	}
+	if got := pC.callCount(); got != 1 {
+		t.Fatalf("pC intentos = %d, want 1", got)
+	}
+	// El fallo retryable de pA SÍ genera cooldown (recordFailure); el skip
+	// no-retryable de pB NO (021-001).
+	if !r.cooldowns.IsCooling("pA") {
+		t.Fatal("pA quedó sin cooldown tras agotar 429 retryable (recordFailure debe invocarse)")
+	}
+	if r.cooldowns.IsCooling("pB") {
+		t.Fatal("pB quedó en cooldown tras el skip no-retryable (el skip no genera cooldown)")
 	}
 }
 

@@ -83,7 +83,9 @@ server:
   write_timeout: 300s           # default 300s (streaming largo)
 
 fallback:
-  max_retries: 2                # intentos totales por request (default 2 → hasta 3 providers)
+  max_retries: 2                # tope de visitas de la cadena por request (máx 1 visita por
+                                # provider; los tries internos los gobierna fallback.retry.max_attempts)
+                                # — ver enmienda en spec 001-003-fallback-v2 (incidente 23-24 Sep 2026)
   cooldown: 60s                 # default por provider si no se especifica
   cooldown_jitter: 5s           # jitter para evitar thundering herd (default 5s)
   timeout: 120s                 # global por intento (TTFB, 001-006); override per-provider en
@@ -182,7 +184,7 @@ type ProviderConfig struct {
 | `server.max_body_bytes` | 10485760 (10MB) | ídem |
 | `server.read_timeout` | 120s | |
 | `server.write_timeout` | 300s | margen para SSE largo |
-| `fallback.max_retries` | 2 | = hasta 3 intentos (provider inicial + 2 fallbacks) |
+| `fallback.max_retries` | 2 | = tope de visitas (máx 1 visita por provider; tries internos vía fallback.retry.max_attempts) |
 | `fallback.cooldown` | 60s | |
 | `fallback.cooldown_jitter` | 5s | |
 | `provider.max_tokens` | 0 | 0 = sin clamp (001-004 aplica si >0) |
